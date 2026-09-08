@@ -1,0 +1,25 @@
+# Dependencies (Never upload to GitHub - installed automatically during deploy)
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Built frontend files (Generated during build)
+client/dist/
+
+# Scratch temporary test files
+scratch/
+
+# SQLite WAL & SHM temporary files
+server/data/*.db-wal
+server/data/*.db-shm
+
+# Logs and environment variables
+*.log
+npm-debug.log*
+.env
+
+# Editor & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

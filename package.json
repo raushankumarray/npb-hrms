@@ -1,0 +1,23 @@
+{
+  "name": "npb-hrms-platform",
+  "version": "1.0.0",
+  "description": "NPB HRMS - Production Multi-Tenant SaaS HRMS and Attendance Management Platform",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "build": "npm run build --prefix client",
+    "start": "node server/src/index.js",
+    "server": "node server/src/index.js",
+    "client": "npm run dev --prefix client",
+    "test": "node server/src/tests/automated_verification.js && node server/src/tests/e2e_verification.js"
+  },
+  "keywords": [
+    "hrms",
+    "attendance",
+    "geofencing",
+    "gps",
+    "multi-tenant",
+    "saas"
+  ],
+  "author": "Google Deepmind / Advanced Agentic Coding",
+  "license": "ISC"
+}
