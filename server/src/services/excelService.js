@@ -61,7 +61,7 @@ function generateEmployeeTemplate() {
 /**
  * Validates and previews uploaded employee Excel file.
  */
-function validateEmployeeImport(buffer, companyId) {
+function validateEmployeeImport(buffer, companyId, user = null) {
   const wb = XLSX.read(buffer, { type: 'buffer' });
   const sheetName = wb.SheetNames[0];
   const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
@@ -80,29 +80,31 @@ function validateEmployeeImport(buffer, companyId) {
   const seenEmployeeIds = new Set();
   const seenUsernames = new Set();
 
-  // Pre-fetch existing employee codes and usernames in company and globally
-  const existingEmployees = db.prepare('SELECT id, employee_id, full_name, user_id FROM employees WHERE company_id = ?').all(companyId);
-  const existingEmpMap = new Map(existingEmployees.map(e => [e.employee_id.toUpperCase(), e]));
-  const existingUsers = new Set(db.prepare('SELECT UPPER(username) as u FROM users').all().map(u => u.u));
+  // Pre-fetch existing employee codes and usernames in this company
+  const existingEmpRows = db.prepare('SELECT id, employee_id, user_id FROM employees WHERE company_id = ? AND is_deleted = 0').all(companyId);
+  const existingEmpMap = new Map();
+  existingEmpRows.forEach(e => {
+    if (e.employee_id) existingEmpMap.set(e.employee_id.toUpperCase(), e);
+  });
 
-  // Pre-fetch active shifts for company
+  const existingUsers = new Set(db.prepare('SELECT username FROM users WHERE is_deleted = 0').all().map(u => u.username.toUpperCase()));
+
   const shifts = db.prepare('SELECT id, name FROM shifts WHERE company_id = ?').all(companyId);
-  const shiftMap = new Map(shifts.map(s => [s.name.toLowerCase().trim(), s.id]));
-  const defaultShift = shifts[0] ? shifts[0].id : null;
+  const shiftMap = new Map(shifts.map(s => [s.name.toLowerCase(), s.id]));
+  const defaultShift = shifts[0]?.id || null;
 
-  // Pre-fetch default weekly off
-  const defaultWOff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(companyId);
-  const weeklyOffId = defaultWOff ? defaultWOff.id : null;
+  const defaultWeeklyOff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(companyId);
+  const weeklyOffId = defaultWeeklyOff?.id || null;
 
-  rows.forEach((row, idx) => {
-    const rowNum = idx + 2;
+  rows.forEach((row, index) => {
+    const rowNum = index + 2; // Excel row numbering (1-based, row 1 is header)
     const rowErrors = [];
 
-    const empId = String(row['Employee ID'] || '').trim();
-    const fullName = String(row['Full Name'] || '').trim();
-    const username = String(row['Username'] || '').trim();
-    const password = String(row['Password'] || 'User@12345').trim();
-    const department = String(row['Department'] || 'General').trim();
+    const empId = String(row['Employee ID *'] || '').trim();
+    const fullName = String(row['Full Name *'] || '').trim();
+    const username = String(row['Username *'] || '').trim();
+    const password = String(row['Password *'] || 'User@12345').trim();
+    const department = String(row['Department'] || 'Operations').trim();
     const designation = String(row['Designation'] || 'Staff').trim();
     const mobile = String(row['Mobile'] || '').trim();
     const email = String(row['Email'] || '').trim();
@@ -128,6 +130,11 @@ function validateEmployeeImport(buffer, companyId) {
     }
 
     const isExisting = existingEmpMap.has(empId.toUpperCase());
+
+    // If manager, strictly block updating existing employees via Excel
+    if (isExisting && user && user.role_name === 'manager') {
+      rowErrors.push(`Managers can only add new employees via Excel. Employee ID "${empId}" already exists and cannot be updated.`);
+    }
 
     // If new user, check if username already exists in database
     if (!isExisting && existingUsers.has(username.toUpperCase())) {
@@ -220,8 +227,10 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
   const transaction = db.transaction(() => {
     for (const r of validRecords) {
       if (r.isExisting) {
-        updateEmp.run(r.fullName, r.mobile, r.email, r.department, r.designation, r.city || null, r.shiftId, r.status, r.existingId);
-        updatedCount++;
+        if (!isManager) {
+          updateEmp.run(r.fullName, r.mobile, r.email, r.department, r.designation, r.city || null, r.shiftId, r.status, r.existingId);
+          updatedCount++;
+        }
       } else {
         const passHash = bcrypt.hashSync(r.password, 10);
         const userRes = insertUser.run(r.username, passHash, r.email, roleEmployee.id, companyId, r.status);

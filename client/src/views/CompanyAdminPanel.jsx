@@ -347,6 +347,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     setEditStaffForm({
       employee_id: emp.employee_id || '',
       full_name: emp.full_name || '',
+      username: emp.username || '',
       email: emp.email || '',
       mobile: emp.mobile || '',
       department: emp.department || 'Operations',
@@ -382,6 +383,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
 
       const payload = {
         ...editStaffForm,
+        username: editStaffForm.username ? editStaffForm.username.trim() : undefined,
         manager_id: (editStaffForm.role === 'employee' && editStaffForm.reports_to_manager) ? editStaffForm.manager_id : null,
         hr_id: null,
         reports_to_admin: editStaffForm.role === 'manager' ? 1 : (editStaffForm.reports_to_admin ? 1 : 0),
@@ -2760,6 +2762,83 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     <option value="employee">Employee</option>
                     <option value="manager">Manager</option>
                   </select>
+                </div>
+              </div>
+
+              {/* Full Name & Username (Admin Editable) */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Full Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editStaffForm.full_name}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, full_name: e.target.value })}
+                    className="w-full p-2 border rounded-lg"
+                    placeholder="e.g. Ramesh Chandra"
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700 block">Username *</label>
+                    <span className="text-[10px] text-sky-600 font-bold bg-sky-50 px-1.5 py-0.5 rounded">Admin Editable</span>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    value={editStaffForm.username}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, username: e.target.value })}
+                    className="w-full p-2 border rounded-lg font-mono"
+                    placeholder="e.g. ramesh_chandra"
+                  />
+                </div>
+              </div>
+
+              {/* Department & Designation */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Department</label>
+                  <input
+                    type="text"
+                    value={editStaffForm.department}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, department: e.target.value })}
+                    className="w-full p-2 border rounded-lg"
+                    placeholder="e.g. Operations"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Designation</label>
+                  <input
+                    type="text"
+                    value={editStaffForm.designation}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, designation: e.target.value })}
+                    className="w-full p-2 border rounded-lg"
+                    placeholder="e.g. Staff"
+                  />
+                </div>
+              </div>
+
+              {/* Mobile Phone & Email */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Mobile Phone</label>
+                  <input
+                    type="text"
+                    value={editStaffForm.mobile}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, mobile: e.target.value })}
+                    className="w-full p-2 border rounded-lg"
+                    placeholder="+91 9876543210"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={editStaffForm.email}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, email: e.target.value })}
+                    className="w-full p-2 border rounded-lg"
+                    placeholder="name@company.com"
+                  />
                 </div>
               </div>
 

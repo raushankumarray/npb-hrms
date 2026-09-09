@@ -56,6 +56,17 @@ export default function ManagerPanel({ user, company, activeTab }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [showExportModal, setShowExportModal] = useState(false);
+  const [dashboardStats, setDashboardStats] = useState({
+    assigned_members: 0,
+    pending_leaves: 0,
+    pending_corrections: 0,
+    today_attendance: {
+      date: '',
+      present: 0,
+      absent: 0,
+      leave: 0
+    }
+  });
 
   // Form states
   const [newEmp, setNewEmp] = useState({
@@ -97,7 +108,11 @@ export default function ManagerPanel({ user, company, activeTab }) {
     setLoading(true);
     setError('');
     try {
-      if (activeTab === 'my-employees' || activeTab === 'dashboard') {
+      if (activeTab === 'dashboard') {
+        const statsRes = await apiRequest('/employees/manager-dashboard-stats');
+        setDashboardStats(statsRes);
+      }
+      if (activeTab === 'my-employees') {
         const queryParams = new URLSearchParams();
         queryParams.append('limit', pageSize);
         queryParams.append('offset', (page - 1) * pageSize);
@@ -111,11 +126,11 @@ export default function ManagerPanel({ user, company, activeTab }) {
         setTotalEmployees(empRes.total !== undefined ? empRes.total : (empRes.employees || []).length);
         if (empRes.cities) setAvailableCities(empRes.cities);
       }
-      if (activeTab === 'attendance' || activeTab === 'dashboard') {
+      if (activeTab === 'attendance') {
         const attRes = await apiRequest('/attendance/list');
         setAttendance(attRes.records || []);
       }
-      if (activeTab === 'approvals' || activeTab === 'dashboard') {
+      if (activeTab === 'approvals') {
         const leaveRes = await apiRequest('/leave/requests');
         setLeaveRequests(leaveRes.requests || []);
       }
@@ -290,7 +305,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
               ? `Welcome, ${user.fullName || user.username} (Manager)`
               : 'Manager Team Portal'}
           </h2>
-          <p className="text-xs text-slate-500">{company?.name} • Assigned team oversight, live map tracking, and approvals</p>
+          <p className="text-xs text-slate-500">{company?.name} • Assigned team oversight, attendance metrics, and approvals</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -299,9 +314,10 @@ export default function ManagerPanel({ user, company, activeTab }) {
               <button
                 onClick={() => { setExcelModalMode('import'); setShowExcelModal(true); }}
                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
+                title="Batch add new employees using Excel template"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Excel Import / Update</span>
+                <span>Add Staff via Excel</span>
               </button>
               <button
                 onClick={() => setShowAddModal(true)}
@@ -342,34 +358,111 @@ export default function ManagerPanel({ user, company, activeTab }) {
       {/* DASHBOARD */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
+          {/* 3 Core Metric Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">My Team</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">{totalEmployees}</p>
-              <span className="text-[11px] text-emerald-600 font-semibold">Assigned Employees</span>
+            {/* 1. Assigned Team Members */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Assigned Team Members</span>
+                <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.assigned_members}</p>
+                <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1 mt-1">
+                  <CheckCircle className="w-3.5 h-3.5" /> Total Active Direct Reports
+                </span>
+              </div>
+              <div className="w-12 h-12 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
+                <Users className="w-6 h-6" />
+              </div>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">Pending Leave Approvals</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">
-                {leaveRequests.filter(r => r.status === 'pending').length}
-              </p>
-              <span className="text-[11px] text-amber-600 font-semibold">Awaiting Your Review</span>
+            {/* 2. Pending Leave Approvals */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Leave Approvals</span>
+                <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.pending_leaves}</p>
+                <span className="text-[11px] text-amber-600 font-semibold flex items-center gap-1 mt-1">
+                  <Clock className="w-3.5 h-3.5" /> Awaiting Manager Review
+                </span>
+              </div>
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                <Calendar className="w-6 h-6" />
+              </div>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">Attendance Recorded</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">{attendance.length}</p>
-              <span className="text-[11px] text-sky-600 font-semibold">Recent Team Punches</span>
+            {/* 3. Pending Attendance Corrections */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+              <div>
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Attendance Corrections</span>
+                <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.pending_corrections}</p>
+                <span className="text-[11px] text-purple-600 font-semibold flex items-center gap-1 mt-1">
+                  <Edit3 className="w-3.5 h-3.5" /> Missing Punch Appeals
+                </span>
+              </div>
+              <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+                <Edit3 className="w-6 h-6" />
+              </div>
             </div>
           </div>
 
-          <LiveTrackingMap companyId={company?.id} />
+          {/* 4. Attendance Recorded (Daily Basis - Today) */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-sky-600" />
+                  <span>Attendance Recorded (Daily Basis - Today)</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Live daily attendance breakdown for assigned team members ({dashboardStats.today_attendance?.date || new Date().toISOString().split('T')[0]})
+                </p>
+              </div>
+              <div className="text-xs font-semibold text-slate-500 bg-slate-50 px-3 py-1 rounded-xl border border-slate-200">
+                Team Size: <span className="font-bold text-slate-800">{dashboardStats.assigned_members}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+              {/* Present */}
+              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200/70 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">Present</span>
+                  <p className="text-3xl font-black text-emerald-700 mt-1">{dashboardStats.today_attendance?.present || 0}</p>
+                  <p className="text-[11px] text-emerald-600 font-medium mt-0.5">Punched In / On Duty</p>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <CheckCircle className="w-5 h-5" />
+                </div>
+              </div>
+
+              {/* Absent */}
+              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200/70 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-bold text-rose-800 uppercase tracking-wider">Absent</span>
+                  <p className="text-3xl font-black text-rose-700 mt-1">{dashboardStats.today_attendance?.absent || 0}</p>
+                  <p className="text-[11px] text-rose-600 font-medium mt-0.5">No Punch Recorded</p>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                  <X className="w-5 h-5" />
+                </div>
+              </div>
+
+              {/* Leave */}
+              <div className="p-4 rounded-xl bg-amber-50 border border-amber-200/70 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">On Leave</span>
+                  <p className="text-3xl font-black text-amber-700 mt-1">{dashboardStats.today_attendance?.leave || 0}</p>
+                  <p className="text-[11px] text-amber-600 font-medium mt-0.5">Approved Leave Today</p>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <Calendar className="w-5 h-5" />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       {/* MY EMPLOYEES */}
-      {(activeTab === 'my-employees' || activeTab === 'dashboard') && (
+      {activeTab === 'my-employees' && (
         <div className="space-y-4">
           {/* Advanced Filter Bar */}
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
@@ -503,10 +596,51 @@ export default function ManagerPanel({ user, company, activeTab }) {
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-900">Direct Reportees (My Team)</h3>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span>Direct Reports (My Team)</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800">
+                    {totalEmployees} Members
+                  </span>
+                </h3>
                 <span className="text-xs text-slate-400">Strictly isolated to your assigned team members</span>
+              </div>
+
+              {/* Filter controls inside Direct Reports Section */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl gap-1">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase px-2 flex items-center gap-1">
+                    <Filter className="w-3 h-3 text-slate-400" /> Filter:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setStatusFilter('all'); setPage(1); }}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all ${
+                      statusFilter === 'all' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setStatusFilter('active'); setPage(1); }}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all ${
+                      statusFilter === 'active' ? 'bg-emerald-600 text-white shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Active
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setStatusFilter('suspended'); setPage(1); }}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all ${
+                      statusFilter === 'suspended' ? 'bg-rose-600 text-white shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Suspended
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1009,41 +1143,15 @@ export default function ManagerPanel({ user, company, activeTab }) {
             </div>
 
             <form onSubmit={handleAddEmployee} className="space-y-3.5 text-xs">
-              {/* Position / Role Selector Pill Toggle */}
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Select Position / Role *</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setNewEmp({
-                      ...newEmp,
-                      role: 'employee',
-                      department: 'Operations',
-                      designation: 'Associate',
-                      reports_to_admin: false
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      newEmp.role === 'employee' ? 'bg-sky-50 border-sky-500 text-sky-700 ring-1 ring-sky-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Employee
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewEmp({
-                      ...newEmp,
-                      role: 'manager',
-                      department: 'Management',
-                      designation: 'Team Manager',
-                      reports_to_admin: false
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      newEmp.role === 'manager' ? 'bg-purple-50 border-purple-500 text-purple-700 ring-1 ring-purple-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Manager
-                  </button>
+              {/* Position / Role Locked to Employee */}
+              <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                <div>
+                  <span className="font-semibold text-slate-700 block">Position / Role</span>
+                  <span className="text-[11px] text-slate-500">Only Employee accounts can be registered by Managers</span>
                 </div>
+                <span className="px-3 py-1 bg-sky-100 text-sky-800 text-xs font-bold rounded-lg border border-sky-200">
+                  Employee
+                </span>
               </div>
 
               {/* Dynamic Multi-Level Reporting Hierarchy */}
@@ -1281,37 +1389,15 @@ export default function ManagerPanel({ user, company, activeTab }) {
             </div>
 
             <form onSubmit={handleSaveEditEmployee} className="space-y-3.5 text-xs">
-              {/* Position / Role Selector Pill Toggle */}
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Select Position / Role *</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditEmpForm({
-                      ...editEmpForm,
-                      role: 'employee',
-                      reports_to_admin: false
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      editEmpForm.role === 'employee' ? 'bg-sky-50 border-sky-500 text-sky-700 ring-1 ring-sky-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Employee
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditEmpForm({
-                      ...editEmpForm,
-                      role: 'manager',
-                      reports_to_admin: false
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      editEmpForm.role === 'manager' ? 'bg-purple-50 border-purple-500 text-purple-700 ring-1 ring-purple-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Manager
-                  </button>
+              {/* Position / Role Locked to Employee */}
+              <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                <div>
+                  <span className="font-semibold text-slate-700 block">Position / Role</span>
+                  <span className="text-[11px] text-slate-500">Employee role is managed under team supervision</span>
                 </div>
+                <span className="px-3 py-1 bg-sky-100 text-sky-800 text-xs font-bold rounded-lg border border-sky-200">
+                  Employee
+                </span>
               </div>
 
               {/* Multi-Level Reporting Hierarchy */}
@@ -1517,12 +1603,13 @@ export default function ManagerPanel({ user, company, activeTab }) {
         </div>
       )}
 
-      {/* EXCEL IMPORT / UPDATE MODAL */}
+      {/* EXCEL IMPORT (ADD ONLY) MODAL */}
       <ExcelImportModal
         isOpen={showExcelModal}
         onClose={() => setShowExcelModal(false)}
-        onSuccess={() => { setSuccess('Excel master data synced successfully.'); fetchData(); }}
-        mode={excelModalMode}
+        onSuccess={() => { setSuccess('New staff added via Excel successfully.'); fetchData(); }}
+        mode="import"
+        allowDiff={false}
       />
 
       {/* CUSTOM EXPORT MODAL */}

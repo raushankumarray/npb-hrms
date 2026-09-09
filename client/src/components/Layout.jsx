@@ -104,7 +104,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
 
       case 'manager':
         return [
-          { id: 'dashboard', label: 'Team Dashboard', icon: Layers },
+          { id: 'dashboard', label: 'Dashboard', icon: Layers },
           { id: 'my-employees', label: 'My Employees', icon: Users },
           { id: 'mapping', label: 'Team Mapping', icon: UserCheck },
           { id: 'attendance', label: 'Attendance Records', icon: Clock },
@@ -225,8 +225,8 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
               </div>
             </button>
 
-            {/* Logout Button (Hidden for employee role as per requirement; available in employee profile & mobile drawer) */}
-            {user.role !== 'employee' && (
+            {/* Logout Button (Hidden for employee and manager roles as per requirement; available in manager desktop sidebar footer, employee profile & mobile drawer) */}
+            {user.role !== 'employee' && user.role !== 'manager' && (
               <button
                 onClick={onLogout}
                 className="p-2 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors ml-1"
@@ -246,24 +246,41 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-3 mb-2">
             Navigation Menu
           </div>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
+          <div className="space-y-1 flex-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleNavClick(item.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                    isActive
+                      ? 'bg-sky-50 text-sky-700 font-bold border border-sky-200/60 shadow-sm'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
+                  <span className="truncate">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Desktop Sidebar Footer for Manager */}
+          {user.role === 'manager' && (
+            <div className="pt-3 mt-auto border-t border-slate-200">
               <button
-                key={item.id}
-                onClick={() => handleNavClick(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
-                  isActive
-                    ? 'bg-sky-50 text-sky-700 font-bold border border-sky-200/60 shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                }`}
+                type="button"
+                onClick={onLogout}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-xl text-xs transition-colors shadow-xs"
+                title="Sign Out"
               >
-                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
-                <span className="truncate">{item.label}</span>
+                <LogOut className="w-4 h-4" />
+                <span>Log Out</span>
               </button>
-            );
-          })}
+            </div>
+          )}
         </aside>
 
         {/* Mobile Slide-out Drawer */}

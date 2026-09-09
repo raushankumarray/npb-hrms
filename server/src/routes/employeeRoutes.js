@@ -213,19 +213,109 @@ router.get('/mappings', verifyAuth, (req, res) => {
   res.json({ mappings });
 });
 
+// Manager Dashboard Stats: Strictly Assigned Members, Pending Leaves, Pending Corrections, Daily Attendance (Present, Absent, Leave)
+router.get('/manager-dashboard-stats', verifyAuth, (req, res) => {
+  const companyId = getTenantCompanyId(req);
+  const managerEmpId = req.user.employee_id;
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    // 1. Total Assigned Team Members (excluding deleted)
+    let assignedQuery = `
+      SELECT id FROM employees e
+      WHERE e.company_id = ? AND e.is_deleted = 0
+    `;
+    const assignedParams = [companyId];
+    if (req.user.role_name === 'manager') {
+      assignedQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))`;
+      assignedParams.push(managerEmpId, managerEmpId);
+    }
+    const teamMembers = db.prepare(assignedQuery).all(...assignedParams);
+    const teamMemberIds = teamMembers.map(m => m.id);
+    const assignedCount = teamMemberIds.length;
+
+    if (assignedCount === 0) {
+      return res.json({
+        assigned_members: 0,
+        pending_leaves: 0,
+        pending_corrections: 0,
+        today_attendance: {
+          date: today,
+          present: 0,
+          absent: 0,
+          leave: 0
+        }
+      });
+    }
+
+    const placeholders = teamMemberIds.map(() => '?').join(',');
+
+    // 2. Pending Leave Approvals count
+    const pendingLeaves = db.prepare(`
+      SELECT COUNT(*) as count FROM leave_requests
+      WHERE employee_id IN (${placeholders}) AND status = 'pending'
+    `).get(...teamMemberIds).count;
+
+    // 3. Pending Attendance Corrections count
+    const pendingCorrections = db.prepare(`
+      SELECT COUNT(*) as count FROM attendance_correction_requests
+      WHERE employee_id IN (${placeholders}) AND status = 'pending'
+    `).get(...teamMemberIds).count;
+
+    // 4. Daily Attendance: Present, Leave, Absent for today
+    // 4a. Team members on approved leave today
+    const leavesToday = db.prepare(`
+      SELECT DISTINCT employee_id FROM leave_requests
+      WHERE employee_id IN (${placeholders})
+        AND status = 'approved'
+        AND ? BETWEEN start_date AND end_date
+    `).all(...teamMemberIds, today);
+    const leaveEmpIdSet = new Set(leavesToday.map(l => l.employee_id));
+    const leaveCount = leaveEmpIdSet.size;
+
+    // 4b. Team members present today (status IN ('present', 'half_day') OR punch_in IS NOT NULL)
+    const presentToday = db.prepare(`
+      SELECT DISTINCT employee_id FROM attendance_records
+      WHERE employee_id IN (${placeholders})
+        AND date = ?
+        AND (status IN ('present', 'half_day') OR punch_in_time IS NOT NULL)
+    `).all(...teamMemberIds, today);
+    const presentEmpIdSet = new Set(presentToday.map(p => p.employee_id));
+    const presentCount = presentEmpIdSet.size;
+
+    // 4c. Absent: assigned members who are not present and not on leave today
+    const absentCount = Math.max(0, assignedCount - presentCount - leaveCount);
+
+    res.json({
+      assigned_members: assignedCount,
+      pending_leaves: pendingLeaves,
+      pending_corrections: pendingCorrections,
+      today_attendance: {
+        date: today,
+        present: presentCount,
+        absent: absentCount,
+        leave: leaveCount
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch manager stats: ' + err.message });
+  }
+});
+
 // Get single employee details
 router.get('/:id', verifyAuth, (req, res) => {
   const empId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
 
   let query = `
-    SELECT e.*, u.username, u.status as user_status,
+    SELECT e.*, u.username, u.status as user_status, r.name as role_name,
            s.name as shift_name, s.start_time as shift_start, s.end_time as shift_end,
            w.name as weekly_off_name,
            g.location_name as geofence_name,
            m.full_name as manager_name
     FROM employees e
     JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
     LEFT JOIN shifts s ON e.shift_id = s.id
     LEFT JOIN weekly_off_settings w ON e.weekly_off_id = w.id
     LEFT JOIN geofences g ON e.geofence_id = g.id
@@ -289,17 +379,19 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
     return res.status(400).json({ error: `Username "${username}" already taken.` });
   }
 
-  const roleTarget = db.prepare('SELECT id FROM roles WHERE name = ?').get(role || 'employee');
+  const isManagerCreator = req.user.role_name === 'manager';
+  // Managers can ONLY create 'employee' accounts (never HR or Manager)
+  const finalRole = isManagerCreator ? 'employee' : (role || 'employee');
+  const roleTarget = db.prepare('SELECT id FROM roles WHERE name = ?').get(finalRole);
   const passHash = bcrypt.hashSync(password, 10);
   const currentYear = new Date().getFullYear();
 
   // Multi-level reporting resolution
-  const finalRole = role || 'employee';
   const finalReportsToAdmin = reports_to_admin ? 1 : 0;
 
-  // If created by manager, manager_id defaults to that manager's employee_id
+  // If created by manager, manager_id strictly auto-maps to that manager's employee_id
   let finalManagerId = null;
-  if (req.user.role_name === 'manager') {
+  if (isManagerCreator) {
     finalManagerId = req.user.employee_id;
   } else if (finalRole === 'employee') {
     finalManagerId = manager_id || null;
@@ -393,7 +485,7 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
   const companyId = getTenantCompanyId(req);
 
   const {
-    employee_id, full_name, mobile, email, department, designation, city,
+    employee_id, full_name, username, mobile, email, department, designation, city,
     role, manager_id, hr_id, shift_id, weekly_off_id, geofence_id, geofence_mode,
     reports_to_admin, status, password
   } = req.body;
@@ -401,6 +493,22 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
   const currentEmp = db.prepare('SELECT * FROM employees WHERE id = ?').get(empId);
   if (!currentEmp) {
     return res.status(404).json({ error: 'Employee not found.' });
+  }
+
+  // Username update permission check:
+  // Employee username can ONLY be changed in Company Admin panel (and Super Admin).
+  // Managers CANNOT change employee usernames.
+  const currentUser = db.prepare('SELECT id, username FROM users WHERE id = ?').get(currentEmp.user_id);
+  const cleanUsername = (username !== undefined && username !== null) ? String(username).trim() : undefined;
+  if (cleanUsername && currentUser && cleanUsername !== currentUser.username) {
+    if (req.user.role_name === 'manager') {
+      return res.status(403).json({ error: 'Managers cannot change employee usernames. Only Company Administrator can update usernames.' });
+    }
+    // Check uniqueness across all users
+    const existingUser = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(cleanUsername, currentEmp.user_id);
+    if (existingUser) {
+      return res.status(400).json({ error: `Username "${cleanUsername}" is already taken.` });
+    }
   }
 
   // If employee_id changed, check uniqueness
@@ -412,7 +520,10 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
     }
   }
 
-  const effectiveRole = role || (db.prepare('SELECT r.name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?').get(currentEmp.user_id)?.name || 'employee');
+  let effectiveRole = role || (db.prepare('SELECT r.name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?').get(currentEmp.user_id)?.name || 'employee');
+  if (req.user.role_name === 'manager') {
+    effectiveRole = 'employee';
+  }
   const finalReportsToAdmin = reports_to_admin !== undefined ? (reports_to_admin ? 1 : 0) : currentEmp.reports_to_admin;
   const finalManagerId = effectiveRole === 'employee' ? (manager_id !== undefined ? (manager_id || null) : currentEmp.manager_id) : null;
   const finalHrId = null;
@@ -426,6 +537,11 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
   }
 
   const transaction = db.transaction(() => {
+    // If username updated by Company Admin / Super Admin
+    if (cleanUsername && currentUser && cleanUsername !== currentUser.username && (req.user.role_name === 'company_admin' || req.user.role_name === 'super_admin')) {
+      db.prepare('UPDATE users SET username = ? WHERE id = ?').run(cleanUsername, currentEmp.user_id);
+    }
+
     // If password provided, update user password
     if (password) {
       const passHash = bcrypt.hashSync(password, 10);
@@ -437,8 +553,8 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
       db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status === 'suspended' ? 'disabled' : status, currentEmp.user_id);
     }
 
-    // If role provided, update user role
-    if (role) {
+    // If role provided and caller is admin, update user role
+    if (role && (req.user.role_name === 'company_admin' || req.user.role_name === 'super_admin')) {
       const targetRole = db.prepare('SELECT id FROM roles WHERE name = ?').get(role);
       if (targetRole) {
         db.prepare('UPDATE users SET role_id = ? WHERE id = ?').run(targetRole.id, currentEmp.user_id);
@@ -800,7 +916,7 @@ router.post('/excel/import-validate', verifyAuth, requireRole(['company_admin', 
 
   const companyId = getTenantCompanyId(req);
   try {
-    const result = validateEmployeeImport(req.file.buffer, companyId);
+    const result = validateEmployeeImport(req.file.buffer, companyId, req.user);
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: 'Failed to parse Excel file: ' + err.message });
@@ -823,8 +939,8 @@ router.post('/excel/import-commit', verifyAuth, requireRole(['company_admin', 'm
   }
 });
 
-// Diff Preview for Employee Update (Excel)
-router.post('/excel/diff-preview', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
+// Diff Preview for Employee Update (Excel) - Strictly Company Admin and Super Admin
+router.post('/excel/diff-preview', verifyAuth, requireRole(['company_admin', 'super_admin']), upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Please upload an Excel (.xlsx) file.' });
   }
@@ -838,8 +954,8 @@ router.post('/excel/diff-preview', verifyAuth, requireRole(['company_admin', 'ma
   }
 });
 
-// Commit Employee Diff Update (Excel)
-router.post('/excel/diff-commit', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
+// Commit Employee Diff Update (Excel) - Strictly Company Admin and Super Admin
+router.post('/excel/diff-commit', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const { diffs } = req.body;
   if (!Array.isArray(diffs) || diffs.length === 0) {
     return res.status(400).json({ error: 'No diff items provided for update.' });

@@ -186,8 +186,8 @@ router.put('/profile', verifyAuth, (req, res) => {
 
     // 1. Username update with uniqueness check
     if (username && username.trim() !== currentUser.username) {
-      if (req.user.role_name === 'employee') {
-        return res.status(403).json({ error: 'Employees cannot edit their username. Please contact Company Admin, HR, or Manager to update credentials.' });
+      if (req.user.role_name === 'employee' || req.user.role_name === 'manager') {
+        return res.status(403).json({ error: 'Managers and employees cannot change their username. Only Company Administrator can update credentials.' });
       }
       const cleanUsername = username.trim();
       const existing = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(cleanUsername, userId);

@@ -236,7 +236,7 @@ export default function UserProfileModal({ isOpen, onClose, user, onUserUpdate }
                     <label className="font-semibold text-slate-700 block">
                       Username / Login ID *
                     </label>
-                    {(user?.role === 'employee' || profile.role === 'employee') && (
+                    {(user?.role === 'employee' || user?.role === 'manager' || profile.role === 'employee' || profile.role === 'manager') && (
                       <span className="text-[10px] text-amber-600 font-medium">
                         Admin Managed
                       </span>
@@ -246,21 +246,21 @@ export default function UserProfileModal({ isOpen, onClose, user, onUserUpdate }
                     <input
                       type="text"
                       required
-                      disabled={user?.role === 'employee' || profile.role === 'employee'}
+                      disabled={user?.role === 'employee' || user?.role === 'manager' || profile.role === 'employee' || profile.role === 'manager'}
                       value={profile.username}
                       onChange={(e) => setProfile({ ...profile, username: e.target.value })}
                       placeholder="Username"
                       className={`w-full pl-8 pr-3 py-2 border rounded-xl font-mono text-xs focus:outline-none ${
-                        user?.role === 'employee' || profile.role === 'employee'
+                        user?.role === 'employee' || user?.role === 'manager' || profile.role === 'employee' || profile.role === 'manager'
                           ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed'
                           : 'bg-white border-slate-300 text-slate-800 focus:ring-2 focus:ring-sky-500'
                       }`}
                     />
                     <Shield className="w-4 h-4 text-slate-400 absolute left-2.5 top-2.5" />
                   </div>
-                  {(user?.role === 'employee' || profile.role === 'employee') && (
+                  {(user?.role === 'employee' || user?.role === 'manager' || profile.role === 'employee' || profile.role === 'manager') && (
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Username can only be modified by Company Admin or Manager.
+                      Username can only be modified by Company Administrator.
                     </p>
                   )}
                 </div>

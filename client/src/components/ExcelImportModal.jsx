@@ -2,15 +2,15 @@ import React, { useState } from 'react';
 import { Upload, FileSpreadsheet, Download, CheckCircle, AlertTriangle, X, RefreshCw, ArrowRight } from 'lucide-react';
 import { apiRequest } from '../api';
 
-export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'import' }) {
-  // mode: 'import' (create/update batch) or 'diff-update' (preview old vs new)
+export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'import', allowDiff = true }) {
+  // mode: 'import' (create batch) or 'diff-update' (preview old vs new)
   const [file, setFile] = useState(null);
   const [validating, setValidating] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [diffResult, setDiffResult] = useState(null);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState(mode); // 'import' or 'diff-update'
+  const [activeTab, setActiveTab] = useState(allowDiff ? mode : 'import'); // 'import' or 'diff-update'
 
   if (!isOpen) return null;
 
@@ -130,7 +130,9 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
               Employee Excel Engine
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Strictly validated master data upload and differential updates
+              {allowDiff
+                ? 'Strictly validated master data upload and differential updates'
+                : 'Batch upload and add new team employees via Excel'}
             </p>
           </div>
           <button
@@ -141,27 +143,29 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
           </button>
         </div>
 
-        {/* Tab Switcher */}
-        <div className="flex bg-slate-100 p-1 rounded-xl">
-          <button
-            type="button"
-            onClick={() => { setActiveTab('import'); setValidationResult(null); setDiffResult(null); setError(''); }}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-              activeTab === 'import' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Import / Create Employees
-          </button>
-          <button
-            type="button"
-            onClick={() => { setActiveTab('diff-update'); setValidationResult(null); setDiffResult(null); setError(''); }}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-              activeTab === 'diff-update' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Diff Update Existing (Match ID)
-          </button>
-        </div>
+        {/* Tab Switcher - only when differential update is permitted */}
+        {allowDiff && (
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            <button
+              type="button"
+              onClick={() => { setActiveTab('import'); setValidationResult(null); setDiffResult(null); setError(''); }}
+              className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                activeTab === 'import' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Import / Create Employees
+            </button>
+            <button
+              type="button"
+              onClick={() => { setActiveTab('diff-update'); setValidationResult(null); setDiffResult(null); setError(''); }}
+              className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                activeTab === 'diff-update' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Diff Update Existing (Match ID)
+            </button>
+          </div>
+        )}
 
         {error && (
           <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-center gap-2 text-xs text-rose-700">
