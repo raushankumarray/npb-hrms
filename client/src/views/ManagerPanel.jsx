@@ -12,8 +12,7 @@ import UnifiedCalendar from '../components/UnifiedCalendar';
 import TicketChatModal from '../components/TicketChatModal';
 import ExcelImportModal from '../components/ExcelImportModal';
 import EmployeeChangePasswordModal from '../components/EmployeeChangePasswordModal';
-import EmployeeMappingView from '../components/EmployeeMappingView';
-import AttendanceManagementView from '../components/AttendanceManagementView';
+import ManagerAttendanceReportsView from '../components/ManagerAttendanceReportsView';
 import AttendanceCorrectionReviewView from '../components/AttendanceCorrectionReviewView';
 
 export default function ManagerPanel({ user, company, activeTab }) {
@@ -329,7 +328,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
             </>
           )}
 
-          {(activeTab === 'attendance' || activeTab === 'reports') && (
+          {activeTab === 'reports' && (
             <button
               onClick={() => setShowExportModal(true)}
               className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm"
@@ -856,19 +855,14 @@ export default function ManagerPanel({ user, company, activeTab }) {
         </div>
       )}
 
-      {/* TEAM MAPPING */}
-      {activeTab === 'mapping' && (
-        <EmployeeMappingView role="manager" />
-      )}
-
       {/* LIVE MAP */}
       {activeTab === 'live-map' && (
         <LiveTrackingMap companyId={company?.id} />
       )}
 
-      {/* ATTENDANCE */}
+      {/* DAILY ATTENDANCE REPORTS & APPROVALS */}
       {activeTab === 'attendance' && (
-        <AttendanceManagementView role="manager" company={company} />
+        <ManagerAttendanceReportsView user={user} company={company} onStatsUpdate={fetchData} />
       )}
 
       {/* APPROVALS */}
@@ -946,7 +940,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
 
       {/* TAB: CALENDAR */}
       {activeTab === 'calendar' && (
-        <UnifiedCalendar companyId={company?.id} role="manager" />
+        <UnifiedCalendar companyId={company?.id} role="manager" holidayAndWoOnly={true} />
       )}
 
       {/* TAB: HELPDESK & SERVICE TICKETS */}

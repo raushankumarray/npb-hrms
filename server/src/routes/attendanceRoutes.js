@@ -451,7 +451,7 @@ router.get('/list', verifyAuth, (req, res) => {
   const companyId = getTenantCompanyId(req);
   const {
     from_date, to_date, date, day, month, year,
-    employee_id, department, manager_id, status, search,
+    employee_id, employee_ids, department, manager_id, status, search,
     limit = 10, offset = 0
   } = req.query;
 
@@ -476,11 +476,17 @@ router.get('/list', verifyAuth, (req, res) => {
     params.push(req.user.employee_id, req.user.employee_id);
   }
 
-  // Employee restriction
+  // Employee restriction / filter
   if (req.user.role_name === 'employee') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(req.user.employee_id);
-  } else if (employee_id) {
+  } else if (employee_ids) {
+    const ids = String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (ids.length > 0) {
+      baseQuery += ` AND a.employee_id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+  } else if (employee_id && employee_id !== 'all') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(employee_id);
   }
@@ -515,8 +521,14 @@ router.get('/list', verifyAuth, (req, res) => {
   }
 
   if (status && status !== 'all') {
-    baseQuery += ' AND a.status = ?';
-    params.push(status);
+    if (status === 'WO' || status === 'Weekly Off') {
+      baseQuery += " AND a.status IN ('Weekly Off', 'WO')";
+    } else if (status === 'HO' || status === 'Holiday') {
+      baseQuery += " AND a.status IN ('Holiday', 'HO')";
+    } else {
+      baseQuery += ' AND a.status = ?';
+      params.push(status);
+    }
   }
 
   if (search) {
@@ -673,6 +685,99 @@ router.get('/audit-history/:id', verifyAuth, (req, res) => {
   res.json({ auditHistory: logs });
 });
 
+// Manual Attendance Entry / Upsert (Manager, Company Admin, Super Admin)
+router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
+  const companyId = getTenantCompanyId(req);
+  const {
+    employee_id,
+    date,
+    punch_in_time,
+    punch_out_time,
+    status = 'Present',
+    total_hours,
+    remarks,
+    reason
+  } = req.body;
+
+  if (!employee_id || !date || !reason || !reason.trim()) {
+    return res.status(400).json({ error: 'Employee, Date, and a mandatory Audit Reason are required.' });
+  }
+
+  // Resolve employee
+  const emp = db.prepare(`
+    SELECT * FROM employees WHERE (id = ? OR employee_id = ?) AND company_id = ? AND is_deleted = 0
+  `).get(employee_id, employee_id, companyId);
+
+  if (!emp) {
+    return res.status(404).json({ error: 'Employee not found in company.' });
+  }
+
+  // If manager, check mapping
+  if (req.user.role_name === 'manager') {
+    const isMapped = emp.manager_id === req.user.employee_id || db.prepare(`
+      SELECT 1 FROM employee_mappings WHERE manager_id = ? AND employee_id = ?
+    `).get(req.user.employee_id, emp.id);
+    if (!isMapped) {
+      return res.status(403).json({ error: 'You can only record attendance for assigned team members.' });
+    }
+  }
+
+  const hours = total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : calculateHours(punch_in_time, punch_out_time);
+  const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO attendance_records (
+        company_id, employee_id, date, punch_in_time, punch_out_time,
+        total_hours, status, remarks, is_edited, shift_id
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, 1, ?
+      ) ON CONFLICT(company_id, employee_id, date) DO UPDATE SET
+        punch_in_time = excluded.punch_in_time,
+        punch_out_time = excluded.punch_out_time,
+        total_hours = excluded.total_hours,
+        status = excluded.status,
+        remarks = COALESCE(excluded.remarks, attendance_records.remarks),
+        is_edited = 1,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(companyId, emp.id, date, punch_in_time || null, punch_out_time || null, hours, status, remarks || 'Manual manager entry', emp.shift_id || null);
+
+    const record = db.prepare(`SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?`).get(companyId, emp.id, date);
+
+    if (record) {
+      db.prepare(`
+        INSERT INTO attendance_edit_logs (
+          attendance_record_id, employee_id, edited_by, editor_role, panel, reason,
+          original_punch_in, original_punch_out, original_status,
+          new_punch_in, new_punch_out, new_status, ip_address
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.id, emp.id, req.user.id, req.user.role_name,
+        `${req.user.role_name} Daily Attendance Reports`, reason.trim(),
+        null, null, null,
+        punch_in_time || null, punch_out_time || null, status, ipAddress
+      );
+
+      logAudit({
+        companyId,
+        userId: req.user.id,
+        userName: req.user.username,
+        role: req.user.role_name,
+        panel: 'Daily Attendance Reports',
+        action: 'ATTENDANCE_MANUAL_RECORD',
+        targetEntity: 'attendance_records',
+        targetId: record.id,
+        newValues: { punch_in: punch_in_time, punch_out: punch_out_time, status, hours },
+        reason: reason.trim(),
+        ipAddress
+      });
+    }
+  });
+
+  transaction();
+  res.json({ success: true, message: `Attendance for ${emp.full_name} (${date}) recorded successfully.` });
+});
+
 // Download Attendance Excel Template
 router.get('/excel/template', verifyAuth, (req, res) => {
   const companyId = getTenantCompanyId(req);
@@ -723,7 +828,7 @@ router.post('/export', verifyAuth, (req, res) => {
       'Punch Out', 'GPS Lat/Long (Punch Out)', 'Address (Punch Out)', 'Working Hours', 'Status'
     ],
     from_date, to_date, date, day, month, year,
-    employee_id, department, manager_id, status, search
+    employee_id, employee_ids, department, manager_id, status, search
   } = req.body;
 
   let baseQuery = `
@@ -747,7 +852,17 @@ router.post('/export', verifyAuth, (req, res) => {
   } else if (req.user.role_name === 'employee') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(req.user.employee_id);
-  } else if (employee_id) {
+  }
+
+  if (employee_ids) {
+    const ids = Array.isArray(employee_ids)
+      ? employee_ids.map(Number).filter(n => !isNaN(n))
+      : String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (ids.length > 0) {
+      baseQuery += ` AND a.employee_id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+  } else if (employee_id && employee_id !== 'all') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(employee_id);
   }
@@ -788,8 +903,14 @@ router.post('/export', verifyAuth, (req, res) => {
   }
 
   if (status && status !== 'all') {
-    baseQuery += ' AND a.status = ?';
-    params.push(status);
+    if (status === 'WO' || status === 'Weekly Off') {
+      baseQuery += " AND a.status IN ('Weekly Off', 'WO')";
+    } else if (status === 'HO' || status === 'Holiday') {
+      baseQuery += " AND a.status IN ('Holiday', 'HO')";
+    } else {
+      baseQuery += ' AND a.status = ?';
+      params.push(status);
+    }
   }
 
   if (search) {

@@ -12,7 +12,8 @@ const MONTH_NAMES = [
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-export default function UnifiedCalendar({ companyId, employeeId = null, role = 'employee' }) {
+export default function UnifiedCalendar({ companyId, employeeId = null, role = 'employee', holidayAndWoOnly = false }) {
+  const isManagerHolidaysOnly = holidayAndWoOnly || role === 'manager';
   const today = new Date();
   const [currentYear, setCurrentYear] = useState(today.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(today.getMonth() + 1); // 1-12
@@ -152,13 +153,15 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
             <h3 className="text-lg font-bold text-slate-900">
               {MONTH_NAMES[currentMonth - 1]} {currentYear}
             </h3>
-            <p className="text-xs text-slate-500">Official Holidays, Weekly Offs & Attendance Records</p>
+            <p className="text-xs text-slate-500">
+              {isManagerHolidaysOnly ? 'Official Company Holidays & Scheduled Weekly Offs' : 'Official Holidays, Weekly Offs & Attendance Records'}
+            </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Employee Filter for Admin/HR/Manager */}
-          {role !== 'employee' && employeesList.length > 0 && (
+          {/* Employee Filter for Admin/HR (hidden for manager holidays only) */}
+          {!isManagerHolidaysOnly && role !== 'employee' && employeesList.length > 0 && (
             <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
               <Filter className="w-3.5 h-3.5 text-slate-400" />
               <select
@@ -212,30 +215,49 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
 
       {/* Legend */}
       <div className="flex flex-wrap items-center gap-4 text-xs text-slate-700 font-medium pt-1 pb-1">
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-emerald-600 ring-2 ring-emerald-300 inline-block" />
-          <span>Present (P)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-amber-500 ring-2 ring-amber-300 inline-block" />
-          <span>Half Day (HD)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-rose-600 ring-2 ring-rose-300 inline-block" />
-          <span>Absent (A)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-300 inline-block" />
-          <span>Leave (L)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-orange-500 ring-2 ring-orange-300 inline-block" />
-          <span>Holiday (HO)</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-full bg-rose-100 border border-rose-400 inline-block" />
-          <span>Weekly Off (WO)</span>
-        </div>
+        {isManagerHolidaysOnly ? (
+          <>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-orange-500 ring-2 ring-orange-300 inline-block" />
+              <span>Holiday (HO)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-rose-100 border border-rose-400 inline-block" />
+              <span>Weekly Off (WO)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-sky-600 ring-2 ring-sky-300 inline-block" />
+              <span>Today</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-emerald-600 ring-2 ring-emerald-300 inline-block" />
+              <span>Present (P)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-amber-500 ring-2 ring-amber-300 inline-block" />
+              <span>Half Day (HD)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-rose-600 ring-2 ring-rose-300 inline-block" />
+              <span>Absent (A)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-purple-600 ring-2 ring-purple-300 inline-block" />
+              <span>Leave (L)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-orange-500 ring-2 ring-orange-300 inline-block" />
+              <span>Holiday (HO)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-rose-100 border border-rose-400 inline-block" />
+              <span>Weekly Off (WO)</span>
+            </div>
+          </>
+        )}
 
         <div className="sm:ml-auto flex items-center gap-2">
           <span className="text-[11px] font-semibold text-slate-500">Official Weekly Off:</span>
@@ -294,7 +316,18 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
           let dateCircleStyle = 'text-slate-800 hover:bg-slate-100';
           let cellBgStyle = 'bg-white';
 
-          if (role === 'employee' || filterEmpId) {
+          if (isManagerHolidaysOnly) {
+            if (dayHolidays.length > 0) {
+              dateCircleStyle = 'bg-orange-500 text-white font-black shadow-sm ring-2 ring-orange-300';
+              cellBgStyle = 'bg-orange-50/50 border-orange-200';
+            } else if (weeklyOff) {
+              dateCircleStyle = 'bg-rose-100 text-rose-700 font-bold border border-rose-300';
+              cellBgStyle = 'bg-rose-50/30 border-rose-100';
+            } else if (isToday) {
+              dateCircleStyle = 'bg-sky-600 text-white shadow-sm ring-2 ring-sky-300 font-bold';
+              cellBgStyle = 'bg-sky-50/20';
+            }
+          } else if (role === 'employee' || filterEmpId) {
             if (status === 'Present') {
               dateCircleStyle = 'bg-emerald-600 text-white font-black shadow-sm ring-2 ring-emerald-300';
               cellBgStyle = 'bg-emerald-50/40 border-emerald-200/80';
@@ -344,7 +377,7 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
                 <span
                   className={`text-[11px] sm:text-xs rounded-full w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center transition-transform group-hover:scale-105 ${dateCircleStyle}`}
                   title={
-                    status ? `Status: ${status}` :
+                    status && !isManagerHolidaysOnly ? `Status: ${status}` :
                     dayHolidays.length ? `Holiday: ${dayHolidays[0].name}` :
                     weeklyOff ? 'Weekly Off' :
                     isToday ? 'Today' : `Day ${day}`
@@ -362,7 +395,17 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
 
               {/* Mobile View: Compact square status indicator */}
               <div className="sm:hidden flex items-center justify-center flex-1 my-0.5">
-                {hasRecord ? (
+                {isManagerHolidaysOnly ? (
+                  dayHolidays.length > 0 ? (
+                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-300">
+                      HO
+                    </span>
+                  ) : weeklyOff ? (
+                    <span className="text-[9px] font-black px-1 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                      WO
+                    </span>
+                  ) : null
+                ) : hasRecord ? (
                   <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
                     status === 'Present' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
                     status === 'Half Day' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
@@ -390,33 +433,34 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
                   </span>
                 )}
 
-                {/* Individual Employee View */}
-                {role === 'employee' || filterEmpId ? (
-                  dayRecords.map(rec => (
-                    <div
-                      key={rec.id}
-                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center justify-between shadow-xs ${
-                        rec.status === 'Present'
-                          ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
-                          : rec.status === 'Half Day'
-                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                          : rec.status === 'Leave'
-                          ? 'bg-purple-100 text-purple-900 border border-purple-300'
-                          : 'bg-rose-100 text-rose-900 border border-rose-300'
-                      }`}
-                    >
-                      <span className="truncate">{rec.status}</span>
-                      {rec.punch_in_time && (
-                        <span className="text-[9px] font-mono opacity-80">{rec.punch_in_time.slice(0, 5)}</span>
-                      )}
-                    </div>
-                  ))
-                ) : (
-                  /* Aggregate Team View */
-                  dayRecords.length > 0 && (
-                    <div className="text-[10px] bg-sky-50 text-sky-800 font-semibold px-1.5 py-0.5 rounded border border-sky-100">
-                      {dayRecords.length} Punched In
-                    </div>
+                {!isManagerHolidaysOnly && (
+                  role === 'employee' || filterEmpId ? (
+                    dayRecords.map(rec => (
+                      <div
+                        key={rec.id}
+                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center justify-between shadow-xs ${
+                          rec.status === 'Present'
+                            ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                            : rec.status === 'Half Day'
+                            ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                            : rec.status === 'Leave'
+                            ? 'bg-purple-100 text-purple-900 border border-purple-300'
+                            : 'bg-rose-100 text-rose-900 border border-rose-300'
+                        }`}
+                      >
+                        <span className="truncate">{rec.status}</span>
+                        {rec.punch_in_time && (
+                          <span className="text-[9px] font-mono opacity-80">{rec.punch_in_time.slice(0, 5)}</span>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    /* Aggregate Team View */
+                    dayRecords.length > 0 && (
+                      <div className="text-[10px] bg-sky-50 text-sky-800 font-semibold px-1.5 py-0.5 rounded border border-sky-100">
+                        {dayRecords.length} Punched In
+                      </div>
+                    )
                   )
                 )}
               </div>
@@ -472,47 +516,56 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
               </div>
             )}
 
-            {/* Records */}
-            <div className="space-y-2">
-              <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                Attendance Records ({selectedDay.dayRecords.length})
-              </h5>
+            {/* Records (Only if not manager holidays-only view) */}
+            {!isManagerHolidaysOnly ? (
+              <div className="space-y-2">
+                <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Attendance Records ({selectedDay.dayRecords.length})
+                </h5>
 
-              {selectedDay.dayRecords.length === 0 ? (
-                <p className="text-xs text-slate-400 italic py-2">No attendance punches logged for this date.</p>
-              ) : (
-                <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-                  {selectedDay.dayRecords.map(rec => (
-                    <div
-                      key={rec.id}
-                      className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs"
-                    >
-                      <div>
-                        <div className="font-bold text-slate-900">{rec.employee_name || 'Staff Member'}</div>
-                        <div className="text-[11px] text-slate-500">{rec.department} &bull; {rec.employee_code}</div>
-                        <div className="text-[11px] text-slate-600 mt-1">
-                          Punch: <span className="font-semibold text-slate-800">{rec.punch_in_time || '--:--'}</span> to <span className="font-semibold text-slate-800">{rec.punch_out_time || '--:--'}</span>
-                          {rec.total_hours > 0 && ` (${rec.total_hours} hrs)`}
-                        </div>
-                      </div>
-                      <span
-                        className={`px-2.5 py-1 rounded-full font-bold text-[11px] ${
-                          rec.status === 'Present'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : rec.status === 'Half Day'
-                            ? 'bg-amber-100 text-amber-800'
-                            : rec.status === 'Leave'
-                            ? 'bg-purple-100 text-purple-800'
-                            : 'bg-rose-100 text-rose-800'
-                        }`}
+                {selectedDay.dayRecords.length === 0 ? (
+                  <p className="text-xs text-slate-400 italic py-2">No attendance punches logged for this date.</p>
+                ) : (
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                    {selectedDay.dayRecords.map(rec => (
+                      <div
+                        key={rec.id}
+                        className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs"
                       >
-                        {rec.status}
-                      </span>
-                    </div>
-                  ))}
+                        <div>
+                          <div className="font-bold text-slate-900">{rec.employee_name || 'Staff Member'}</div>
+                          <div className="text-[11px] text-slate-500">{rec.department} &bull; {rec.employee_code}</div>
+                          <div className="text-[11px] text-slate-600 mt-1">
+                            Punch: <span className="font-semibold text-slate-800">{rec.punch_in_time || '--:--'}</span> to <span className="font-semibold text-slate-800">{rec.punch_out_time || '--:--'}</span>
+                            {rec.total_hours > 0 && ` (${rec.total_hours} hrs)`}
+                          </div>
+                        </div>
+                        <span
+                          className={`px-2.5 py-1 rounded-full font-bold text-[11px] ${
+                            rec.status === 'Present'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : rec.status === 'Half Day'
+                              ? 'bg-amber-100 text-amber-800'
+                              : rec.status === 'Leave'
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {rec.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              !selectedDay.dayHolidays.length && !selectedDay.weeklyOff && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
+                  <span className="font-bold block text-slate-800 mb-0.5">Regular Working Day</span>
+                  Scheduled operational business day (Not a designated holiday or weekly off).
                 </div>
-              )}
-            </div>
+              )
+            )}
 
             <button
               onClick={() => setSelectedDay(null)}

@@ -106,10 +106,9 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         return [
           { id: 'dashboard', label: 'Dashboard', icon: Layers },
           { id: 'my-employees', label: 'My Employees', icon: Users },
-          { id: 'mapping', label: 'Team Mapping', icon: UserCheck },
-          { id: 'attendance', label: 'Attendance Records', icon: Clock },
+          { id: 'attendance', label: 'Daily Attendance Reports', icon: Clock },
           { id: 'corrections', label: 'Attendance Corrections', icon: Edit3 },
-          { id: 'calendar', label: 'Team Calendar', icon: Calendar },
+          { id: 'calendar', label: 'Calendar', icon: Calendar },
           { id: 'approvals', label: 'Leave Approvals', icon: Calendar },
           { id: 'live-map', label: 'Live Route & Map', icon: MapPin },
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
