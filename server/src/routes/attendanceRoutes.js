@@ -154,6 +154,14 @@ router.get('/calendar', verifyAuth, (req, res) => {
 
   const records = db.prepare(attQuery).all(...params);
 
+  let employeeCreatedAt = null;
+  if (employeeId) {
+    const emp = db.prepare('SELECT created_at FROM employees WHERE id = ?').get(employeeId);
+    if (emp && emp.created_at) {
+      employeeCreatedAt = String(emp.created_at).split('T')[0].split(' ')[0];
+    }
+  }
+
   res.json({
     year,
     month,
@@ -161,6 +169,7 @@ router.get('/calendar', verifyAuth, (req, res) => {
     offDays,
     isCustomWeeklyOff,
     weeklyOffName,
+    employeeCreatedAt,
     records
   });
 });

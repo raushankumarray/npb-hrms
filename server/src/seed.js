@@ -319,50 +319,12 @@ function seedDatabase() {
       insertLeaveBal.run(eId, ltPL.lastInsertRowid, currentYear, 10.0, 0.0, 1.0, 9.0);
     });
 
-    // Seed Initial Attendance Records for past dates
-    const insertAttendance = db.prepare(`
-      INSERT INTO attendance_records (
-        company_id, employee_id, date, punch_in_time, punch_out_time,
-        punch_in_lat, punch_in_lng, punch_in_location, punch_in_accuracy,
-        punch_out_lat, punch_out_lng, punch_out_location, punch_out_accuracy,
-        total_hours, status, shift_id, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    // Today & past few days
-    insertAttendance.run(
-      npbId, emp1.lastInsertRowid, '2026-09-06', '09:05:12', '18:10:45',
-      28.4951, 77.0891, 'NPB Cyber City Office', 12.5,
-      28.4952, 77.0890, 'NPB Cyber City Office', 10.0,
-      9.08, 'Present', shiftMorning.lastInsertRowid, 'Regular punch with GPS geofence'
-    );
-
-    insertAttendance.run(
-      npbId, emp2.lastInsertRowid, '2026-09-06', '09:15:00', '14:20:00',
-      28.4949, 77.0888, 'NPB Cyber City Office', 15.0,
-      28.4950, 77.0889, 'NPB Cyber City Office', 14.0,
-      5.08, 'Half Day', shiftMorning.lastInsertRowid, 'Approved half day'
-    );
-
-    // Device binding sample for emp1
-    db.prepare(`
-      INSERT INTO employee_devices (user_id, device_id, device_type, device_name, status, bound_ip)
-      VALUES (?, 'dev_fingerprint_npb101_chrome', 'Desktop Browser (Chrome/Windows)', 'Amit-Workstation', 'bound', '192.168.1.100')
-    `).run(emp1User.lastInsertRowid);
-
     // Initial Notifications
     const insertNotif = db.prepare('INSERT INTO notifications (user_id, company_id, title, message, type, link) VALUES (?, ?, ?, ?, ?, ?)');
     insertNotif.run(superAdminUser.lastInsertRowid, null, 'Welcome to NPB HRMS', 'System is active and operational. Zero payroll compliance enforced.', 'system', '/dashboard');
     insertNotif.run(compAdminUser.lastInsertRowid, npbId, 'Company Setup Complete', 'Company portal and geofences are initialized.', 'system', '/settings');
-    insertNotif.run(emp1User.lastInsertRowid, npbId, 'Device Registered', 'Your device dev_fingerprint_npb101_chrome is successfully bound.', 'device', '/profile');
 
-    // Sample Service Request / Ticket
-    db.prepare(`
-      INSERT INTO service_requests (
-        company_id, employee_id, request_type, title, description,
-        punch_date, suggested_punch_in, suggested_punch_out, status
-      ) VALUES (?, ?, 'missing_punch', 'Punch Out Missed Due to Network Glitch', 'Was working late on client release. Please record punch out at 19:30.', '2026-09-05', '09:00:00', '19:30:00', 'pending')
-    `).run(npbId, emp1.lastInsertRowid);
+    console.log('Seeding completed successfully with zero dummy attendance!');
 
     console.log('Seeding completed successfully!');
   });

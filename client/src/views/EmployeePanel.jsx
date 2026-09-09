@@ -267,10 +267,12 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
         if (activeTab === 'history' || activeTab === 'punch') {
           try {
             const calRes = await apiRequest(`/attendance/calendar?month=${filterMonth}&year=${filterYear}`);
+            const empCreatedDate = calRes.employeeCreatedAt || (user?.created_at ? user.created_at.split('T')[0] : null);
             setCalendarData({
               records: calRes.records || [],
               holidays: calRes.holidays || [],
-              offDays: calRes.offDays || ['Sunday']
+              offDays: calRes.offDays || ['Sunday'],
+              employeeCreatedAt: empCreatedDate
             });
             const daysInMonth = new Date(filterYear, filterMonth, 0).getDate();
             const dayNamesFull = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -306,8 +308,10 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                 hoCount++;
               } else if (isWO) {
                 woCount++;
-              } else if (dateStr <= todayStr) {
-                aCount++;
+              } else if (dateStr < todayStr) {
+                if (!empCreatedDate || dateStr >= empCreatedDate) {
+                  aCount++;
+                }
               }
             }
 
@@ -862,9 +866,18 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
       } else if (isWO) {
         status = 'Weekly Off';
         statusCode = 'WO';
-      } else if (dateStr <= todayStr) {
-        status = 'Absent';
-        statusCode = 'A';
+      } else if (dateStr < todayStr) {
+        const empCreatedDate = calendarData?.employeeCreatedAt || (user?.created_at ? user.created_at.split('T')[0] : null);
+        if (empCreatedDate && dateStr < empCreatedDate) {
+          status = 'Not Enrolled';
+          statusCode = '-';
+        } else {
+          status = 'Absent';
+          statusCode = 'A';
+        }
+      } else if (dateStr === todayStr) {
+        status = 'Not Marked';
+        statusCode = '-';
       } else {
         status = 'Upcoming';
         statusCode = '-';
