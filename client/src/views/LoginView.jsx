@@ -238,22 +238,9 @@ export default function LoginView({ onLoginSuccess }) {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-slate-300">
-                Password
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowForgotModal(true);
-                  setError('');
-                  setForgotMessage('');
-                }}
-                className="text-xs font-medium text-sky-400 hover:text-sky-300"
-              >
-                Forgot Password?
-              </button>
-            </div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">
+              Password
+            </label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                 <KeyRound className="w-5 h-5" />
