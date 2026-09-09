@@ -455,6 +455,166 @@ router.get('/list', verifyAuth, (req, res) => {
     limit = 10, offset = 0
   } = req.query;
 
+  const effectiveDate = date || day || (from_date && to_date && from_date === to_date ? from_date : null);
+
+  if (effectiveDate) {
+    // SINGLE DATE MODE (Today or specific date): Show ALL active assigned employees with resolved real-time status
+    let singleBaseQuery = `
+      FROM employees e
+      JOIN companies c ON e.company_id = c.id
+      LEFT JOIN shifts s ON e.shift_id = s.id
+      LEFT JOIN employees m ON e.manager_id = m.id
+      LEFT JOIN attendance_records a ON a.employee_id = e.id AND a.date = ?
+      LEFT JOIN leave_requests lr ON lr.employee_id = e.id AND lr.status = 'approved' AND ? BETWEEN lr.start_date AND lr.end_date
+      LEFT JOIN holidays hol ON hol.company_id = e.company_id AND hol.holiday_date = ?
+      WHERE e.is_deleted = 0 AND e.status = 'active'
+    `;
+    const singleParams = [effectiveDate, effectiveDate, effectiveDate];
+
+    if (companyId) {
+      singleBaseQuery += ' AND e.company_id = ?';
+      singleParams.push(companyId);
+    }
+
+    if (req.user.role_name === 'manager') {
+      singleBaseQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+      singleParams.push(req.user.employee_id, req.user.employee_id);
+    } else if (req.user.role_name === 'employee') {
+      singleBaseQuery += ' AND e.id = ?';
+      singleParams.push(req.user.employee_id);
+    }
+
+    if (employee_ids) {
+      const ids = String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      if (ids.length > 0) {
+        singleBaseQuery += ` AND e.id IN (${ids.map(() => '?').join(',')})`;
+        singleParams.push(...ids);
+      }
+    } else if (employee_id && employee_id !== 'all') {
+      singleBaseQuery += ' AND e.id = ?';
+      singleParams.push(parseInt(employee_id, 10));
+    }
+
+    if (department) {
+      singleBaseQuery += ' AND e.department = ?';
+      singleParams.push(department);
+    }
+
+    if (manager_id) {
+      singleBaseQuery += ' AND e.manager_id = ?';
+      singleParams.push(manager_id);
+    }
+
+    if (search) {
+      singleBaseQuery += ' AND (e.full_name LIKE ? OR e.employee_id LIKE ? OR a.remarks LIKE ?)';
+      singleParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    // Status expression for this date
+    const statusExpr = `
+      CASE 
+        WHEN a.status IS NOT NULL THEN a.status
+        WHEN lr.id IS NOT NULL THEN 'Leave'
+        WHEN hol.id IS NOT NULL THEN 'Holiday'
+        WHEN strftime('%w', ?) = '0' THEN 'Weekly Off'
+        ELSE 'Absent'
+      END
+    `;
+
+    // Filter by status if specified
+    if (status && status !== 'all') {
+      if (status === 'WO' || status === 'Weekly Off') {
+        singleBaseQuery += ` AND (${statusExpr} IN ('Weekly Off', 'WO'))`;
+        singleParams.push(effectiveDate);
+      } else if (status === 'HO' || status === 'Holiday') {
+        singleBaseQuery += ` AND (${statusExpr} IN ('Holiday', 'HO'))`;
+        singleParams.push(effectiveDate);
+      } else {
+        singleBaseQuery += ` AND (${statusExpr} = ?)`;
+        singleParams.push(effectiveDate, status);
+      }
+    }
+
+    const countQuery = `SELECT COUNT(*) as total ${singleBaseQuery}`;
+    const total = db.prepare(countQuery).get(...singleParams).total;
+
+    // Summary counts for fast header stats
+    const summaryQuery = `
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN (${statusExpr}) IN ('Present', 'Missing Punch Out') THEN 1 ELSE 0 END) as present,
+        SUM(CASE WHEN (${statusExpr}) = 'Absent' THEN 1 ELSE 0 END) as absent,
+        SUM(CASE WHEN (${statusExpr}) = 'Half Day' THEN 1 ELSE 0 END) as half_day,
+        SUM(CASE WHEN (${statusExpr}) IN ('Leave', 'Holiday', 'Weekly Off', 'WO', 'HO') THEN 1 ELSE 0 END) as leave
+      ${singleBaseQuery}
+    `;
+    const summary = db.prepare(summaryQuery).get(
+      effectiveDate, effectiveDate, effectiveDate, effectiveDate,
+      ...singleParams
+    );
+
+    const dataQuery = `
+      SELECT 
+        COALESCE(a.id, 0) as id,
+        e.id as employee_id,
+        e.employee_id as employee_code,
+        e.full_name as employee_name,
+        e.department,
+        e.designation,
+        c.name as company_name,
+        s.name as shift_name,
+        m.full_name as manager_name,
+        COALESCE(a.date, ?) as date,
+        a.punch_in_time,
+        a.punch_out_time,
+        a.punch_in_lat,
+        a.punch_in_lng,
+        a.punch_in_location,
+        a.punch_out_lat,
+        a.punch_out_lng,
+        a.punch_out_location,
+        a.total_hours,
+        (${statusExpr}) as status,
+        COALESCE(
+          a.remarks,
+          CASE
+            WHEN lr.id IS NOT NULL THEN 'On Approved Leave'
+            WHEN hol.id IS NOT NULL THEN 'Holiday: ' || hol.name
+            WHEN strftime('%w', ?) = '0' THEN 'Weekly Off'
+            ELSE 'Absent (No punch recorded)'
+          END
+        ) as remarks,
+        COALESCE(a.is_edited, 0) as is_edited
+      ${singleBaseQuery}
+      ORDER BY 
+        CASE WHEN a.punch_in_time IS NOT NULL THEN 0 ELSE 1 END,
+        e.full_name ASC
+      LIMIT ? OFFSET ?
+    `;
+
+    const records = db.prepare(dataQuery).all(
+      effectiveDate, effectiveDate, effectiveDate,
+      ...singleParams,
+      parseInt(limit, 10), parseInt(offset, 10)
+    );
+
+    const comp = companyId ? db.prepare('SELECT id, name, code FROM companies WHERE id = ?').get(companyId) : null;
+
+    return res.json({
+      records,
+      total,
+      summary: {
+        total: summary?.total || 0,
+        present: summary?.present || 0,
+        absent: summary?.absent || 0,
+        half_day: summary?.half_day || 0,
+        leave: summary?.leave || 0
+      },
+      company: comp
+    });
+  }
+
+  // MULTI-DATE / MONTH / ALL DATES MODE
   let baseQuery = `
     FROM attendance_records a
     JOIN employees e ON a.employee_id = e.id
@@ -474,13 +634,12 @@ router.get('/list', verifyAuth, (req, res) => {
   if (req.user.role_name === 'manager') {
     baseQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
     params.push(req.user.employee_id, req.user.employee_id);
-  }
-
-  // Employee restriction / filter
-  if (req.user.role_name === 'employee') {
+  } else if (req.user.role_name === 'employee') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(req.user.employee_id);
-  } else if (employee_ids) {
+  }
+
+  if (employee_ids) {
     const ids = String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
     if (ids.length > 0) {
       baseQuery += ` AND a.employee_id IN (${ids.map(() => '?').join(',')})`;
@@ -488,14 +647,10 @@ router.get('/list', verifyAuth, (req, res) => {
     }
   } else if (employee_id && employee_id !== 'all') {
     baseQuery += ' AND a.employee_id = ?';
-    params.push(employee_id);
+    params.push(parseInt(employee_id, 10));
   }
 
-  const effectiveDate = date || day;
-  if (effectiveDate) {
-    baseQuery += ' AND a.date = ?';
-    params.push(effectiveDate);
-  } else if (from_date && to_date) {
+  if (from_date && to_date) {
     baseQuery += ' AND a.date BETWEEN ? AND ?';
     params.push(from_date, to_date);
   } else if (from_date) {
@@ -508,6 +663,9 @@ router.get('/list', verifyAuth, (req, res) => {
     const mStr = String(month).padStart(2, '0');
     baseQuery += ' AND a.date LIKE ?';
     params.push(`${year}-${mStr}-%`);
+  } else if (month && typeof month === 'string' && month.includes('-')) {
+    baseQuery += ' AND a.date LIKE ?';
+    params.push(`${month}-%`);
   }
 
   if (department) {
@@ -543,10 +701,10 @@ router.get('/list', verifyAuth, (req, res) => {
   const summaryQuery = `
     SELECT
       COUNT(*) as total,
-      SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) as present,
+      SUM(CASE WHEN a.status IN ('Present', 'Missing Punch Out') THEN 1 ELSE 0 END) as present,
       SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) as absent,
       SUM(CASE WHEN a.status = 'Half Day' THEN 1 ELSE 0 END) as half_day,
-      SUM(CASE WHEN a.status IN ('Leave', 'Holiday', 'Weekly Off') THEN 1 ELSE 0 END) as leave
+      SUM(CASE WHEN a.status IN ('Leave', 'Holiday', 'Weekly Off', 'WO', 'HO') THEN 1 ELSE 0 END) as leave
     ${baseQuery}
   `;
   const summary = db.prepare(summaryQuery).get(...params);
@@ -568,11 +726,11 @@ router.get('/list', verifyAuth, (req, res) => {
     records,
     total,
     summary: {
-      total: summary.total || 0,
-      present: summary.present || 0,
-      absent: summary.absent || 0,
-      half_day: summary.half_day || 0,
-      leave: summary.leave || 0
+      total: summary?.total || 0,
+      present: summary?.present || 0,
+      absent: summary?.absent || 0,
+      half_day: summary?.half_day || 0,
+      leave: summary?.leave || 0
     },
     company: comp
   });
@@ -823,14 +981,175 @@ router.post('/export', verifyAuth, (req, res) => {
   const companyId = getTenantCompanyId(req);
   const {
     format = 'xlsx',
-    selected_columns = [
-      'Employee Name', 'Date', 'Punch In', 'GPS Lat/Long (Punch In)', 'Address (Punch In)',
-      'Punch Out', 'GPS Lat/Long (Punch Out)', 'Address (Punch Out)', 'Working Hours', 'Status'
-    ],
+    selected_columns,
     from_date, to_date, date, day, month, year,
     employee_id, employee_ids, department, manager_id, status, search
   } = req.body;
 
+  const defaultCols = [
+    'Employee Name', 'Employee ID', 'Date', 'Punch In', 'GPS Lat/Long (Punch In)', 'Address (Punch In)',
+    'Punch Out', 'GPS Lat/Long (Punch Out)', 'Address (Punch Out)', 'Working Hours', 'Status', 'Remarks'
+  ];
+  const activeCols = (selected_columns && selected_columns.length > 0) ? selected_columns : defaultCols;
+
+  const effectiveDate = date || day || (from_date && to_date && from_date === to_date ? from_date : null);
+
+  const company = companyId ? db.prepare('SELECT name FROM companies WHERE id = ?').get(companyId) : null;
+  const companyName = company ? company.name : 'NPB HRMS Attendance Management';
+  const { exportCustomExcel, exportHtmlReport } = require('../services/exportService');
+
+  if (effectiveDate) {
+    // SINGLE DATE MODE: Export ALL active employees (even if no punch row yet) with real-time resolved status
+    let singleBaseQuery = `
+      FROM employees e
+      JOIN companies c ON e.company_id = c.id
+      LEFT JOIN shifts s ON e.shift_id = s.id
+      LEFT JOIN employees m ON e.manager_id = m.id
+      LEFT JOIN attendance_records a ON a.employee_id = e.id AND a.date = ?
+      LEFT JOIN leave_requests lr ON lr.employee_id = e.id AND lr.status = 'approved' AND ? BETWEEN lr.start_date AND lr.end_date
+      LEFT JOIN holidays hol ON hol.company_id = e.company_id AND hol.holiday_date = ?
+      WHERE e.is_deleted = 0 AND e.status = 'active'
+    `;
+    const singleParams = [effectiveDate, effectiveDate, effectiveDate];
+
+    if (companyId) {
+      singleBaseQuery += ' AND e.company_id = ?';
+      singleParams.push(companyId);
+    }
+
+    if (req.user.role_name === 'manager') {
+      singleBaseQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+      singleParams.push(req.user.employee_id, req.user.employee_id);
+    } else if (req.user.role_name === 'employee') {
+      singleBaseQuery += ' AND e.id = ?';
+      singleParams.push(req.user.employee_id);
+    }
+
+    if (employee_ids) {
+      const ids = Array.isArray(employee_ids)
+        ? employee_ids.map(Number).filter(n => !isNaN(n))
+        : String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      if (ids.length > 0) {
+        singleBaseQuery += ` AND e.id IN (${ids.map(() => '?').join(',')})`;
+        singleParams.push(...ids);
+      }
+    } else if (employee_id && employee_id !== 'all') {
+      singleBaseQuery += ' AND e.id = ?';
+      singleParams.push(parseInt(employee_id, 10));
+    }
+
+    if (department) {
+      singleBaseQuery += ' AND e.department = ?';
+      singleParams.push(department);
+    }
+
+    if (manager_id) {
+      singleBaseQuery += ' AND e.manager_id = ?';
+      singleParams.push(manager_id);
+    }
+
+    if (search) {
+      singleBaseQuery += ' AND (e.full_name LIKE ? OR e.employee_id LIKE ? OR a.remarks LIKE ?)';
+      singleParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    const statusExpr = `
+      CASE 
+        WHEN a.status IS NOT NULL THEN a.status
+        WHEN lr.id IS NOT NULL THEN 'Leave'
+        WHEN hol.id IS NOT NULL THEN 'Holiday'
+        WHEN strftime('%w', ?) = '0' THEN 'Weekly Off'
+        ELSE 'Absent'
+      END
+    `;
+
+    if (status && status !== 'all') {
+      if (status === 'WO' || status === 'Weekly Off') {
+        singleBaseQuery += ` AND (${statusExpr} IN ('Weekly Off', 'WO'))`;
+        singleParams.push(effectiveDate);
+      } else if (status === 'HO' || status === 'Holiday') {
+        singleBaseQuery += ` AND (${statusExpr} IN ('Holiday', 'HO'))`;
+        singleParams.push(effectiveDate);
+      } else {
+        singleBaseQuery += ` AND (${statusExpr} = ?)`;
+        singleParams.push(effectiveDate, status);
+      }
+    }
+
+    const dataQuery = `
+      SELECT
+        e.full_name as "Employee Name",
+        e.employee_id as "Employee ID",
+        COALESCE(a.date, ?) as "Date",
+        COALESCE(a.punch_in_time, '-') as "Punch In",
+        CASE WHEN a.punch_in_lat IS NOT NULL AND a.punch_in_lng IS NOT NULL 
+             THEN (ROUND(a.punch_in_lat, 4) || ', ' || ROUND(a.punch_in_lng, 4)) 
+             ELSE '-' END as "GPS Lat/Long (Punch In)",
+        COALESCE(a.punch_in_location, '-') as "Address (Punch In)",
+        COALESCE(a.punch_out_time, '-') as "Punch Out",
+        CASE WHEN a.punch_out_lat IS NOT NULL AND a.punch_out_lng IS NOT NULL 
+             THEN (ROUND(a.punch_out_lat, 4) || ', ' || ROUND(a.punch_out_lng, 4)) 
+             ELSE '-' END as "GPS Lat/Long (Punch Out)",
+        COALESCE(a.punch_out_location, '-') as "Address (Punch Out)",
+        CASE WHEN a.total_hours IS NOT NULL THEN (a.total_hours || ' hrs') ELSE '0 hrs' END as "Working Hours",
+        (${statusExpr}) as "Status",
+        COALESCE(
+          a.remarks,
+          CASE
+            WHEN lr.id IS NOT NULL THEN 'On Approved Leave'
+            WHEN hol.id IS NOT NULL THEN 'Holiday: ' || hol.name
+            WHEN strftime('%w', ?) = '0' THEN 'Weekly Off'
+            ELSE 'Absent (No punch recorded)'
+          END
+        ) as "Remarks",
+        COALESCE(e.department, '') as "Department",
+        COALESCE(s.name, 'General') as "Shift"
+      ${singleBaseQuery}
+      ORDER BY 
+        CASE WHEN a.punch_in_time IS NOT NULL THEN 0 ELSE 1 END,
+        e.full_name ASC
+    `;
+
+    const rows = db.prepare(dataQuery).all(
+      effectiveDate, effectiveDate, effectiveDate,
+      ...singleParams
+    );
+
+    const dateRangeLabel = `Date: ${effectiveDate} (Daily Master)`;
+
+    if (format === 'xlsx' || format === 'excel') {
+      const excelBuffer = exportCustomExcel({
+        data: rows,
+        selectedColumns: activeCols,
+        sheetName: 'Daily Attendance',
+        companyName,
+        reportTitle: `Daily Attendance Report - All Team Staff (${effectiveDate})`,
+        dateRange: dateRangeLabel,
+        totalRecords: rows.length
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="Daily_Attendance_${effectiveDate}_${Date.now()}.xlsx"`);
+      return res.send(excelBuffer);
+    } else if (format === 'pdf' || format === 'html') {
+      const htmlReport = exportHtmlReport({
+        data: rows,
+        selectedColumns: activeCols,
+        title: `Daily Attendance Report - All Team Staff (${effectiveDate})`,
+        companyName,
+        dateRange: dateRangeLabel,
+        totalRecords: rows.length,
+        generatedBy: req.user.username
+      });
+
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(htmlReport);
+    }
+
+    return res.status(400).json({ error: 'Unsupported format.' });
+  }
+
+  // MULTI-DATE / MONTH / ALL DATES MODE
   let baseQuery = `
     FROM attendance_records a
     JOIN employees e ON a.employee_id = e.id
@@ -864,16 +1183,11 @@ router.post('/export', verifyAuth, (req, res) => {
     }
   } else if (employee_id && employee_id !== 'all') {
     baseQuery += ' AND a.employee_id = ?';
-    params.push(employee_id);
+    params.push(parseInt(employee_id, 10));
   }
 
-  const effectiveDate = date || day;
   let dateRangeLabel = 'All Recorded Dates';
-  if (effectiveDate) {
-    baseQuery += ' AND a.date = ?';
-    params.push(effectiveDate);
-    dateRangeLabel = `Date: ${effectiveDate}`;
-  } else if (from_date && to_date) {
+  if (from_date && to_date) {
     baseQuery += ' AND a.date BETWEEN ? AND ?';
     params.push(from_date, to_date);
     dateRangeLabel = `Period: ${from_date} to ${to_date}`;
@@ -890,6 +1204,10 @@ router.post('/export', verifyAuth, (req, res) => {
     baseQuery += ' AND a.date LIKE ?';
     params.push(`${year}-${mStr}-%`);
     dateRangeLabel = `Month: ${year}-${mStr}`;
+  } else if (month && typeof month === 'string' && month.includes('-')) {
+    baseQuery += ' AND a.date LIKE ?';
+    params.push(`${month}-%`);
+    dateRangeLabel = `Month: ${month}`;
   }
 
   if (department) {
@@ -943,15 +1261,11 @@ router.post('/export', verifyAuth, (req, res) => {
   `;
 
   const rows = db.prepare(dataQuery).all(...params);
-  const company = companyId ? db.prepare('SELECT name FROM companies WHERE id = ?').get(companyId) : null;
-  const companyName = company ? company.name : 'NPB HRMS Attendance Management';
-
-  const { exportCustomExcel, exportHtmlReport } = require('../services/exportService');
 
   if (format === 'xlsx' || format === 'excel') {
     const excelBuffer = exportCustomExcel({
       data: rows,
-      selectedColumns: selected_columns,
+      selectedColumns: activeCols,
       sheetName: 'Attendance',
       companyName,
       reportTitle: 'Employee Daily Attendance Record (Day-wise)',
@@ -965,7 +1279,7 @@ router.post('/export', verifyAuth, (req, res) => {
   } else if (format === 'pdf' || format === 'html') {
     const htmlReport = exportHtmlReport({
       data: rows,
-      selectedColumns: selected_columns,
+      selectedColumns: activeCols,
       title: 'Employee Daily Attendance Record (Day-wise)',
       companyName,
       dateRange: dateRangeLabel,
