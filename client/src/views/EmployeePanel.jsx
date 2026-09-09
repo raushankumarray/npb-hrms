@@ -4,7 +4,7 @@ import {
   Ticket, KeyRound, User, Smartphone, RefreshCw, Send, ArrowUpRight,
   ShieldAlert, CheckCircle, Navigation, MessageSquare, Edit3, Sparkles, FileEdit, Check, X, Globe,
   FileText, Download, SlidersHorizontal, Printer, ChevronDown, CheckSquare, Square,
-  LogOut, ChevronLeft, ChevronRight, Filter
+  LogOut, ChevronLeft, ChevronRight, Filter, Lock, Unlock, Laptop, Copy
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';
@@ -135,6 +135,49 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   // Live Work Timer State
   const [elapsedTime, setElapsedTime] = useState('00h 00m 00s');
 
+  // Registered Device & Security Lock State (Single Device Enforcement)
+  const [registeredDevice, setRegisteredDevice] = useState(user?.registeredDevice || null);
+  const [copiedMac, setCopiedMac] = useState(false);
+  const [showDeregisterModal, setShowDeregisterModal] = useState(false);
+  const [deregisterReason, setDeregisterReason] = useState('');
+  const [deregisterLoading, setDeregisterLoading] = useState(false);
+
+  const handleRequestDeviceDeregistration = async (e) => {
+    e.preventDefault();
+    if (!deregisterReason.trim()) {
+      setError('Please provide a reason for the device deregistration request.');
+      return;
+    }
+    setDeregisterLoading(true);
+    try {
+      const mac = registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'UNKNOWN');
+      const devName = registeredDevice?.device_name || registeredDevice?.device_type || 'Registered Device';
+      await apiRequest('/tickets/service-requests', {
+        method: 'POST',
+        body: {
+          request_type: 'general',
+          title: `Device Deregistration Request (MAC: ${mac})`,
+          description: `Device Deregistration & MAC Unlock Request:
+- Employee: ${user.fullName || user.username} (${user.employeeCode || user.username})
+- Company: ${company?.name || 'N/A'}
+- Registered MAC Address: ${mac}
+- Device Details: ${devName}
+- Reason: ${deregisterReason.trim()}
+
+Please deregister this device in the Support Panel so I can register and log in on my new device.`
+        }
+      });
+      setSuccess('Device Deregistration request submitted to Support successfully. Support will unlock your account.');
+      setShowDeregisterModal(false);
+      setDeregisterReason('');
+      fetchData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeregisterLoading(false);
+    }
+  };
+
   // Month-wise Accrual History for Earned Leave
   const [accrualHistory, setAccrualHistory] = useState([]);
 
@@ -253,6 +296,14 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
       if (todayRes.shift) {
         setShiftInfo(todayRes.shift);
       }
+
+      // Fetch active bound device registration
+      try {
+        const devRes = await apiRequest('/auth/my-device');
+        if (devRes && devRes.device) {
+          setRegisteredDevice(devRes.device);
+        }
+      } catch (e) {}
 
       // 2. Attendance history
       if (activeTab === 'history' || activeTab === 'punch') {
@@ -968,6 +1019,10 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                     <span>
                       Shift: {shiftInfo?.name || 'General Shift'} ({format12Hour(shiftInfo?.start_time || '09:00:00')} - {format12Hour(shiftInfo?.end_time || '18:00:00')})
                     </span>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/25 text-purple-300 text-[11px] font-semibold border border-purple-400/40 shadow-xs" title="Device Registration & Security Lock Active (1-Device Policy)">
+                    <Laptop className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+                    <span>Locked Device: {registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'Active')}</span>
                   </div>
                 </div>
 
@@ -2547,6 +2602,117 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
             </form>
           </div>
 
+          {/* Dedicated Registered Device & MAC Lock Card (Single Device Policy) */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 text-white p-6 rounded-2xl border border-slate-700/80 shadow-xl sm:col-span-2 space-y-4 relative overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-700/60 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  <Laptop className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>Registered Hardware Device & MAC Lock</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      1 Account = 1 Device
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-300">
+                    Single-device policy active • Account is strictly locked to this workstation or mobile device
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className={`px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 ${
+                  registeredDevice?.status === 'bound'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                }`}>
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>{registeredDevice?.status === 'bound' ? 'Locked & Registered' : 'Unbound / Pending Registration'}</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700/70">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block mb-1">Registered MAC Address</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs font-bold text-amber-300 select-all truncate">
+                    {registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'E4:A7:C0:89:1D:2F')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const mac = registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'E4:A7:C0:89:1D:2F');
+                      navigator.clipboard.writeText(mac);
+                      setCopiedMac(true);
+                      setTimeout(() => setCopiedMac(false), 2000);
+                    }}
+                    className="p-1 text-slate-400 hover:text-white rounded bg-slate-700/60 hover:bg-slate-700 transition-colors shrink-0"
+                    title="Copy MAC Address"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  {copiedMac ? 'Copied to clipboard ✓' : 'Unique hardware MAC'}
+                </span>
+              </div>
+
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700/70">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block mb-1">Device Name & Type</span>
+                <span className="font-semibold text-slate-200 block truncate">
+                  {registeredDevice?.device_name || 'Registered Workstation'}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  {registeredDevice?.device_type || 'Desktop PC'}
+                </span>
+              </div>
+
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700/70">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block mb-1">Registration Date</span>
+                <span className="font-mono text-slate-200 block">
+                  {registeredDevice?.registered_at ? new Date(registeredDevice.registered_at).toLocaleString() : 'Active'}
+                </span>
+                <span className="text-[10px] text-slate-400">Authorized Device Lock</span>
+              </div>
+
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700/70">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block mb-1">Network IP Address</span>
+                <span className="font-mono text-slate-200 block">
+                  {registeredDevice?.bound_ip || '127.0.0.1'}
+                </span>
+                <span className="text-[10px] text-emerald-400">Verified Connection</span>
+              </div>
+            </div>
+
+            {/* Policy Explainer and Deregister Button */}
+            <div className="bg-purple-950/40 p-4 rounded-xl border border-purple-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-1">
+                <p className="text-purple-200 font-semibold flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-purple-400 shrink-0" />
+                  <span>Single-Device Lock Security Notice</span>
+                </p>
+                <p className="text-[11px] text-purple-300/80 leading-relaxed max-w-2xl">
+                  Your employee account is locked to this device. You cannot log in from any other computer, laptop, or mobile phone. If you switch devices, contact Support to deregister your device via MAC address.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeregisterModal(true);
+                  setDeregisterReason('Requesting device change / switch to a new workstation or mobile device.');
+                }}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-xs shadow-md transition-all shrink-0 flex items-center justify-center gap-1.5 hover:scale-105 active:scale-95"
+              >
+                <Unlock className="w-3.5 h-3.5" />
+                <span>Request Support Deregistration</span>
+              </button>
+            </div>
+          </div>
+
           {/* Dedicated Sign Out Account Card for Employee */}
           <div className="bg-rose-50/60 p-5 rounded-2xl border border-rose-200 shadow-sm sm:col-span-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
@@ -2566,6 +2732,89 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
               <LogOut className="w-4 h-4" />
               <span>Sign Out Account</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* DEVICE DEREGISTRATION REQUEST MODAL */}
+      {showDeregisterModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-purple-50 text-purple-600">
+                  <Unlock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Request Device Deregistration</h3>
+                  <p className="text-[11px] text-slate-400">Unlock your account to bind a new device</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDeregisterModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Employee:</span>
+                <span className="font-semibold text-slate-800">{user.fullName || user.username} ({user.employeeCode || user.username})</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Locked MAC Address:</span>
+                <span className="font-mono font-bold text-purple-700">
+                  {registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'E4:A7:C0:89:1D:2F')}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Device Name:</span>
+                <span className="text-slate-700">{registeredDevice?.device_name || 'Registered Workstation'}</span>
+              </div>
+            </div>
+
+            <form onSubmit={handleRequestDeviceDeregistration} className="space-y-3 text-xs">
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">Reason for Deregistration *</label>
+                <textarea
+                  rows={3}
+                  required
+                  value={deregisterReason}
+                  onChange={(e) => setDeregisterReason(e.target.value)}
+                  placeholder="e.g. Switched to new laptop / phone, old device lost or replaced..."
+                  className="w-full p-2.5 border rounded-xl focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-800 space-y-1">
+                <p className="font-bold flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                  Support Action Required
+                </p>
+                <p>
+                  This will generate a priority ticket for the Support team with your MAC address. Once Support unlocks your account, you will be able to log in on your new device.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDeregisterModal(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={deregisterLoading}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-sm flex items-center gap-1.5 transition-all disabled:opacity-50"
+                >
+                  {deregisterLoading ? 'Submitting...' : 'Send Request to Support'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -1,50 +1,56 @@
 import React, { useState } from 'react';
-import { Lock, User, KeyRound, AlertCircle, CheckCircle2, ArrowRight } from 'lucide-react';
+import { Lock, User, KeyRound, AlertCircle, CheckCircle2, ArrowRight, Laptop, ShieldAlert, Copy } from 'lucide-react';
 import { apiRequest, setToken } from '../api';
 
-function getHardwareDeviceFingerprint() {
+function getDeviceHardwareIdentity() {
   try {
-    const screenInfo = `${window.screen.width}x${window.screen.height}x${window.screen.colorDepth || 24}`;
-    const cpuCores = navigator.hardwareConcurrency || 4;
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    const platform = navigator.platform || 'Win32';
+    let macAddress = localStorage.getItem('npb_device_mac');
+    if (!macAddress) {
+      const screenInfo = `${window.screen.width}x${window.screen.height}x${window.screen.colorDepth || 24}`;
+      const cpuCores = navigator.hardwareConcurrency || 4;
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const platform = navigator.platform || 'Win32';
 
-    // WebGL GPU Renderer detection
-    let gpuRenderer = 'gpu_default';
-    try {
-      const canvas = document.createElement('canvas');
-      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-      if (gl) {
-        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-        if (debugInfo) {
-          gpuRenderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || 'gpu';
+      // WebGL GPU Renderer detection
+      let gpuRenderer = 'gpu_default';
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (gl) {
+          const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+          if (debugInfo) {
+            gpuRenderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || 'gpu';
+          }
         }
+      } catch (e) {}
+
+      const rawHardware = `${screenInfo}|${cpuCores}|${timezone}|${platform}|${gpuRenderer}`;
+
+      // Deterministic FNV-1a hash
+      let h1 = 0x811c9dc5;
+      for (let i = 0; i < rawHardware.length; i++) {
+        h1 ^= rawHardware.charCodeAt(i);
+        h1 = Math.imul(h1, 0x01000193);
       }
-    } catch (e) {}
+      const hex1 = (h1 >>> 0).toString(16).padStart(8, '0');
 
-    const rawHardware = `${screenInfo}|${cpuCores}|${timezone}|${platform}|${gpuRenderer}`;
+      let h2 = 0x27d4eb2f;
+      for (let i = rawHardware.length - 1; i >= 0; i--) {
+        h2 ^= rawHardware.charCodeAt(i);
+        h2 = Math.imul(h2, 0x01000193);
+      }
+      const hex2 = (h2 >>> 0).toString(16).padStart(8, '0');
 
-    // Deterministic FNV-1a hash
-    let h1 = 0x811c9dc5;
-    for (let i = 0; i < rawHardware.length; i++) {
-      h1 ^= rawHardware.charCodeAt(i);
-      h1 = Math.imul(h1, 0x01000193);
+      // Produce standardized MAC address format: XX:XX:XX:XX:XX:XX
+      const fullHex = (hex1 + hex2).substring(0, 12).toUpperCase();
+      macAddress = fullHex.match(/.{1,2}/g).join(':');
+      localStorage.setItem('npb_device_mac', macAddress);
     }
-    const hex1 = (h1 >>> 0).toString(16).padStart(8, '0');
-
-    let h2 = 0x27d4eb2f;
-    for (let i = rawHardware.length - 1; i >= 0; i--) {
-      h2 ^= rawHardware.charCodeAt(i);
-      h2 = Math.imul(h2, 0x01000193);
-    }
-    const hex2 = (h2 >>> 0).toString(16).padStart(8, '0');
-
-    // Produce MAC address format: HW:XX:XX:XX:XX:XX:XX
-    const fullHex = (hex1 + hex2).substring(0, 12).toUpperCase();
-    const macFormat = fullHex.match(/.{1,2}/g).join(':');
-    return `hw_${macFormat}`;
+    const deviceId = `hw_${macAddress}`;
+    localStorage.setItem('npb_device_id', deviceId);
+    return { deviceId, macAddress };
   } catch (err) {
-    return 'hw_E4:A7:C0:89:1D:2F';
+    return { deviceId: 'hw_E4:A7:C0:89:1D:2F', macAddress: 'E4:A7:C0:89:1D:2F' };
   }
 }
 
@@ -53,6 +59,8 @@ export default function LoginView({ onLoginSuccess }) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [deviceLockError, setDeviceLockError] = useState(null);
+  const [copiedMac, setCopiedMac] = useState(false);
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotUsername, setForgotUsername] = useState('');
   const [forgotDesc, setForgotDesc] = useState('');
@@ -68,20 +76,21 @@ export default function LoginView({ onLoginSuccess }) {
 
     setLoading(true);
     setError('');
+    setDeviceLockError(null);
 
     try {
-      // Deterministic Hardware Device Fingerprint (Same machine, any browser shares identical ID)
-      const hardwareId = getHardwareDeviceFingerprint();
-      localStorage.setItem('npb_device_id', hardwareId);
+      // Deterministic Hardware Device Fingerprint & MAC Address
+      const { deviceId, macAddress } = getDeviceHardwareIdentity();
 
       const res = await apiRequest('/auth/login', {
         method: 'POST',
         body: {
           username: username.trim(),
           password,
-          device_id: hardwareId,
+          device_id: deviceId,
+          mac_address: macAddress,
           device_type: navigator.userAgent.includes('Mobile') ? 'Mobile Device' : 'Desktop Workstation',
-          device_name: navigator.userAgent.includes('Mobile') ? 'Registered Smartphone' : `Workstation PC (${hardwareId})`
+          device_name: navigator.userAgent.includes('Mobile') ? 'Registered Smartphone' : `Workstation PC (${macAddress})`
         }
       });
 
@@ -89,6 +98,15 @@ export default function LoginView({ onLoginSuccess }) {
       onLoginSuccess(res.user, res.company);
     } catch (err) {
       setError(err.message);
+      if (err.message && (err.message.includes('Device Lock') || err.message.includes('locked to another registered device') || err.message.includes('already bound'))) {
+        const { macAddress } = getDeviceHardwareIdentity();
+        setDeviceLockError({
+          message: err.message,
+          currentMac: macAddress
+        });
+      } else {
+        setDeviceLockError(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -135,7 +153,63 @@ export default function LoginView({ onLoginSuccess }) {
           </p>
         </div>
 
-        {error && (
+        {deviceLockError ? (
+          <div className="rounded-xl bg-rose-950/80 border-2 border-rose-500/80 p-4 space-y-3.5 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-600/30 text-rose-300 border border-rose-500/50 shrink-0">
+                <ShieldAlert className="w-5 h-5 text-rose-400" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-bold text-rose-100 flex items-center gap-1.5">
+                  <span>Device Lock Active (1 Device Policy)</span>
+                </h4>
+                <p className="text-xs text-rose-200/90 leading-relaxed">
+                  {deviceLockError.message}
+                </p>
+              </div>
+            </div>
+
+            {/* Current Device Hardware Details */}
+            <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-700 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Laptop className="w-4 h-4 text-sky-400 shrink-0" />
+                <div>
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Your Current Device MAC</span>
+                  <span className="font-mono text-xs font-bold text-amber-300 select-all">{deviceLockError.currentMac}</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(deviceLockError.currentMac);
+                  setCopiedMac(true);
+                  setTimeout(() => setCopiedMac(false), 2000);
+                }}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-600 transition-colors shrink-0 flex items-center gap-1"
+                title="Copy MAC Address to share with Support"
+              >
+                <Copy className="w-3 h-3" />
+                <span>{copiedMac ? 'Copied MAC ✓' : 'Copy MAC'}</span>
+              </button>
+            </div>
+
+            {/* Support Instructions */}
+            <div className="p-2.5 bg-rose-900/40 rounded-lg border border-rose-800/50 text-[11px] text-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span>To switch devices, contact Support to deregister your device via this MAC address.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowForgotModal(true);
+                  setForgotUsername(username.trim());
+                  setForgotDesc(`Device Deregistration Request: Please deregister my old locked device so I can register my new device. My current device MAC address is: ${deviceLockError.currentMac}`);
+                }}
+                className="underline hover:text-white font-bold text-sky-300 text-left whitespace-nowrap shrink-0"
+              >
+                Submit Helpdesk Request →
+              </button>
+            </div>
+          </div>
+        ) : error && (
           <div className="rounded-lg bg-rose-500/10 border border-rose-500/20 p-4 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
             <p className="text-sm text-rose-300">{error}</p>

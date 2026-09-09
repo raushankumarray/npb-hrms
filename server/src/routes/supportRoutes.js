@@ -253,8 +253,8 @@ router.delete('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res)
   res.json({ success: true, message: `Support account "${currentSupport.username}" deleted successfully.` });
 });
 
-// Unbind Device (Support Level 3+ or Super Admin)
-router.post('/unbind-device', verifyAuth, requireSupportLevel(3), (req, res) => {
+// Deregister & Unbind Device (Support Level 1+ or Super Admin)
+router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => {
   const { user_id, reason } = req.body;
 
   if (!user_id) {
@@ -267,7 +267,7 @@ router.post('/unbind-device', verifyAuth, requireSupportLevel(3), (req, res) => 
     authorizedUserId: req.user.id,
     authorizerName: req.user.username,
     authorizerRole: req.user.role_name,
-    reason: reason || 'Support unlocked device registration',
+    reason: reason || 'Support deregistered device via MAC address lock',
     ipAddress
   });
 
@@ -276,10 +276,12 @@ router.post('/unbind-device', verifyAuth, requireSupportLevel(3), (req, res) => 
   }
 
   // Create notification for employee
-  db.prepare(`
-    INSERT INTO notifications (user_id, title, message, type)
-    VALUES (?, 'Device Unbound', 'Your device binding has been reset by Support. You can now log in from your new device.', 'device')
-  `).run(user_id);
+  try {
+    db.prepare(`
+      INSERT INTO notifications (user_id, title, message, type)
+      VALUES (?, 'Device Deregistered', 'Your device registration and MAC lock have been reset by Support. You can now log in and register your new device.', 'device')
+    `).run(user_id);
+  } catch (e) {}
 
   res.json({ success: true, message: result.message });
 });
@@ -304,8 +306,8 @@ router.get('/devices', verifyAuth, requireSupportLevel(1), (req, res) => {
   }
 
   if (search) {
-    query += ' AND (u.username LIKE ? OR e.full_name LIKE ? OR e.employee_id LIKE ? OR d.device_id LIKE ?)';
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    query += ' AND (u.username LIKE ? OR e.full_name LIKE ? OR e.employee_id LIKE ? OR d.device_id LIKE ? OR d.mac_address LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
   }
 
   query += ' ORDER BY d.last_login_at DESC LIMIT 100';

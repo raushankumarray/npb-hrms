@@ -8,7 +8,7 @@ const { logAudit } = require('../services/audit');
 
 // Unified generic Login endpoint for ALL user roles
 router.post('/login', (req, res) => {
-  const { username, password, device_id, device_type, device_name } = req.body;
+  const { username, password, device_id, mac_address, device_type, device_name } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required.' });
@@ -77,6 +77,7 @@ router.post('/login', (req, res) => {
     userId: user.id,
     roleName: user.role_name,
     deviceId: device_id,
+    macAddress: mac_address,
     deviceType: device_type,
     deviceName: device_name,
     ipAddress
@@ -85,7 +86,9 @@ router.post('/login', (req, res) => {
   if (!deviceCheck.allowed) {
     return res.status(403).json({
       error: deviceCheck.message,
-      code: 'DEVICE_BOUND_ANOTHER'
+      code: 'DEVICE_BOUND_ANOTHER',
+      registeredDevice: deviceCheck.registeredDevice,
+      currentDevice: deviceCheck.currentDevice
     });
   }
 
@@ -109,6 +112,11 @@ router.post('/login', (req, res) => {
     ipAddress
   });
 
+  let boundDevice = null;
+  if (user.role_name === 'employee') {
+    boundDevice = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(user.id) || null;
+  }
+
   res.json({
     token,
     user: {
@@ -120,7 +128,8 @@ router.post('/login', (req, res) => {
       companyId: user.company_id,
       employeeId: user.employee_id,
       employeeCode: user.employee_code,
-      fullName: user.full_name || (user.role_name === 'super_admin' ? 'Super Admin' : user.username)
+      fullName: user.full_name || (user.role_name === 'super_admin' ? 'Super Admin' : user.username),
+      registeredDevice: boundDevice
     },
     company: companyInfo
   });
@@ -148,6 +157,11 @@ router.get('/me', verifyAuth, (req, res) => {
     };
   }
 
+  let boundDevice = null;
+  if (req.user.role_name === 'employee') {
+    boundDevice = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(req.user.id) || null;
+  }
+
   res.json({
     user: {
       id: req.user.id,
@@ -162,10 +176,17 @@ router.get('/me', verifyAuth, (req, res) => {
       employeeCode: req.user.employee_code,
       department: req.user.department || '',
       designation: req.user.designation || '',
-      fullName: req.user.full_name || (req.user.role_name === 'super_admin' ? 'Super Admin' : req.user.username)
+      fullName: req.user.full_name || (req.user.role_name === 'super_admin' ? 'Super Admin' : req.user.username),
+      registeredDevice: boundDevice
     },
     company: companyInfo
   });
+});
+
+// Retrieve active employee's registered device details
+router.get('/my-device', verifyAuth, (req, res) => {
+  const device = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(req.user.id);
+  res.json({ device: device || null });
 });
 
 // Universal Profile Update for All User Roles (Super Admin, Support, Company Admin, HR, Manager, Employee)

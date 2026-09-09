@@ -19,4 +19,8 @@ try {
   db.prepare("ALTER TABLE company_settings ADD COLUMN geofence_policy TEXT DEFAULT 'strict'").run();
 } catch (e) {}
 
+try {
+  db.prepare("ALTER TABLE employee_devices ADD COLUMN mac_address TEXT").run();
+} catch (e) {}
+
 module.exports = db;

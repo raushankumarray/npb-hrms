@@ -295,6 +295,7 @@ CREATE TABLE IF NOT EXISTS employee_devices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER UNIQUE NOT NULL,
   device_id TEXT NOT NULL, -- Browser fingerprint or mobile hardware ID
+  mac_address TEXT, -- Hardware MAC address or unique device MAC signature
   device_type TEXT,
   device_name TEXT,
   registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,

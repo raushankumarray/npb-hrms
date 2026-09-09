@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Shield, Laptop, Ticket, Clock, CheckCircle, AlertTriangle,
-  RefreshCw, Unlock, Edit3, Search, MessageSquare, CheckCheck, X, Building2
+  RefreshCw, Unlock, Edit3, Search, MessageSquare, CheckCheck, X, Building2, Copy, Lock
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';
@@ -249,7 +249,7 @@ export default function SupportPanel({ user, activeTab }) {
               <p className="text-[11px] text-slate-400">1 Account = 1 Device Rule Enforcement</p>
             </div>
             <span className="text-xs text-purple-700 bg-purple-50 px-2.5 py-1 rounded-lg font-semibold">
-              Requires Level 3 to Unlock
+              Single-Device Lock Active
             </span>
           </div>
 
@@ -260,6 +260,7 @@ export default function SupportPanel({ user, activeTab }) {
                   <th className="p-3">Employee</th>
                   <th className="p-3">Company</th>
                   <th className="p-3">Device Name & Type</th>
+                  <th className="p-3">Locked MAC Address</th>
                   <th className="p-3">Device Fingerprint</th>
                   <th className="p-3">Last Login IP</th>
                   <th className="p-3">Status</th>
@@ -269,33 +270,36 @@ export default function SupportPanel({ user, activeTab }) {
               <tbody className="divide-y divide-slate-100">
                 {devices.map(d => (
                   <tr key={d.id} className="hover:bg-slate-50/50">
-                    <td className="p-3 font-semibold text-slate-900">{d.full_name || d.username}</td>
+                    <td className="p-3 font-semibold text-slate-900">{d.full_name || d.username} {d.employee_code ? `(${d.employee_code})` : ''}</td>
                     <td className="p-3 text-slate-600">{d.company_name || 'N/A'}</td>
                     <td className="p-3 text-slate-700">{d.device_name || d.device_type}</td>
-                    <td className="p-3 font-mono text-purple-600 truncate max-w-[140px]">{d.device_id}</td>
+                    <td className="p-3">
+                      <span className="font-mono text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 font-bold select-all">
+                        {d.mac_address || (d.device_id && d.device_id.startsWith('hw_') ? d.device_id.replace('hw_', '') : d.device_id)}
+                      </span>
+                    </td>
+                    <td className="p-3 font-mono text-slate-500 truncate max-w-[120px]" title={d.device_id}>{d.device_id}</td>
                     <td className="p-3 text-slate-500">{d.bound_ip || '-'}</td>
                     <td className="p-3">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                         d.status === 'bound' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
                       }`}>
-                        {d.status}
+                        {d.status === 'bound' ? 'Locked' : 'Unbound'}
                       </span>
                     </td>
                     <td className="p-3 text-right">
                       {d.status === 'bound' && (
                         <button
                           onClick={() => {
-                            if (pLevel < 3) {
-                              setError('Insufficient permissions: Level 3 Advanced Support is required to unbind devices.');
-                              return;
-                            }
                             setSelectedDevice(d);
+                            setUnbindReason('Employee requested device change / reset to register new device.');
                             setShowUnbindModal(true);
                           }}
-                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-semibold flex items-center gap-1 ml-auto"
+                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-semibold flex items-center gap-1 ml-auto border border-purple-200 shadow-xs hover:scale-105 active:scale-95 transition-all"
+                          title="Deregister device to allow employee to register a new device"
                         >
                           <Unlock className="w-3.5 h-3.5" />
-                          Unbind / Unlock
+                          Deregister Device
                         </button>
                       )}
                     </td>
@@ -464,19 +468,39 @@ export default function SupportPanel({ user, activeTab }) {
         <UnifiedCalendar role="support" />
       )}
 
-      {/* UNBIND MODAL */}
+      {/* DEREGISTER DEVICE MODAL */}
       {showUnbindModal && selectedDevice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
               <Unlock className="w-5 h-5 text-purple-600" />
-              Unlock / Unbind Registered Device
+              Deregister Employee Device (Unlock Account)
             </h3>
 
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
-              <p><span className="font-semibold text-slate-700">User:</span> {selectedDevice.full_name || selectedDevice.username}</p>
-              <p><span className="font-semibold text-slate-700">Registered Fingerprint:</span> {selectedDevice.device_id}</p>
-              <p><span className="font-semibold text-slate-700">Device:</span> {selectedDevice.device_name || selectedDevice.device_type}</p>
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs space-y-2">
+              <div className="flex justify-between">
+                <span className="font-semibold text-slate-600">Employee:</span>
+                <span className="font-bold text-slate-900">{selectedDevice.full_name || selectedDevice.username} {selectedDevice.employee_code ? `(${selectedDevice.employee_code})` : ''}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="font-semibold text-slate-600">Company:</span>
+                <span className="text-slate-800">{selectedDevice.company_name || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="font-semibold text-slate-600">Locked MAC Address:</span>
+                <span className="font-mono font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded border border-purple-200">
+                  {selectedDevice.mac_address || (selectedDevice.device_id && selectedDevice.device_id.startsWith('hw_') ? selectedDevice.device_id.replace('hw_', '') : selectedDevice.device_id)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="font-semibold text-slate-600">Device Details:</span>
+                <span className="text-slate-700">{selectedDevice.device_name || selectedDevice.device_type}</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-800">
+              <p className="font-bold mb-0.5">Device Unlock Confirmation:</p>
+              Deregistering this device will remove the single-device lock. On their next login attempt, the new device and its MAC address will automatically be registered and locked to this employee account.
             </div>
 
             <div>
@@ -488,7 +512,7 @@ export default function SupportPanel({ user, activeTab }) {
                 required
                 value={unbindReason}
                 onChange={(e) => setUnbindReason(e.target.value)}
-                placeholder="e.g. Employee replaced mobile phone, verified via HR ticket #123"
+                placeholder="e.g. Employee replaced mobile phone, verified via Support Ticket / HR"
                 className="w-full p-2.5 border rounded-lg text-xs focus:ring-1 focus:ring-purple-500"
               />
             </div>
@@ -504,9 +528,10 @@ export default function SupportPanel({ user, activeTab }) {
               <button
                 type="button"
                 onClick={handleUnbind}
-                className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-medium shadow-sm"
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
               >
-                Confirm Device Unbind
+                <Unlock className="w-3.5 h-3.5" />
+                Confirm Deregistration & Unlock
               </button>
             </div>
           </div>
