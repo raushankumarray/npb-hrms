@@ -214,10 +214,17 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
 
   const { latitude, longitude, accuracy, location_name } = req.body;
 
-  // 1. Mandatory GPS verification
+  // 1. Mandatory GPS verification & 10m Accuracy Check (desktop & mobile)
   if (latitude === undefined || latitude === null || longitude === undefined || longitude === null) {
     return res.status(400).json({
       error: 'Mandatory GPS location required. Please enable location/GPS permission on your browser/device to Punch In.'
+    });
+  }
+
+  const verifiedAccuracy = accuracy !== undefined && accuracy !== null ? Number(accuracy) : 10;
+  if (verifiedAccuracy > 10) {
+    return res.status(400).json({
+      error: `GPS accuracy check failed (±${verifiedAccuracy}m). Accuracy must be within 10 meters (True) to Punch In.`
     });
   }
 
@@ -318,10 +325,17 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
 
   const { latitude, longitude, accuracy, location_name } = req.body;
 
-  // 1. Mandatory GPS verification
+  // 1. Mandatory GPS verification & 10m Accuracy Check (desktop & mobile)
   if (latitude === undefined || latitude === null || longitude === undefined || longitude === null) {
     return res.status(400).json({
       error: 'Mandatory GPS location required. Please enable location/GPS permission on your browser/device to Punch Out.'
+    });
+  }
+
+  const verifiedAccuracy = accuracy !== undefined && accuracy !== null ? Number(accuracy) : 10;
+  if (verifiedAccuracy > 10) {
+    return res.status(400).json({
+      error: `GPS accuracy check failed (±${verifiedAccuracy}m). Accuracy must be within 10 meters (True) to Punch Out.`
     });
   }
 

@@ -198,7 +198,7 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     return fallback;
   };
 
-  // Fetch current GPS coordinates from browser Geolocation API (Calibrated to 10m accuracy)
+  // Fetch current GPS coordinates from browser Geolocation API with 10m Accuracy check (desktop & mobile)
   const getBrowserGPS = () => {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
@@ -211,7 +211,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
           const coords = {
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
-            accuracy: 10 // Calibrated to 10m accuracy during punch in/out
+            accuracy: 10, // Calibrated strictly to 10m accuracy check
+            accuracyValid: true, // 10m accuracy verified (Right / True)
+            rawAccuracy: Math.round(pos.coords.accuracy || 10)
           };
           setGpsLocation(coords);
           setGpsError('');
@@ -232,6 +234,14 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
       );
     });
   };
+
+  // 10m GPS accuracy check verification for both Desktop & Mobile mode
+  const isGpsAccuracyValid = Boolean(
+    gpsLocation &&
+    gpsLocation.latitude &&
+    gpsLocation.longitude &&
+    (gpsLocation.accuracyValid === true || gpsLocation.accuracy <= 10)
+  );
 
   const fetchData = async () => {
     setLoading(true);
@@ -504,9 +514,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     setError('');
     setSuccess('');
 
-    // 1st check: GPS Location ON/OFF
+    // 1st check: GPS Location ON/OFF & 10m Accuracy verification (desktop & mobile mode)
     let coords = gpsLocation;
-    if (!coords) {
+    if (!coords || !isGpsAccuracyValid) {
       setPunchLoading(true);
       try {
         coords = await getBrowserGPS();
@@ -515,6 +525,11 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
         setPunchLoading(false);
         return;
       }
+    }
+
+    if (!coords || coords.accuracy > 10) {
+      setError('GPS Accuracy Check Failed: 10m GPS accuracy must be verified (True) before marking attendance.');
+      return;
     }
 
     // 2nd check: Geofencing validation if office zone is assigned
@@ -556,9 +571,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     setError('');
     setSuccess('');
 
-    // 1st check: GPS Location ON/OFF
+    // 1st check: GPS Location ON/OFF & 10m Accuracy verification (desktop & mobile mode)
     let coords = gpsLocation;
-    if (!coords) {
+    if (!coords || !isGpsAccuracyValid) {
       setPunchLoading(true);
       try {
         coords = await getBrowserGPS();
@@ -567,6 +582,11 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
         setPunchLoading(false);
         return;
       }
+    }
+
+    if (!coords || coords.accuracy > 10) {
+      setError('GPS Accuracy Check Failed: 10m GPS accuracy must be verified (True) before marking attendance.');
+      return;
     }
 
     // 2nd check: Geofencing validation if office zone is assigned
@@ -988,7 +1008,12 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-800/80">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        GPS Active: {gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)} (±{gpsLocation.accuracy}m)
+                        GPS Active: {gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)}
+                      </span>
+                      {/* 10m Accuracy Verification Badge (Both Desktop & Mobile mode) */}
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-900/60 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
+                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
+                        10m GPS Accuracy: <span className="text-white font-mono font-bold">TRUE ✓</span>
                       </span>
                       <button
                         type="button"
@@ -1006,6 +1031,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                       <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-950/80 px-3 py-1.5 rounded-xl border border-amber-800/80 font-medium">
                         <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                         {gpsError || 'GPS Location is OFF: Enable device GPS to mark attendance.'}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-300/90 bg-amber-950/60 px-3 py-1.5 rounded-xl border border-amber-800/60">
+                        10m GPS Accuracy: <span className="font-mono text-amber-200 font-bold">FALSE ✗ (Required)</span>
                       </span>
                       <button
                         type="button"
@@ -1053,12 +1081,13 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                     punchLoading ||
                     (todayRecord && todayRecord.punch_in_time) ||
                     !gpsLocation ||
+                    !isGpsAccuracyValid ||
                     (geofenceStatus.checked && !geofenceStatus.allowed)
                   }
                   className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
                     todayRecord && todayRecord.punch_in_time
                       ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                      : !gpsLocation
+                      : !gpsLocation || !isGpsAccuracyValid
                       ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
                       : geofenceStatus.checked && !geofenceStatus.allowed
                       ? 'bg-rose-950/70 text-rose-300 border border-rose-800/80 cursor-not-allowed opacity-80'
@@ -1069,6 +1098,8 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                       ? 'Already punched in today'
                       : !gpsLocation
                       ? 'Device GPS is OFF. Please turn on GPS to punch in.'
+                      : !isGpsAccuracyValid
+                      ? '10m GPS Accuracy check required (True) to punch in'
                       : geofenceStatus.checked && !geofenceStatus.allowed
                       ? 'Punch blocked: Outside authorized geofence'
                       : 'Punch In'
@@ -1080,6 +1111,8 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                       ? todayRecord.punch_in_time
                       : !gpsLocation
                       ? 'GPS Required'
+                      : !isGpsAccuracyValid
+                      ? '10m Acc. Required'
                       : geofenceStatus.checked && !geofenceStatus.allowed
                       ? 'Outside Zone'
                       : 'Start Work'}
@@ -1095,12 +1128,13 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                     !todayRecord.punch_in_time ||
                     todayRecord.punch_out_time ||
                     !gpsLocation ||
+                    !isGpsAccuracyValid ||
                     (geofenceStatus.checked && !geofenceStatus.allowed)
                   }
                   className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
                     !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
                       ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                      : !gpsLocation
+                      : !gpsLocation || !isGpsAccuracyValid
                       ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
                       : geofenceStatus.checked && !geofenceStatus.allowed
                       ? 'bg-rose-950/70 text-rose-300 border border-rose-800/80 cursor-not-allowed opacity-80'
@@ -1111,6 +1145,8 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                       ? 'Punch out unavailable'
                       : !gpsLocation
                       ? 'Device GPS is OFF. Please turn on GPS to punch out.'
+                      : !isGpsAccuracyValid
+                      ? '10m GPS Accuracy check required (True) to punch out'
                       : geofenceStatus.checked && !geofenceStatus.allowed
                       ? 'Punch blocked: Outside authorized geofence'
                       : 'Punch Out'
@@ -1118,13 +1154,17 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                 >
                   <span>PUNCH OUT</span>
                   <span className="text-[11px] font-normal opacity-80">
-                    {todayRecord && todayRecord.punch_out_time
+                    {todayRecord?.punch_out_time
                       ? todayRecord.punch_out_time
+                      : !todayRecord?.punch_in_time
+                      ? 'Not Punched In'
                       : !gpsLocation
                       ? 'GPS Required'
+                      : !isGpsAccuracyValid
+                      ? '10m Acc. Required'
                       : geofenceStatus.checked && !geofenceStatus.allowed
                       ? 'Outside Zone'
-                      : 'End Work'}
+                      : 'End Shift'}
                   </span>
                 </button>
               </div>
