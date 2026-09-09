@@ -315,16 +315,54 @@ router.post('/requests', verifyAuth, (req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
   `).run(companyId, employeeId, leave_type_id, start_date, end_date, parseFloat(total_days), reason.trim());
 
-  // Notify Manager / HR
-  const emp = db.prepare('SELECT full_name, manager_id FROM employees WHERE id = ?').get(employeeId);
-  if (emp && emp.manager_id) {
-    const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
-    if (mgrUser) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'New Leave Request', ?, 'leave', '/leave-approvals')
-      `).run(mgrUser.user_id, companyId, `${emp.full_name} submitted a leave request for ${total_days} days (${start_date} to ${end_date}).`);
+  // Notify Manager / HR / Admin approvers
+  const emp = db.prepare('SELECT full_name, manager_id, hr_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);
+  const notifyUserIds = new Set();
+
+  if (emp) {
+    if (emp.manager_id) {
+      const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
+      if (mgrUser && mgrUser.user_id) notifyUserIds.add(mgrUser.user_id);
     }
+    if (emp.hr_id) {
+      const hrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.hr_id);
+      if (hrUser && hrUser.user_id) notifyUserIds.add(hrUser.user_id);
+    }
+
+    try {
+      const mappings = db.prepare('SELECT manager_id, hr_id FROM employee_mappings WHERE employee_id = ?').all(employeeId);
+      for (const m of mappings) {
+        if (m.manager_id) {
+          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.manager_id);
+          if (u && u.user_id) notifyUserIds.add(u.user_id);
+        }
+        if (m.hr_id) {
+          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.hr_id);
+          if (u && u.user_id) notifyUserIds.add(u.user_id);
+        }
+      }
+    } catch (e) {}
+
+    if (notifyUserIds.size === 0 || emp.reports_to_admin) {
+      const admins = db.prepare(`
+        SELECT u.id FROM users u
+        JOIN roles r ON u.role_id = r.id
+        WHERE u.company_id = ? AND r.name IN ('company_admin', 'admin')
+      `).all(companyId);
+      for (const a of admins) {
+        notifyUserIds.add(a.id);
+      }
+    }
+  }
+
+  for (const uid of notifyUserIds) {
+    db.prepare(`
+      INSERT INTO notifications (user_id, company_id, title, message, type, link)
+      VALUES (?, ?, 'New Leave Request', ?, 'leave', '/leave-approvals')
+    `).run(
+      uid, companyId,
+      `${emp ? emp.full_name : 'Employee'} submitted a leave request for ${total_days} days (${start_date} to ${end_date}).`
+    );
   }
 
   res.status(201).json({ success: true, requestId: result.lastInsertRowid, message: 'Leave request submitted successfully.' });

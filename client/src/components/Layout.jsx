@@ -351,12 +351,69 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         )}
 
         {/* Content View Area */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 custom-scrollbar">
+        <main className={`flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 custom-scrollbar ${user.role === 'employee' ? 'pb-24 md:pb-8' : ''}`}>
           <div className="max-w-7xl mx-auto">
             {children}
           </div>
         </main>
       </div>
+
+      {/* Mobile Bottom Navigation Bar (Strictly Employee Role: 4 Icons) */}
+      {user.role === 'employee' && (
+        <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 py-2 flex items-center justify-around md:hidden shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
+          <button
+            type="button"
+            onClick={() => onSelectTab('punch')}
+            className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all ${
+              activeTab === 'punch'
+                ? 'text-sky-600 font-bold scale-105'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <LayoutDashboard className={`w-5 h-5 ${activeTab === 'punch' ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
+            <span className="text-[10px] mt-0.5 font-medium">Dashboard</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectTab('calendar')}
+            className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all ${
+              activeTab === 'calendar'
+                ? 'text-sky-600 font-bold scale-105'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Calendar className={`w-5 h-5 ${activeTab === 'calendar' ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
+            <span className="text-[10px] mt-0.5 font-medium">Calendar</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectTab('leave')}
+            className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all ${
+              activeTab === 'leave'
+                ? 'text-sky-600 font-bold scale-105'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <FileText className={`w-5 h-5 ${activeTab === 'leave' ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
+            <span className="text-[10px] mt-0.5 font-medium">Leaves</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectTab('history')}
+            className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all ${
+              activeTab === 'history'
+                ? 'text-sky-600 font-bold scale-105'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Clock className={`w-5 h-5 ${activeTab === 'history' ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
+            <span className="text-[10px] mt-0.5 font-medium">Attendance</span>
+          </button>
+        </nav>
+      )}
 
       {/* UNIVERSAL USER PROFILE MODAL */}
       <UserProfileModal

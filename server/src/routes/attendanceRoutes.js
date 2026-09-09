@@ -36,7 +36,27 @@ router.get('/today', verifyAuth, (req, res) => {
     WHERE employee_id = ? AND date = ?
   `).get(req.user.employee_id, today);
 
-  res.json({ record: record || null, today });
+  // Fetch employee assigned shift timing
+  const empShift = db.prepare(`
+    SELECT s.name as shift_name, s.start_time, s.end_time
+    FROM employees e
+    LEFT JOIN shifts s ON e.shift_id = s.id
+    WHERE e.id = ?
+  `).get(req.user.employee_id);
+
+  res.json({
+    record: record || null,
+    today,
+    shift: empShift ? {
+      name: empShift.shift_name || 'General Shift',
+      start_time: empShift.start_time || '09:00:00',
+      end_time: empShift.end_time || '18:00:00'
+    } : {
+      name: 'General Shift',
+      start_time: '09:00:00',
+      end_time: '18:00:00'
+    }
+  });
 });
 
 // Monthly Calendar data endpoint (Employee personal or Team/Company aggregate)
@@ -953,14 +973,24 @@ router.post('/correction-request', verifyAuth, (req, res) => {
   const employeeId = req.user.role_name === 'employee' ? req.user.employee_id : (req.body.employee_id || req.user.employee_id);
   const {
     date,
+    correction_type = 'both', // 'both' | 'in' | 'out'
     requested_punch_in,
     requested_punch_out,
-    requested_status = 'Present',
     reason
   } = req.body;
 
-  if (!date || !requested_punch_in || !requested_punch_out || !reason) {
-    return res.status(400).json({ error: 'Date, requested punch in, requested punch out, and reason are required.' });
+  if (!date || !reason || !reason.trim()) {
+    return res.status(400).json({ error: 'Attendance date and correction remarks/reason are required.' });
+  }
+
+  if (correction_type === 'both' && (!requested_punch_in || !requested_punch_out)) {
+    return res.status(400).json({ error: 'Both Punch In and Punch Out times are required for this correction type.' });
+  }
+  if (correction_type === 'in' && !requested_punch_in) {
+    return res.status(400).json({ error: 'Requested Punch In time is required.' });
+  }
+  if (correction_type === 'out' && !requested_punch_out) {
+    return res.status(400).json({ error: 'Requested Punch Out time is required.' });
   }
 
   // Get current attendance status for this date if exists
@@ -972,6 +1002,28 @@ router.post('/correction-request', verifyAuth, (req, res) => {
   const currentPunchIn = existing ? existing.punch_in_time : null;
   const currentPunchOut = existing ? existing.punch_out_time : null;
 
+  // Resolve final in and out times
+  const finalIn = requested_punch_in ? requested_punch_in.trim() : currentPunchIn;
+  const finalOut = requested_punch_out ? requested_punch_out.trim() : currentPunchOut;
+
+  // Auto-calculate requested attendance status based on hours
+  let autoCalculatedStatus = 'Present';
+  if (finalIn && finalOut) {
+    const totalHours = calculateHours(finalIn, finalOut);
+    if (totalHours >= 8.0) {
+      autoCalculatedStatus = 'Present';
+    } else if (totalHours >= 4.0) {
+      autoCalculatedStatus = 'Half Day';
+    } else {
+      autoCalculatedStatus = 'Absent';
+    }
+  } else {
+    // If only one punch is requested without counterpart, default to Present for supervisor review
+    autoCalculatedStatus = 'Present';
+  }
+
+  const finalRequestedStatus = req.body.requested_status || autoCalculatedStatus;
+
   const result = db.prepare(`
     INSERT INTO attendance_correction_requests (
       company_id, employee_id, date,
@@ -982,26 +1034,66 @@ router.post('/correction-request', verifyAuth, (req, res) => {
   `).run(
     companyId, employeeId, date,
     currentStatus, currentPunchIn, currentPunchOut,
-    requested_punch_in.trim(), requested_punch_out.trim(), requested_status,
+    finalIn || '09:00:00', finalOut || '18:00:00', finalRequestedStatus,
     reason.trim()
   );
 
-  // Notify manager / HR
-  const emp = db.prepare('SELECT full_name, employee_id, manager_id FROM employees WHERE id = ?').get(employeeId);
-  if (emp && emp.manager_id) {
-    const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
-    if (mgrUser) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'Attendance Correction Request', ?, 'attendance', '/attendance')
-      `).run(mgrUser.user_id, companyId, `${emp.full_name} (${emp.employee_id}) requested attendance correction for ${date} (${requested_status}).`);
+  // Notify assigned reporting manager, HR lead, or Admin
+  const emp = db.prepare('SELECT full_name, employee_id, manager_id, hr_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);
+  const notifyUserIds = new Set();
+
+  if (emp) {
+    if (emp.manager_id) {
+      const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
+      if (mgrUser && mgrUser.user_id) notifyUserIds.add(mgrUser.user_id);
     }
+    if (emp.hr_id) {
+      const hrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.hr_id);
+      if (hrUser && hrUser.user_id) notifyUserIds.add(hrUser.user_id);
+    }
+
+    try {
+      const mappings = db.prepare('SELECT manager_id, hr_id FROM employee_mappings WHERE employee_id = ?').all(employeeId);
+      for (const m of mappings) {
+        if (m.manager_id) {
+          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.manager_id);
+          if (u && u.user_id) notifyUserIds.add(u.user_id);
+        }
+        if (m.hr_id) {
+          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.hr_id);
+          if (u && u.user_id) notifyUserIds.add(u.user_id);
+        }
+      }
+    } catch (e) {}
+
+    // If no specific manager/hr assigned or reports_to_admin is true, notify company admins
+    if (notifyUserIds.size === 0 || emp.reports_to_admin) {
+      const admins = db.prepare(`
+        SELECT u.id FROM users u
+        JOIN roles r ON u.role_id = r.id
+        WHERE u.company_id = ? AND r.name IN ('company_admin', 'admin')
+      `).all(companyId);
+      for (const a of admins) {
+        notifyUserIds.add(a.id);
+      }
+    }
+  }
+
+  for (const uid of notifyUserIds) {
+    db.prepare(`
+      INSERT INTO notifications (user_id, company_id, title, message, type, link)
+      VALUES (?, ?, 'Attendance Correction Request', ?, 'attendance', '/attendance')
+    `).run(
+      uid, companyId,
+      `${emp ? emp.full_name : 'Employee'} requested attendance correction for ${date} (${finalRequestedStatus}).`
+    );
   }
 
   res.status(201).json({
     success: true,
     requestId: result.lastInsertRowid,
-    message: 'Attendance correction request submitted successfully. Awaiting supervisor approval.'
+    autoStatus: finalRequestedStatus,
+    message: `Attendance correction request submitted successfully (${finalRequestedStatus}). Awaiting supervisor approval.`
   });
 });
 

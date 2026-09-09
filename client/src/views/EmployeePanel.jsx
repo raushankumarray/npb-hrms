@@ -106,6 +106,10 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   ]);
   const [exportingPdf, setExportingPdf] = useState(false);
 
+  const [shiftInfo, setShiftInfo] = useState(null);
+  const [correctionType, setCorrectionType] = useState('both'); // 'both' | 'out' | 'in'
+  const [showClosedTickets, setShowClosedTickets] = useState(false);
+
   // Forms
   const [leaveForm, setLeaveForm] = useState({
     leave_type_id: '',
@@ -116,12 +120,8 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   });
 
   const [ticketForm, setTicketForm] = useState({
-    request_type: 'missing_punch',
     title: '',
-    description: '',
-    punch_date: new Date().toISOString().split('T')[0],
-    suggested_punch_in: '09:00:00',
-    suggested_punch_out: '18:00:00'
+    description: ''
   });
 
   const [passwordForm, setPasswordForm] = useState({
@@ -142,7 +142,6 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     date: new Date().toISOString().split('T')[0],
     requested_punch_in: '09:00:00',
     requested_punch_out: '18:00:00',
-    requested_status: 'Present',
     reason: ''
   });
   const [submittingCorrection, setSubmittingCorrection] = useState(false);
@@ -188,6 +187,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
       // 1. Today's attendance
       const todayRes = await apiRequest('/attendance/today');
       setTodayRecord(todayRes.record);
+      if (todayRes.shift) {
+        setShiftInfo(todayRes.shift);
+      }
 
       // 2. Attendance history
       if (activeTab === 'history' || activeTab === 'punch') {
@@ -561,22 +563,27 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
   const handleSubmitTicket = async (e) => {
     e.preventDefault();
+    if (!ticketForm.title.trim() || !ticketForm.description.trim()) {
+      setError('Please provide both subject and message for the service ticket.');
+      return;
+    }
     setError('');
     try {
       await apiRequest('/tickets/service-request', {
         method: 'POST',
-        body: ticketForm
+        body: {
+          request_type: 'other',
+          title: ticketForm.title.trim(),
+          description: ticketForm.description.trim()
+        }
       });
       setSuccess('Service ticket submitted successfully.');
       setTicketForm({
-        request_type: 'missing_punch',
         title: '',
-        description: '',
-        punch_date: new Date().toISOString().split('T')[0],
-        suggested_punch_in: '09:00:00',
-        suggested_punch_out: '18:00:00'
+        description: ''
       });
-      fetchData();
+      const tickRes = await apiRequest('/tickets/service-requests?view=all');
+      setTickets(tickRes.requests || []);
     } catch (err) {
       setError(err.message);
     }
@@ -645,11 +652,38 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     return () => clearInterval(interval);
   }, [todayRecord]);
 
+  // Auto-calculated status preview for attendance correction based on hours
+  const correctionCalculatedStatus = (() => {
+    const pIn = correctionType !== 'out' ? correctionForm.requested_punch_in : '09:00:00';
+    const pOut = correctionType !== 'in' ? correctionForm.requested_punch_out : '18:00:00';
+    if (!pIn || !pOut) return { hours: 0, status: 'Present' };
+    const [h1, m1, s1 = 0] = pIn.split(':').map(Number);
+    const [h2, m2, s2 = 0] = pOut.split(':').map(Number);
+    const totalSecs = (h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1);
+    if (totalSecs <= 0) return { hours: 0, status: 'Absent' };
+    const hours = Math.round((totalSecs / 3600) * 100) / 100;
+    if (hours >= 8.0) return { hours, status: 'Present' };
+    if (hours >= 4.0) return { hours, status: 'Half Day' };
+    return { hours, status: 'Absent' };
+  })();
+
   // Submit Attendance Correction Request
   const handleSubmitCorrection = async (e) => {
     e.preventDefault();
-    if (!correctionForm.date || !correctionForm.requested_punch_in || !correctionForm.requested_punch_out || !correctionForm.reason.trim()) {
-      setError('Please provide date, requested punch in/out, and valid justification.');
+    if (!correctionForm.date || !correctionForm.reason.trim()) {
+      setError('Please provide attendance date and reason for correction.');
+      return;
+    }
+    if (correctionType === 'both' && (!correctionForm.requested_punch_in || !correctionForm.requested_punch_out)) {
+      setError('Please specify both requested punch in and punch out times.');
+      return;
+    }
+    if (correctionType === 'in' && !correctionForm.requested_punch_in) {
+      setError('Please specify requested punch in time.');
+      return;
+    }
+    if (correctionType === 'out' && !correctionForm.requested_punch_out) {
+      setError('Please specify requested punch out time.');
       return;
     }
 
@@ -657,16 +691,22 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     setError('');
     setSuccess('');
     try {
+      const payload = {
+        date: correctionForm.date,
+        correction_type: correctionType,
+        requested_punch_in: correctionType !== 'out' ? correctionForm.requested_punch_in : undefined,
+        requested_punch_out: correctionType !== 'in' ? correctionForm.requested_punch_out : undefined,
+        reason: correctionForm.reason
+      };
       const res = await apiRequest('/attendance/correction-request', {
         method: 'POST',
-        body: correctionForm
+        body: payload
       });
       setSuccess(res.message || 'Attendance correction request submitted.');
       setCorrectionForm({
         date: new Date().toISOString().split('T')[0],
         requested_punch_in: '09:00:00',
         requested_punch_out: '18:00:00',
-        requested_status: 'Present',
         reason: ''
       });
       const corrRes = await apiRequest('/attendance/correction-requests');
@@ -820,12 +860,19 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
             <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1.5">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-[11px] font-semibold border border-sky-400/30">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Employee Dashboard</span>
-                  <span className="text-slate-500">•</span>
-                  <span>Real-time Active</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-[11px] font-semibold border border-sky-400/30">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Employee Dashboard</span>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/25 text-indigo-300 text-[11px] font-semibold border border-indigo-400/40 shadow-xs">
+                    <Clock className="w-3.5 h-3.5 text-indigo-300 shrink-0" />
+                    <span>
+                      Shift: {shiftInfo?.name || 'General Shift'} ({format12Hour(shiftInfo?.start_time || '09:00:00')} - {format12Hour(shiftInfo?.end_time || '18:00:00')})
+                    </span>
+                  </div>
                 </div>
+
                 <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
                   Welcome, {user.fullName || user.username}
                   {user.employeeCode && (
@@ -835,7 +882,7 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                   )}
                 </h2>
                 <p className="text-xs text-slate-300 max-w-xl leading-relaxed">
-                  Live operational panel • GPS attendance punch, leave balances, monthly calendar, and helpdesk support.
+                  Live operational panel • Auto-detected GPS attendance punch, leave balances & support.
                 </p>
               </div>
 
@@ -1186,6 +1233,61 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
             </div>
           </div>
 
+          {/* Captured Address & Map Area Name Card (Right below Punch In & Out details) */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-sky-100 text-sky-700">
+                  <MapPin className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900">Captured Location & Map Area</h4>
+                  <span className="text-[10px] text-slate-400">Live GPS positioning and authorized work zone</span>
+                </div>
+              </div>
+
+              {geofenceStatus.isAnywhere ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full border border-sky-200">
+                  <Globe className="w-3 h-3 text-sky-600" />
+                  Anywhere Attendance
+                </span>
+              ) : geofenceStatus.allowed ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                  Inside Authorized Area
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
+                  <AlertCircle className="w-3 h-3 text-rose-600" />
+                  Outside Zone
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-0.5">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Map Area Name</span>
+                <p className="font-bold text-slate-900 text-xs truncate">
+                  {myGeofence ? myGeofence.location_name : (allowedAnywhere ? 'Open Field Site (Anywhere)' : 'Assigned Office Zone')}
+                </p>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-0.5">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">GPS Coordinates</span>
+                <p className="font-mono font-semibold text-slate-800 text-xs">
+                  {gpsLocation ? `${gpsLocation.latitude.toFixed(5)}, ${gpsLocation.longitude.toFixed(5)}` : 'GPS Inactive'}
+                </p>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-0.5">
+                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Captured Address</span>
+                <p className="text-slate-800 font-medium text-xs truncate" title={todayRecord?.punch_in_location || todayRecord?.punch_out_location || (myGeofence ? myGeofence.location_name : 'Current Device GPS Location')}>
+                  {todayRecord?.punch_in_location || todayRecord?.punch_out_location || (myGeofence ? myGeofence.location_name : 'Current Device GPS Location')}
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Leave Balances Quick Summary (Only CL and EL) */}
           <div className="grid grid-cols-2 gap-4">
             {leaveBalances.filter(b => !b.leave_type_name?.includes('Paid Leave')).map(b => (
@@ -1206,20 +1308,6 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                 </div>
               </div>
             ))}
-          </div>
-
-          {/* SECTION 4: MY CALENDAR & ATTENDANCE ON DASHBOARD */}
-          <div className="space-y-3 pt-2 border-t border-slate-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-sky-600" />
-                  My Monthly Attendance & Holiday Calendar
-                </h4>
-                <p className="text-[11px] text-slate-500">Official weekly offs, company holidays, and color-coded attendance records</p>
-              </div>
-            </div>
-            <UnifiedCalendar companyId={company?.id} employeeId={user.employeeId} role="employee" />
           </div>
         </div>
       )}
@@ -1640,53 +1728,6 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
             ))}
           </div>
 
-          {/* Month-Wise Earned Leave Accrual Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-2">
-            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  Earned Leave (EL) Month-Wise Accrual History
-                </h4>
-                <p className="text-[11px] text-slate-500">Statutory accrual rate: +1.25 Earned Leave days per active month</p>
-              </div>
-              <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                Rate: +1.25 Days / Month
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 text-slate-600 font-semibold uppercase text-[10px]">
-                  <tr>
-                    <th className="p-3">Leave Type</th>
-                    <th className="p-3">Monthly Credit</th>
-                    <th className="p-3">EL Balance After</th>
-                    <th className="p-3">Reason / Reference</th>
-                    <th className="p-3 text-right">Date Applied</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {accrualHistory.map(ah => (
-                    <tr key={ah.id} className="hover:bg-slate-50/50">
-                      <td className="p-3 font-semibold text-slate-800">{ah.leave_type_name || 'Earned Leave (EL)'}</td>
-                      <td className="p-3 font-mono font-bold text-emerald-600">+{ah.amount} days</td>
-                      <td className="p-3 font-mono font-bold text-slate-900">{ah.balance_after} days</td>
-                      <td className="p-3 text-slate-600">{ah.reason}</td>
-                      <td className="p-3 text-right text-slate-400 font-mono">{new Date(ah.created_at).toLocaleDateString()}</td>
-                    </tr>
-                  ))}
-                  {accrualHistory.length === 0 && (
-                    <tr>
-                      <td colSpan="5" className="p-6 text-center text-slate-400">
-                        No monthly accruals logged yet. Earned Leave accrues at +1.25 days per month.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
 
           {/* Apply for Leave Form */}
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -1814,23 +1855,16 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
         <div className="space-y-6">
           {/* Apply for Attendance Correction Card */}
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <FileEdit className="w-4 h-4 text-sky-600" />
-                  Apply for Attendance Correction
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Request adjustments for missing punches or discrepancies. If approved, attendance is marked Present; if cancelled/rejected, marked Absent.
-                </p>
-              </div>
-              <span className="text-[11px] font-semibold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-lg border border-sky-200">
-                Audit Verified Workflow
-              </span>
+            <div className="border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <FileEdit className="w-4 h-4 text-sky-600" />
+                Apply for Attendance Correction
+              </h3>
             </div>
 
             <form onSubmit={handleSubmitCorrection} className="space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Attendance Date */}
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Attendance Date *</label>
                   <input
@@ -1842,51 +1876,101 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                   />
                 </div>
 
+                {/* Correction Type Selector */}
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Requested Punch In *</label>
-                  <input
-                    type="time"
-                    step="1"
-                    required
-                    value={correctionForm.requested_punch_in}
-                    onChange={(e) => setCorrectionForm({ ...correctionForm, requested_punch_in: e.target.value })}
-                    className="w-full p-2.5 border rounded-lg font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Requested Punch Out *</label>
-                  <input
-                    type="time"
-                    step="1"
-                    required
-                    value={correctionForm.requested_punch_out}
-                    onChange={(e) => setCorrectionForm({ ...correctionForm, requested_punch_out: e.target.value })}
-                    className="w-full p-2.5 border rounded-lg font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Requested Status *</label>
-                  <select
-                    value={correctionForm.requested_status}
-                    onChange={(e) => setCorrectionForm({ ...correctionForm, requested_status: e.target.value })}
-                    className="w-full p-2.5 border rounded-lg bg-white font-semibold text-slate-800"
-                  >
-                    <option value="Present">Present (Full Day)</option>
-                    <option value="Half Day">Half Day</option>
-                  </select>
+                  <label className="font-semibold text-slate-700 block mb-1">Correction Type *</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionType('both')}
+                      className={`py-2 px-2.5 rounded-xl border font-bold text-xs transition-all text-center ${
+                        correctionType === 'both'
+                          ? 'bg-sky-50 border-sky-500 text-sky-700 shadow-xs'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      Both (In & Out)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionType('in')}
+                      className={`py-2 px-2.5 rounded-xl border font-bold text-xs transition-all text-center ${
+                        correctionType === 'in'
+                          ? 'bg-sky-50 border-sky-500 text-sky-700 shadow-xs'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      Punch In Only
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionType('out')}
+                      className={`py-2 px-2.5 rounded-xl border font-bold text-xs transition-all text-center ${
+                        correctionType === 'out'
+                          ? 'bg-sky-50 border-sky-500 text-sky-700 shadow-xs'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      Punch Out Only
+                    </button>
+                  </div>
                 </div>
               </div>
 
+              {/* Conditional Time Inputs */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {(correctionType === 'both' || correctionType === 'in') && (
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Requested Punch In Time *</label>
+                    <input
+                      type="time"
+                      step="1"
+                      required
+                      value={correctionForm.requested_punch_in}
+                      onChange={(e) => setCorrectionForm({ ...correctionForm, requested_punch_in: e.target.value })}
+                      className="w-full p-2.5 border rounded-lg font-mono"
+                    />
+                  </div>
+                )}
+
+                {(correctionType === 'both' || correctionType === 'out') && (
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Requested Punch Out Time *</label>
+                    <input
+                      type="time"
+                      step="1"
+                      required
+                      value={correctionForm.requested_punch_out}
+                      onChange={(e) => setCorrectionForm({ ...correctionForm, requested_punch_out: e.target.value })}
+                      className="w-full p-2.5 border rounded-lg font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Auto Status Preview based on working hours */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
+                <span className="text-slate-600 font-medium">Auto-Calculated Attendance Status:</span>
+                <span className={`px-3 py-1 rounded-full font-bold uppercase text-[11px] ${
+                  correctionCalculatedStatus.status === 'Present'
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : correctionCalculatedStatus.status === 'Half Day'
+                    ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                    : 'bg-rose-100 text-rose-800 border border-rose-300'
+                }`}>
+                  {correctionCalculatedStatus.status} {correctionType === 'both' ? `(${correctionCalculatedStatus.hours} hrs)` : ''}
+                </span>
+              </div>
+
+              {/* Reason / Remarks Required */}
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Reason / Justification for Correction *</label>
+                <label className="font-semibold text-slate-700 block mb-1">Correction Remarks / Reason *</label>
                 <textarea
                   rows="2"
                   required
                   value={correctionForm.reason}
                   onChange={(e) => setCorrectionForm({ ...correctionForm, reason: e.target.value })}
-                  placeholder="Explain why punch was missed or discrepancy occurred (e.g. Field client meeting / GPS device connectivity issue)..."
+                  placeholder="State the reason for missing punch or discrepancy (e.g., Client on-site meeting / Field network issue)..."
                   className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none"
                 />
               </div>
@@ -1976,183 +2060,224 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
       )}
 
       {/* VIEW: SERVICE REQUESTS / TICKETS */}
-      {activeTab === 'tickets' && (
-        <div className="space-y-6">
-          {/* Ticket Governance Notice */}
-          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2.5 shadow-xs">
-            <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
-            <div>
-              <span className="font-bold">Ticket Resolution Governance: </span>
-              Once a ticket is marked resolved or closed by Company Admin or Support, it cannot be reopened or replied to. If you require further assistance with an issue, please raise a new ticket below.
-            </div>
-          </div>
+      {activeTab === 'tickets' && (() => {
+        const openTickets = tickets.filter(t => t.status !== 'resolved' && t.status !== 'closed');
+        const closedTickets = tickets.filter(t => t.status === 'resolved' || t.status === 'closed');
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-            <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
-              <Ticket className="w-4 h-4 text-sky-600" />
-              Raise Service Ticket (Missing Punch / Device / Support)
-            </h3>
+        return (
+          <div className="space-y-6">
+            {/* Raise Service Ticket Form */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+              <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
+                <Ticket className="w-4 h-4 text-sky-600" />
+                Raise Service Ticket
+              </h3>
 
-            <form onSubmit={handleSubmitTicket} className="space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <form onSubmit={handleSubmitTicket} className="space-y-4 text-xs">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Issue Category *</label>
-                  <select
-                    value={ticketForm.request_type}
-                    onChange={(e) => setTicketForm({ ...ticketForm, request_type: e.target.value })}
-                    className="w-full p-2.5 border rounded-lg bg-white"
-                  >
-                    <option value="missing_punch">Missing Punch In / Out</option>
-                    <option value="device_change">Device Change / Unlock</option>
-                    <option value="attendance_correction">Attendance Correction</option>
-                    <option value="password_reset">Password Support</option>
-                    <option value="other">Other HR Support Query</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Subject / Summary *</label>
+                  <label className="font-semibold text-slate-700 block mb-1">Subject *</label>
                   <input
                     type="text"
                     required
                     value={ticketForm.title}
                     onChange={(e) => setTicketForm({ ...ticketForm, title: e.target.value })}
-                    placeholder="e.g. Forgot to punch out on Friday due to client meeting"
-                    className="w-full p-2.5 border rounded-lg"
+                    placeholder="Brief summary of your query or issue..."
+                    className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none"
                   />
                 </div>
-              </div>
 
-              {ticketForm.request_type === 'missing_punch' && (
-                <div className="grid grid-cols-3 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
-                  <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Date</label>
-                    <input
-                      type="date"
-                      value={ticketForm.punch_date}
-                      onChange={(e) => setTicketForm({ ...ticketForm, punch_date: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Actual Punch In</label>
-                    <input
-                      type="time"
-                      value={ticketForm.suggested_punch_in}
-                      onChange={(e) => setTicketForm({ ...ticketForm, suggested_punch_in: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Actual Punch Out</label>
-                    <input
-                      type="time"
-                      value={ticketForm.suggested_punch_out}
-                      onChange={(e) => setTicketForm({ ...ticketForm, suggested_punch_out: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    />
-                  </div>
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Message *</label>
+                  <textarea
+                    rows={4}
+                    required
+                    value={ticketForm.description}
+                    onChange={(e) => setTicketForm({ ...ticketForm, description: e.target.value })}
+                    placeholder="Describe your issue or request in detail..."
+                    className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                  />
                 </div>
-              )}
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Detailed Explanation</label>
-                <textarea
-                  rows={3}
-                  value={ticketForm.description}
-                  onChange={(e) => setTicketForm({ ...ticketForm, description: e.target.value })}
-                  placeholder="Provide supporting context for your manager / HR..."
-                  className="w-full p-2.5 border rounded-lg"
-                />
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm flex items-center gap-1.5"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  Submit Ticket
-                </button>
-              </div>
-            </form>
-          </div>
-
-          {/* Ticket History */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-900">My Raised Service Requests</h3>
-              <span className="text-xs text-slate-400">Closed requests archived automatically</span>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold shadow-sm flex items-center gap-1.5 transition-all"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Submit Ticket</span>
+                  </button>
+                </div>
+              </form>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                  <tr>
-                    <th className="p-3">ID</th>
-                    <th className="p-3">Category</th>
-                    <th className="p-3">Subject</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3">Resolution Notes</th>
-                    <th className="p-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {tickets.map(t => (
-                    <tr key={t.id} className="hover:bg-slate-50/50">
-                      <td className="p-3 font-mono font-bold">#{t.id}</td>
-                      <td className="p-3 font-semibold text-sky-700 uppercase text-[10px]">
-                        {t.request_type.replace('_', ' ')}
-                      </td>
-                      <td className="p-3 font-medium text-slate-900">{t.title}</td>
-                      <td className="p-3">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' :
-                          t.status === 'in_progress' ? 'bg-purple-100 text-purple-700' :
-                          t.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'
-                        }`}>
-                          {t.status}
-                        </span>
-                      </td>
-                      <td className="p-3 text-slate-500">{t.resolution_notes || '-'}</td>
-                      <td className="p-3 text-right">
-                        {(t.status === 'resolved' || t.status === 'closed') ? (
-                          <div className="flex items-center justify-end gap-1.5">
-                            <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                              Closed
-                            </span>
-                            <button
-                              onClick={() => {
-                                setChatTicketId(t.id);
-                                setShowChatModal(true);
-                              }}
-                              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition-colors"
-                              title="View Archived Ticket History (Reopening not permitted)"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                              View
-                            </button>
-                          </div>
-                        ) : (
+
+            {/* Open Tickets Section (Shown by default) */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-2">
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    Open Tickets
+                  </h3>
+                  <p className="text-[11px] text-slate-400">Active service requests in progress</p>
+                </div>
+                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">
+                  {openTickets.length} active
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
+                    <tr>
+                      <th className="p-3">ID</th>
+                      <th className="p-3">Subject</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3">Created</th>
+                      <th className="p-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {openTickets.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50/50">
+                        <td className="p-3 font-mono font-bold text-slate-800">#{t.id}</td>
+                        <td className="p-3 font-semibold text-slate-900 max-w-sm">
+                          <div>{t.title}</div>
+                          {t.description && (
+                            <p className="text-[11px] text-slate-500 font-normal line-clamp-1 mt-0.5">{t.description}</p>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            t.status === 'in_progress' ? 'bg-purple-100 text-purple-700 border border-purple-200' :
+                            'bg-amber-100 text-amber-700 border border-amber-200'
+                          }`}>
+                            {t.status === 'in_progress' ? 'In Progress' : 'Pending'}
+                          </span>
+                        </td>
+                        <td className="p-3 font-mono text-slate-400 text-[11px]">
+                          {new Date(t.created_at).toLocaleDateString()}
+                        </td>
+                        <td className="p-3 text-right">
                           <button
+                            type="button"
                             onClick={() => {
                               setChatTicketId(t.id);
                               setShowChatModal(true);
                             }}
-                            className="px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition-colors"
+                            className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors border border-sky-200"
                             title="Open Ticket Chat & View Replies"
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
                             Chat / View Replies
                           </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {openTickets.length === 0 && (
+                      <tr>
+                        <td colSpan="5" className="p-8 text-center text-slate-400">
+                          No open service tickets currently. Raise a ticket above if you need assistance.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Closed Tickets Section (Collapsible - Hidden by Default) */}
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => setShowClosedTickets(!showClosedTickets)}
+                className="w-full flex items-center justify-between p-4 bg-white hover:bg-slate-50 border border-slate-200 rounded-2xl transition-all shadow-xs group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-slate-100 group-hover:bg-slate-200 transition-colors">
+                    <CheckCircle className="w-4 h-4 text-slate-600" />
+                  </div>
+                  <div className="text-left">
+                    <h4 className="text-xs font-bold text-slate-800">Closed Tickets History ({closedTickets.length})</h4>
+                    <span className="text-[10px] text-slate-400">Click to {showClosedTickets ? 'hide' : 'view'} resolved and archived tickets</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-slate-500 text-xs font-semibold">
+                  <span>{showClosedTickets ? 'Hide History' : 'View History'}</span>
+                  <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showClosedTickets ? 'rotate-180' : ''}`} />
+                </div>
+              </button>
+
+              {showClosedTickets && (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-200">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-800">Resolved & Closed Tickets Archive</h4>
+                      <p className="text-[10px] text-slate-400">Historical record of resolved helpdesk queries</p>
+                    </div>
+                    <span className="text-xs text-slate-400 font-mono">{closedTickets.length} archived</span>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
+                        <tr>
+                          <th className="p-3">ID</th>
+                          <th className="p-3">Subject</th>
+                          <th className="p-3">Status</th>
+                          <th className="p-3">Resolution Notes</th>
+                          <th className="p-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {closedTickets.map(t => (
+                          <tr key={t.id} className="hover:bg-slate-50/50">
+                            <td className="p-3 font-mono font-bold text-slate-800">#{t.id}</td>
+                            <td className="p-3 font-semibold text-slate-800 max-w-sm">
+                              <div>{t.title}</div>
+                              {t.description && (
+                                <p className="text-[11px] text-slate-400 font-normal line-clamp-1 mt-0.5">{t.description}</p>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
+                                {t.status}
+                              </span>
+                            </td>
+                            <td className="p-3 text-slate-500 italic text-[11px]">
+                              {t.resolution_notes || '--'}
+                            </td>
+                            <td className="p-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setChatTicketId(t.id);
+                                  setShowChatModal(true);
+                                }}
+                                className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition-colors"
+                                title="View Closed Ticket History"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                View History
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {closedTickets.length === 0 && (
+                          <tr>
+                            <td colSpan="5" className="p-8 text-center text-slate-400">
+                              No closed tickets in history.
+                            </td>
+                          </tr>
                         )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* VIEW: PROFILE & SECURITY */}
       {activeTab === 'profile' && (

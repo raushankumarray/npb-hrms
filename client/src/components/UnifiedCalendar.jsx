@@ -277,7 +277,7 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
         {/* Day Cells */}
         {daysGrid.map((day, idx) => {
           if (!day) {
-            return <div key={`empty-${idx}`} className="bg-slate-50/50 min-h-[90px]" />;
+            return <div key={`empty-${idx}`} className="bg-slate-50/50 aspect-square sm:aspect-auto sm:min-h-[95px] rounded-md" />;
           }
 
           const dayHolidays = getHolidaysForDay(day);
@@ -335,14 +335,14 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
             <div
               key={`day-${day}`}
               onClick={() => setSelectedDay({ day, dateKey: getDateKey(day), dayHolidays, dayRecords, weeklyOff })}
-              className={`min-h-[95px] p-2 flex flex-col justify-between cursor-pointer hover:opacity-90 transition-all relative group border border-slate-100 rounded-md ${cellBgStyle} ${
+              className={`aspect-square sm:aspect-auto sm:min-h-[95px] p-1 sm:p-2 flex flex-col justify-between cursor-pointer hover:opacity-90 transition-all relative group border border-slate-100 rounded-md ${cellBgStyle} ${
                 isToday && !status ? 'ring-2 ring-sky-500 ring-inset' : ''
               }`}
             >
               {/* Day Header */}
               <div className="flex items-center justify-between">
                 <span
-                  className={`text-xs rounded-full w-6 h-6 flex items-center justify-center transition-transform group-hover:scale-105 ${dateCircleStyle}`}
+                  className={`text-[11px] sm:text-xs rounded-full w-5 h-5 sm:w-6 sm:h-6 flex items-center justify-center transition-transform group-hover:scale-105 ${dateCircleStyle}`}
                   title={
                     status ? `Status: ${status}` :
                     dayHolidays.length ? `Holiday: ${dayHolidays[0].name}` :
@@ -354,14 +354,36 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
                 </span>
 
                 {dayHolidays.length > 0 && (
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 truncate max-w-[80px]" title={dayHolidays[0].name}>
+                  <span className="hidden sm:inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 truncate max-w-[80px]" title={dayHolidays[0].name}>
                     {dayHolidays[0].name}
                   </span>
                 )}
               </div>
 
-              {/* Day Content Badges */}
-              <div className="mt-1.5 space-y-1 flex-1">
+              {/* Mobile View: Compact square status indicator */}
+              <div className="sm:hidden flex items-center justify-center flex-1 my-0.5">
+                {hasRecord ? (
+                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                    status === 'Present' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                    status === 'Half Day' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
+                    status === 'Leave' ? 'bg-purple-100 text-purple-800 border border-purple-300' :
+                    'bg-rose-100 text-rose-800 border border-rose-300'
+                  }`}>
+                    {status === 'Present' ? 'P' : status === 'Half Day' ? 'HD' : status === 'Leave' ? 'L' : 'A'}
+                  </span>
+                ) : dayHolidays.length > 0 ? (
+                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-300">
+                    HO
+                  </span>
+                ) : weeklyOff ? (
+                  <span className="text-[9px] font-black px-1 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                    WO
+                  </span>
+                ) : null}
+              </div>
+
+              {/* Desktop View: Full Day Content Badges */}
+              <div className="hidden sm:block mt-1.5 space-y-1 flex-1">
                 {weeklyOff && (
                   <span className="inline-block text-[10px] font-bold text-rose-700 bg-rose-100/90 px-1.5 py-0.5 rounded border border-rose-200/80">
                     Weekly Off
@@ -393,7 +415,7 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
                   /* Aggregate Team View */
                   dayRecords.length > 0 && (
                     <div className="text-[10px] bg-sky-50 text-sky-800 font-semibold px-1.5 py-0.5 rounded border border-sky-100">
-                      {dayRecords.filter(r => r.status === 'Present').length}P / {dayRecords.filter(r => r.status === 'Absent').length}A / {dayRecords.filter(r => r.status === 'Leave').length}L
+                      {dayRecords.length} Punched In
                     </div>
                   )
                 )}
