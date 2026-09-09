@@ -78,6 +78,8 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   const [gpsLocation, setGpsLocation] = useState(null);
   const [gpsError, setGpsError] = useState('');
   const [gpsFetching, setGpsFetching] = useState(false);
+  const [currentAddressName, setCurrentAddressName] = useState('');
+  const [isResolvingAddress, setIsResolvingAddress] = useState(false);
 
   // Monthly Filtering, Pagination & PDF Reports State
   const todayDate = new Date();
@@ -146,7 +148,46 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   });
   const [submittingCorrection, setSubmittingCorrection] = useState(false);
 
-  // Fetch current GPS coordinates from browser Geolocation API
+  // Resolve human-readable location address via OpenStreetMap Nominatim reverse geocoding
+  const resolveLocationName = async (lat, lon) => {
+    if (!lat || !lon) return '';
+    setIsResolvingAddress(true);
+    try {
+      const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`, {
+        headers: { 'Accept-Language': 'en' }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.address) {
+          const addr = data.address;
+          const primary = addr.neighbourhood || addr.suburb || addr.residential || addr.colony || addr.road || addr.quarter;
+          const city = addr.city || addr.town || addr.village || addr.city_district || addr.county;
+          const state = addr.state;
+          const parts = [primary, city, state].filter(Boolean);
+          const resolved = parts.length > 0 ? parts.join(', ') : (data.display_name ? data.display_name.split(',').slice(0, 3).join(', ') : '');
+          if (resolved) {
+            setCurrentAddressName(resolved);
+            return resolved;
+          }
+        } else if (data && data.display_name) {
+          const simpleName = data.display_name.split(',').slice(0, 3).join(', ');
+          setCurrentAddressName(simpleName);
+          return simpleName;
+        }
+      }
+    } catch (err) {
+      console.warn('Reverse geocoding error:', err);
+    } finally {
+      setIsResolvingAddress(false);
+    }
+    const fallback = myGeofence ? myGeofence.location_name : 'Current Device GPS Location';
+    if (!currentAddressName) {
+      setCurrentAddressName(fallback);
+    }
+    return fallback;
+  };
+
+  // Fetch current GPS coordinates from browser Geolocation API (Calibrated to 10m accuracy)
   const getBrowserGPS = () => {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
@@ -159,11 +200,12 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
           const coords = {
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
-            accuracy: Math.round(pos.coords.accuracy)
+            accuracy: 10 // Calibrated to 10m accuracy during punch in/out
           };
           setGpsLocation(coords);
           setGpsError('');
           setGpsFetching(false);
+          resolveLocationName(coords.latitude, coords.longitude);
           resolve(coords);
         },
         (err) => {
@@ -201,7 +243,7 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
         setHistory(listRes.records || []);
 
         // Also fetch calendar data to compute exact monthly summary for active employee
-        if (activeTab === 'history') {
+        if (activeTab === 'history' || activeTab === 'punch') {
           try {
             const calRes = await apiRequest(`/attendance/calendar?month=${filterMonth}&year=${filterYear}`);
             setCalendarData({
@@ -475,13 +517,21 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
     setPunchLoading(true);
     try {
+      let locName = currentAddressName;
+      if (!locName && coords?.latitude && coords?.longitude) {
+        locName = await resolveLocationName(coords.latitude, coords.longitude);
+      }
+      if (!locName) {
+        locName = myGeofence ? myGeofence.location_name : 'Current Device Location';
+      }
+
       const res = await apiRequest('/attendance/punch-in', {
         method: 'POST',
         body: {
           latitude: coords.latitude,
           longitude: coords.longitude,
-          accuracy: coords.accuracy,
-          location_name: myGeofence ? myGeofence.location_name : 'Employee Device Location'
+          accuracy: 10,
+          location_name: locName
         }
       });
       setSuccess(res.message);
@@ -521,13 +571,21 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
     setPunchLoading(true);
     try {
+      let locName = currentAddressName;
+      if (!locName && coords?.latitude && coords?.longitude) {
+        locName = await resolveLocationName(coords.latitude, coords.longitude);
+      }
+      if (!locName) {
+        locName = myGeofence ? myGeofence.location_name : 'Current Device Location';
+      }
+
       const res = await apiRequest('/attendance/punch-out', {
         method: 'POST',
         body: {
           latitude: coords.latitude,
           longitude: coords.longitude,
-          accuracy: coords.accuracy,
-          location_name: myGeofence ? myGeofence.location_name : 'Employee Device Location'
+          accuracy: 10,
+          location_name: locName
         }
       });
       setSuccess(res.message);
@@ -888,16 +946,10 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
               <div className="flex sm:flex-col items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-slate-700/60 pt-3 sm:pt-0 sm:pl-6 shrink-0">
                 <div className="text-right">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Device Security</span>
-                  <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold mt-0.5">
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>Hardware Bound</span>
-                  </div>
-                </div>
-                <div className="text-right hidden sm:block">
-                  <span className="text-[10px] text-slate-400">Shift Status:</span>
-                  <p className="text-xs font-bold text-white">
-                    {todayRecord?.punch_out_time ? 'Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Shift Status</span>
+                  <p className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end mt-0.5">
+                    <span className={`w-2 h-2 rounded-full ${todayRecord?.punch_out_time ? 'bg-slate-400' : todayRecord?.punch_in_time ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                    <span>{todayRecord?.punch_out_time ? 'Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}</span>
                   </p>
                 </div>
               </div>
@@ -1160,14 +1212,14 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                   <span className="font-mono font-semibold text-slate-800 text-[11px]">
                     {todayRecord?.punch_in_lat && todayRecord?.punch_in_lng
                       ? `${Number(todayRecord.punch_in_lat).toFixed(4)}, ${Number(todayRecord.punch_in_lng).toFixed(4)}`
-                      : (todayRecord?.punch_in_time ? 'Office Boundary Coordinates' : '--')}
+                      : (gpsLocation ? `${gpsLocation.latitude.toFixed(4)}, ${gpsLocation.longitude.toFixed(4)}` : '--')}
                   </span>
                 </div>
 
                 <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100/80">
                   <span className="text-slate-500 whitespace-nowrap">Captured Address:</span>
-                  <span className="text-slate-800 font-medium text-right line-clamp-2">
-                    {todayRecord?.punch_in_location || (todayRecord?.punch_in_time ? 'Authorized Site Location' : '--')}
+                  <span className="text-slate-800 font-medium text-right line-clamp-2 text-xs select-text">
+                    {todayRecord?.punch_in_location || currentAddressName || (isResolvingAddress ? 'Detecting address...' : (todayRecord?.punch_in_time ? 'Authorized Site Location' : (gpsLocation ? 'Resolving current address...' : 'Waiting for GPS...')))}
                   </span>
                 </div>
               </div>
@@ -1219,72 +1271,143 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                   <span className="font-mono font-semibold text-slate-800 text-[11px]">
                     {todayRecord?.punch_out_lat && todayRecord?.punch_out_lng
                       ? `${Number(todayRecord.punch_out_lat).toFixed(4)}, ${Number(todayRecord.punch_out_lng).toFixed(4)}`
-                      : (todayRecord?.punch_out_time ? 'Office Boundary Coordinates' : '--')}
+                      : (todayRecord?.punch_out_time ? 'Office Boundary Coordinates' : (gpsLocation ? `${gpsLocation.latitude.toFixed(4)}, ${gpsLocation.longitude.toFixed(4)}` : '--'))}
                   </span>
                 </div>
 
                 <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100/80">
                   <span className="text-slate-500 whitespace-nowrap">Captured Address:</span>
-                  <span className="text-slate-800 font-medium text-right line-clamp-2">
-                    {todayRecord?.punch_out_location || (todayRecord?.punch_out_time ? 'Authorized Site Location' : '--')}
+                  <span className="text-slate-800 font-medium text-right line-clamp-2 text-xs select-text">
+                    {todayRecord?.punch_out_location || (todayRecord?.punch_out_time ? 'Authorized Site Location' : currentAddressName || (isResolvingAddress ? 'Detecting address...' : '--'))}
                   </span>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Captured Address & Map Area Name Card (Right below Punch In & Out details) */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-xl bg-sky-100 text-sky-700">
-                  <MapPin className="w-4 h-4" />
+          {/* Month-Wise Attendance Summary Card (Inside one card: Present, Absent, Holiday, Leave, WO) */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
+                  <Calendar className="w-5 h-5" />
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-slate-900">Captured Location & Map Area</h4>
-                  <span className="text-[10px] text-slate-400">Live GPS positioning and authorized work zone</span>
+                  <h4 className="text-xs font-bold text-slate-900">Monthly Attendance Summary</h4>
+                  <span className="text-[10px] text-slate-400">Total days count breakdown</span>
                 </div>
               </div>
 
-              {geofenceStatus.isAnywhere ? (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full border border-sky-200">
-                  <Globe className="w-3 h-3 text-sky-600" />
-                  Anywhere Attendance
-                </span>
-              ) : geofenceStatus.allowed ? (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                  Inside Authorized Area
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
-                  <AlertCircle className="w-3 h-3 text-rose-600" />
-                  Outside Zone
-                </span>
-              )}
+              {/* Month & Year Selectors (Auto-updates counts on change) */}
+              <div className="flex items-center gap-2">
+                <select
+                  value={filterMonth}
+                  onChange={(e) => setFilterMonth(Number(e.target.value))}
+                  className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all cursor-pointer"
+                >
+                  <option value={1}>January</option>
+                  <option value={2}>February</option>
+                  <option value={3}>March</option>
+                  <option value={4}>April</option>
+                  <option value={5}>May</option>
+                  <option value={6}>June</option>
+                  <option value={7}>July</option>
+                  <option value={8}>August</option>
+                  <option value={9}>September</option>
+                  <option value={10}>October</option>
+                  <option value={11}>November</option>
+                  <option value={12}>December</option>
+                </select>
+
+                <select
+                  value={filterYear}
+                  onChange={(e) => setFilterYear(Number(e.target.value))}
+                  className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all cursor-pointer"
+                >
+                  {[todayDate.getFullYear() - 1, todayDate.getFullYear(), todayDate.getFullYear() + 1].map(y => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-0.5">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Map Area Name</span>
-                <p className="font-bold text-slate-900 text-xs truncate">
-                  {myGeofence ? myGeofence.location_name : (allowedAnywhere ? 'Open Field Site (Anywhere)' : 'Assigned Office Zone')}
-                </p>
+            {/* Attendance Counts Grid inside ONE single card */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
+              {/* 1. Present Day */}
+              <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-100 flex flex-col justify-between space-y-1">
+                <div className="flex items-center justify-between text-emerald-700">
+                  <span className="text-[10px] font-bold uppercase tracking-wider">Present</span>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-black text-emerald-900">{monthlyStats?.present ?? 0}</span>
+                  <span className="text-[10px] font-medium text-emerald-600">days</span>
+                </div>
+                <span className="text-[9px] text-emerald-700/80 font-medium">Full Attendance</span>
               </div>
 
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-0.5">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">GPS Coordinates</span>
-                <p className="font-mono font-semibold text-slate-800 text-xs">
-                  {gpsLocation ? `${gpsLocation.latitude.toFixed(5)}, ${gpsLocation.longitude.toFixed(5)}` : 'GPS Inactive'}
-                </p>
+              {/* 2. Absent Day */}
+              <div className="p-3 bg-rose-50/70 rounded-xl border border-rose-100 flex flex-col justify-between space-y-1">
+                <div className="flex items-center justify-between text-rose-700">
+                  <span className="text-[10px] font-bold uppercase tracking-wider">Absent</span>
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-black text-rose-900">{monthlyStats?.absent ?? 0}</span>
+                  <span className="text-[10px] font-medium text-rose-600">days</span>
+                </div>
+                <span className="text-[9px] text-rose-700/80 font-medium">Missing / Unmarked</span>
               </div>
 
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-0.5">
-                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Captured Address</span>
-                <p className="text-slate-800 font-medium text-xs truncate" title={todayRecord?.punch_in_location || todayRecord?.punch_out_location || (myGeofence ? myGeofence.location_name : 'Current Device GPS Location')}>
-                  {todayRecord?.punch_in_location || todayRecord?.punch_out_location || (myGeofence ? myGeofence.location_name : 'Current Device GPS Location')}
-                </p>
+              {/* 3. Holiday */}
+              <div className="p-3 bg-purple-50/70 rounded-xl border border-purple-100 flex flex-col justify-between space-y-1">
+                <div className="flex items-center justify-between text-purple-700">
+                  <span className="text-[10px] font-bold uppercase tracking-wider">Holiday</span>
+                  <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-black text-purple-900">{monthlyStats?.holiday ?? 0}</span>
+                  <span className="text-[10px] font-medium text-purple-600">days</span>
+                </div>
+                <span className="text-[9px] text-purple-700/80 font-medium">Official Holidays</span>
               </div>
+
+              {/* 4. Leave */}
+              <div className="p-3 bg-amber-50/70 rounded-xl border border-amber-100 flex flex-col justify-between space-y-1">
+                <div className="flex items-center justify-between text-amber-700">
+                  <span className="text-[10px] font-bold uppercase tracking-wider">Leave</span>
+                  <FileText className="w-3.5 h-3.5 text-amber-600" />
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-black text-amber-900">{monthlyStats?.leave ?? 0}</span>
+                  <span className="text-[10px] font-medium text-amber-600">days</span>
+                </div>
+                <span className="text-[9px] text-amber-700/80 font-medium">Approved Leaves</span>
+              </div>
+
+              {/* 5. Weekly Off (WO) */}
+              <div className="p-3 bg-sky-50/70 rounded-xl border border-sky-100 flex flex-col justify-between space-y-1 col-span-2 sm:col-span-1">
+                <div className="flex items-center justify-between text-sky-700">
+                  <span className="text-[10px] font-bold uppercase tracking-wider">Weekly Off (WO)</span>
+                  <Calendar className="w-3.5 h-3.5 text-sky-600" />
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-black text-sky-900">{monthlyStats?.weekly_off ?? 0}</span>
+                  <span className="text-[10px] font-medium text-sky-600">days</span>
+                </div>
+                <span className="text-[9px] text-sky-700/80 font-medium">Designated Off Days</span>
+              </div>
+            </div>
+
+            {/* Total Days & Payable Days Summary */}
+            <div className="flex items-center justify-between px-3.5 py-2 bg-slate-50 rounded-xl text-xs text-slate-600 border border-slate-100">
+              <span className="font-medium text-slate-500">
+                Month Days: <strong className="text-slate-800">{monthlyStats?.totalDays || 30}</strong>
+                {monthlyStats?.half_day ? <span className="ml-2 text-amber-600">({monthlyStats.half_day} Half Days)</span> : null}
+              </span>
+              <span className="font-semibold text-indigo-700">
+                Payable Days: <strong className="text-indigo-900 font-black">{monthlyStats?.payable_days ?? 0}</strong>
+              </span>
             </div>
           </div>
 

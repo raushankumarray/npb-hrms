@@ -402,6 +402,19 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
 
           <button
             type="button"
+            onClick={() => onSelectTab('correction')}
+            className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all ${
+              activeTab === 'correction'
+                ? 'text-sky-600 font-bold scale-105'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Edit3 className={`w-5 h-5 ${activeTab === 'correction' ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
+            <span className="text-[10px] mt-0.5 font-medium">Correction</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => onSelectTab('history')}
             className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all ${
               activeTab === 'history'
