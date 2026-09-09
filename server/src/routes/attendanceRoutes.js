@@ -987,8 +987,7 @@ router.post('/export', verifyAuth, (req, res) => {
   } = req.body;
 
   const defaultCols = [
-    'Employee Name', 'Employee ID', 'Date', 'Punch In', 'GPS Lat/Long (Punch In)', 'Address (Punch In)',
-    'Punch Out', 'GPS Lat/Long (Punch Out)', 'Address (Punch Out)', 'Working Hours', 'Status', 'Remarks'
+    'Employee', 'Date', 'Punch In', 'Punch Out', 'Hours', 'Status', 'Location / Geofence', 'Remarks'
   ];
   const activeCols = (selected_columns && selected_columns.length > 0) ? selected_columns : defaultCols;
 
@@ -1078,21 +1077,31 @@ router.post('/export', verifyAuth, (req, res) => {
 
     const dataQuery = `
       SELECT
+        (e.full_name || ' (' || e.employee_id || ')') as "Employee",
         e.full_name as "Employee Name",
         e.employee_id as "Employee ID",
         COALESCE(a.date, ?) as "Date",
         COALESCE(a.punch_in_time, '-') as "Punch In",
+        COALESCE(a.punch_out_time, '-') as "Punch Out",
+        CASE WHEN a.total_hours IS NOT NULL THEN (a.total_hours || ' hrs') ELSE '0 hrs' END as "Hours",
+        CASE WHEN a.total_hours IS NOT NULL THEN (a.total_hours || ' hrs') ELSE '0 hrs' END as "Working Hours",
+        (${statusExpr}) as "Status",
+        COALESCE(
+          CASE 
+            WHEN a.punch_in_location IS NOT NULL AND a.punch_in_location != '' THEN a.punch_in_location
+            WHEN a.punch_in_lat IS NOT NULL AND a.punch_in_lng IS NOT NULL THEN (ROUND(a.punch_in_lat, 4) || ', ' || ROUND(a.punch_in_lng, 4))
+            ELSE '-' 
+          END,
+          '-'
+        ) as "Location / Geofence",
         CASE WHEN a.punch_in_lat IS NOT NULL AND a.punch_in_lng IS NOT NULL 
              THEN (ROUND(a.punch_in_lat, 4) || ', ' || ROUND(a.punch_in_lng, 4)) 
              ELSE '-' END as "GPS Lat/Long (Punch In)",
         COALESCE(a.punch_in_location, '-') as "Address (Punch In)",
-        COALESCE(a.punch_out_time, '-') as "Punch Out",
         CASE WHEN a.punch_out_lat IS NOT NULL AND a.punch_out_lng IS NOT NULL 
              THEN (ROUND(a.punch_out_lat, 4) || ', ' || ROUND(a.punch_out_lng, 4)) 
              ELSE '-' END as "GPS Lat/Long (Punch Out)",
         COALESCE(a.punch_out_location, '-') as "Address (Punch Out)",
-        CASE WHEN a.total_hours IS NOT NULL THEN (a.total_hours || ' hrs') ELSE '0 hrs' END as "Working Hours",
-        (${statusExpr}) as "Status",
         COALESCE(
           a.remarks,
           CASE
@@ -1238,21 +1247,31 @@ router.post('/export', verifyAuth, (req, res) => {
 
   const dataQuery = `
     SELECT
+      (e.full_name || ' (' || e.employee_id || ')') as "Employee",
       e.full_name as "Employee Name",
       e.employee_id as "Employee ID",
       a.date as "Date",
       COALESCE(a.punch_in_time, '-') as "Punch In",
+      COALESCE(a.punch_out_time, '-') as "Punch Out",
+      (COALESCE(a.total_hours, 0) || ' hrs') as "Hours",
+      (COALESCE(a.total_hours, 0) || ' hrs') as "Working Hours",
+      a.status as "Status",
+      COALESCE(
+        CASE 
+          WHEN a.punch_in_location IS NOT NULL AND a.punch_in_location != '' THEN a.punch_in_location
+          WHEN a.punch_in_lat IS NOT NULL AND a.punch_in_lng IS NOT NULL THEN (ROUND(a.punch_in_lat, 4) || ', ' || ROUND(a.punch_in_lng, 4))
+          ELSE '-' 
+        END,
+        '-'
+      ) as "Location / Geofence",
       CASE WHEN a.punch_in_lat IS NOT NULL AND a.punch_in_lng IS NOT NULL 
            THEN (ROUND(a.punch_in_lat, 4) || ', ' || ROUND(a.punch_in_lng, 4)) 
            ELSE '-' END as "GPS Lat/Long (Punch In)",
       COALESCE(a.punch_in_location, '-') as "Address (Punch In)",
-      COALESCE(a.punch_out_time, '-') as "Punch Out",
       CASE WHEN a.punch_out_lat IS NOT NULL AND a.punch_out_lng IS NOT NULL 
            THEN (ROUND(a.punch_out_lat, 4) || ', ' || ROUND(a.punch_out_lng, 4)) 
            ELSE '-' END as "GPS Lat/Long (Punch Out)",
       COALESCE(a.punch_out_location, '-') as "Address (Punch Out)",
-      (COALESCE(a.total_hours, 0) || ' hrs') as "Working Hours",
-      a.status as "Status",
       COALESCE(a.remarks, '') as "Remarks",
       COALESCE(e.department, '') as "Department",
       COALESCE(s.name, 'General') as "Shift"
