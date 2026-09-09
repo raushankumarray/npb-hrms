@@ -25,7 +25,7 @@ router.get('/', verifyAuth, (req, res) => {
 });
 
 // Add Holiday
-router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { name, holiday_date, date, is_optional, applies_to } = req.body;
   const finalDate = holiday_date || date;
@@ -92,7 +92,7 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin'])
 });
 
 // Edit Holiday
-router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const holidayId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
   const { name, holiday_date, date, is_optional, applies_to } = req.body;
@@ -137,7 +137,7 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin'
 });
 
 // Delete Holiday
-router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const holidayId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
 

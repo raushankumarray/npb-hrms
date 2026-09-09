@@ -366,7 +366,7 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
           );
         }
       }
-    } else if (ticket.status === 'pending' && (role === 'support' || role === 'hr' || role === 'manager' || role === 'company_admin')) {
+    } else if (ticket.status === 'pending' && (role === 'support' || role === 'manager' || role === 'company_admin')) {
       // Automatically switch from pending to in_progress when support/admin replies
       finalStatus = 'in_progress';
       db.prepare("UPDATE service_requests SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(reqId);

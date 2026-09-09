@@ -535,7 +535,6 @@ export default function HolidaysWeeklyOffView({ company, role = 'company_admin' 
                     <option value="all">All Roles</option>
                     <option value="employee">Employees Only</option>
                     <option value="manager">Managers Only</option>
-                    <option value="hr">HR Personnel Only</option>
                   </select>
                 </div>
 

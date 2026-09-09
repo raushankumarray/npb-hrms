@@ -138,8 +138,8 @@ router.put('/company-policy', verifyAuth, requireRole(['company_admin', 'super_a
   });
 });
 
-// Bulk Assign Employees to Geofence or Anywhere (Company Admin, HR, Super Admin)
-router.post('/bulk-assign', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+// Bulk Assign Employees to Geofence or Anywhere (Company Admin, Super Admin)
+router.post('/bulk-assign', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { employee_ids, geofence_id } = req.body;
 
@@ -207,8 +207,8 @@ router.post('/bulk-assign', verifyAuth, requireRole(['company_admin', 'hr', 'sup
   });
 });
 
-// Create Geofence (Company Admin, HR, Super Admin)
-router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+// Create Geofence (Company Admin, Super Admin)
+router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { location_name, latitude, longitude, radius, employee_ids } = req.body;
 
@@ -251,7 +251,7 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin'])
 });
 
 // Update Geofence
-router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const gfId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
   const { location_name, latitude, longitude, radius, status, employee_ids } = req.body;
@@ -306,7 +306,7 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin'
 });
 
 // Delete Geofence
-router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const gfId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
 

@@ -48,7 +48,6 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
       (SELECT username FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_username,
       (SELECT email FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_email,
       (SELECT COUNT(*) FROM employees e JOIN users u ON e.user_id = u.id JOIN roles r ON u.role_id = r.id WHERE e.company_id = c.id AND r.name = 'manager') as total_managers,
-      (SELECT COUNT(*) FROM employees e JOIN users u ON e.user_id = u.id JOIN roles r ON u.role_id = r.id WHERE e.company_id = c.id AND r.name = 'hr') as total_hrs,
       s.show_branding_mode, s.timezone, s.auto_archive_days
     FROM companies c
     LEFT JOIN company_settings s ON c.id = s.company_id

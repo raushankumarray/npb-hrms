@@ -111,7 +111,6 @@ function seedDatabase() {
       ['super_admin', 'Global System Super Administrator with all permissions'],
       ['support', 'Multi-tenant Technical & Operations Support User'],
       ['company_admin', 'Company Administrator with full tenant authority'],
-      ['hr', 'HR Manager handling Employee Masters, Attendance, Leaves'],
       ['manager', 'Department Manager handling Approvals and My Employees'],
       ['employee', 'Standard Employee punching attendance and viewing records']
     ];
@@ -245,21 +244,7 @@ function seedDatabase() {
       VALUES (?, ?, ?, ?, ?, 'active')
     `).run('npb_admin', compAdminHash, 'admin@npbattendance.com', roleMap['company_admin'], npbId);
 
-    // 6b. HR: npb_hr / Hr@12345
-    const hrHash = bcrypt.hashSync('Hr@12345', 10);
-    const hrUser = db.prepare(`
-      INSERT INTO users (username, password_hash, email, role_id, company_id, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
-    `).run('npb_hr', hrHash, 'hr@npbattendance.com', roleMap['hr'], npbId);
-
-    const hrEmp = db.prepare(`
-      INSERT INTO employees (
-        company_id, user_id, employee_id, full_name, mobile, email, department, designation,
-        shift_id, weekly_off_id, geofence_id, geofence_mode, status
-      ) VALUES (?, ?, 'EMP_HR_01', 'Priya Sharma (HR)', '9811223344', 'priya.sharma@npbattendance.com', 'Human Resources', 'HR Lead', ?, ?, ?, 'company', 'active')
-    `).run(npbId, hrUser.lastInsertRowid, shiftMorning.lastInsertRowid, weeklyOff.lastInsertRowid, gfNpbHQ.lastInsertRowid);
-
-    // 6c. Manager: npb_mgr / Mgr@12345
+    // 6b. Manager: npb_mgr / Mgr@12345
     const mgrHash = bcrypt.hashSync('Mgr@12345', 10);
     const mgrUser = db.prepare(`
       INSERT INTO users (username, password_hash, email, role_id, company_id, status)

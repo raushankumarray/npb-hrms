@@ -31,7 +31,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  // Role filter for Personnel tab: 'all', 'employee', 'manager', 'hr'
+  // Role filter for Personnel tab: 'all', 'employee', 'manager'
   const [roleFilter, setRoleFilter] = useState('all');
 
   // Employee Directory state: Pagination, Filtering & Excel
@@ -51,7 +51,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   // Mapping state
   const [mappings, setMappings] = useState([]);
   const [mappingSupervisorId, setMappingSupervisorId] = useState('');
-  const [mappingRoleType, setMappingRoleType] = useState('manager'); // 'manager' | 'hr'
+  const [mappingRoleType, setMappingRoleType] = useState('manager'); // 'manager'
   const [selectedMappingEmpIds, setSelectedMappingEmpIds] = useState([]);
   const [mappingSubmitting, setMappingSubmitting] = useState(false);
 
@@ -131,9 +131,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [showHolidayModal, setShowHolidayModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
 
-  // New Staff (Employee / Manager / HR) Form State
+  // New Staff (Employee / Manager) Form State
   const [staffForm, setStaffForm] = useState({
-    role: 'employee', // 'employee' | 'manager' | 'hr'
+    role: 'employee', // 'employee' | 'manager'
     employee_id: '',
     full_name: '',
     username: '',
@@ -291,14 +291,12 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       password: 'User@12345',
       email: '',
       mobile: '',
-      department: targetRole === 'hr' ? 'Human Resources' : targetRole === 'manager' ? 'Management' : 'Operations',
-      designation: targetRole === 'hr' ? 'HR Lead' : targetRole === 'manager' ? 'Team Manager' : 'Associate',
+      department: targetRole === 'manager' ? 'Management' : 'Operations',
+      designation: targetRole === 'manager' ? 'Team Manager' : 'Associate',
       city: '',
       reports_to_manager: false,
       manager_id: '',
-      reports_to_hr: false,
-      hr_id: '',
-      reports_to_admin: targetRole === 'hr',
+      reports_to_admin: targetRole === 'manager',
       shift_id: shifts[0]?.id ? String(shifts[0].id) : '',
       geofence_id: geofences[0]?.id ? String(geofences[0].id) : '',
       geofence_mode: 'custom'
@@ -312,25 +310,12 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     try {
       // Validate mapping requirements based on position
       if (staffForm.role === 'employee') {
-        if (!staffForm.reports_to_manager && !staffForm.reports_to_hr && !staffForm.reports_to_admin) {
-          setError('Please select at least one reporting line (Manager, HR Lead, or Company Admin).');
+        if (!staffForm.reports_to_manager && !staffForm.reports_to_admin) {
+          setError('Please select at least one reporting line (Manager or Company Admin).');
           return;
         }
         if (staffForm.reports_to_manager && !staffForm.manager_id) {
           setError('Please select a Reporting Manager from the dropdown.');
-          return;
-        }
-        if (staffForm.reports_to_hr && !staffForm.hr_id) {
-          setError('Please select a Reporting HR Lead from the dropdown.');
-          return;
-        }
-      } else if (staffForm.role === 'manager') {
-        if (!staffForm.reports_to_hr && !staffForm.reports_to_admin) {
-          setError('Please select at least one reporting line (HR Lead or Company Admin).');
-          return;
-        }
-        if (staffForm.reports_to_hr && !staffForm.hr_id) {
-          setError('Please select a Reporting HR Lead from the dropdown.');
           return;
         }
       }
@@ -338,8 +323,8 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       const payload = {
         ...staffForm,
         manager_id: (staffForm.role === 'employee' && staffForm.reports_to_manager) ? staffForm.manager_id : null,
-        hr_id: ((staffForm.role === 'employee' || staffForm.role === 'manager') && staffForm.reports_to_hr) ? staffForm.hr_id : null,
-        reports_to_admin: staffForm.role === 'hr' ? 1 : (staffForm.reports_to_admin ? 1 : 0),
+        hr_id: null,
+        reports_to_admin: staffForm.role === 'manager' ? 1 : (staffForm.reports_to_admin ? 1 : 0),
         geofence_mode: staffForm.geofence_id ? 'custom' : 'company'
       };
 
@@ -367,12 +352,10 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       department: emp.department || 'Operations',
       designation: emp.designation || 'Staff',
       city: emp.city || '',
-      role: role,
+      role: role === 'hr' ? 'employee' : role,
       reports_to_manager: !!emp.manager_id,
       manager_id: emp.manager_id ? String(emp.manager_id) : '',
-      reports_to_hr: !!emp.hr_id,
-      hr_id: emp.hr_id ? String(emp.hr_id) : '',
-      reports_to_admin: role === 'hr' ? true : !!emp.reports_to_admin,
+      reports_to_admin: !!emp.reports_to_admin,
       shift_id: emp.shift_id ? String(emp.shift_id) : '',
       geofence_id: emp.geofence_id ? String(emp.geofence_id) : '',
       geofence_mode: emp.geofence_id ? 'custom' : (emp.geofence_mode || 'company'),
@@ -387,25 +370,12 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     setError('');
     try {
       if (editStaffForm.role === 'employee') {
-        if (!editStaffForm.reports_to_manager && !editStaffForm.reports_to_hr && !editStaffForm.reports_to_admin) {
-          setError('Please select at least one reporting line (Manager, HR Lead, or Company Admin).');
+        if (!editStaffForm.reports_to_manager && !editStaffForm.reports_to_admin) {
+          setError('Please select at least one reporting line (Manager or Company Admin).');
           return;
         }
         if (editStaffForm.reports_to_manager && !editStaffForm.manager_id) {
           setError('Please select a Reporting Manager from the dropdown.');
-          return;
-        }
-        if (editStaffForm.reports_to_hr && !editStaffForm.hr_id) {
-          setError('Please select a Reporting HR Lead from the dropdown.');
-          return;
-        }
-      } else if (editStaffForm.role === 'manager') {
-        if (!editStaffForm.reports_to_hr && !editStaffForm.reports_to_admin) {
-          setError('Please select at least one reporting line (HR Lead or Company Admin).');
-          return;
-        }
-        if (editStaffForm.reports_to_hr && !editStaffForm.hr_id) {
-          setError('Please select a Reporting HR Lead from the dropdown.');
           return;
         }
       }
@@ -413,8 +383,8 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       const payload = {
         ...editStaffForm,
         manager_id: (editStaffForm.role === 'employee' && editStaffForm.reports_to_manager) ? editStaffForm.manager_id : null,
-        hr_id: ((editStaffForm.role === 'employee' || editStaffForm.role === 'manager') && editStaffForm.reports_to_hr) ? editStaffForm.hr_id : null,
-        reports_to_admin: editStaffForm.role === 'hr' ? 1 : (editStaffForm.reports_to_admin ? 1 : 0),
+        hr_id: null,
+        reports_to_admin: editStaffForm.role === 'manager' ? 1 : (editStaffForm.reports_to_admin ? 1 : 0),
         geofence_mode: editStaffForm.geofence_id ? 'custom' : 'company'
       };
 
@@ -461,7 +431,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const handleSaveMapping = async (e) => {
     e.preventDefault();
     if (!mappingSupervisorId) {
-      setError('Please select a supervisor (Manager or HR Lead).');
+      setError('Please select a supervisor (Manager).');
       return;
     }
     if (selectedMappingEmpIds.length === 0) {
@@ -941,8 +911,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 <span className="text-sky-600">{employees.filter(e => e.role_name === 'employee').length} Employees</span>
                 <span>•</span>
                 <span className="text-purple-600">{employees.filter(e => e.role_name === 'manager').length} Managers</span>
-                <span>•</span>
-                <span className="text-emerald-600">{employees.filter(e => e.role_name === 'hr').length} HR</span>
               </div>
             </div>
 
@@ -1075,15 +1043,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 >
                   Managers
                 </button>
-                <button
-                  type="button"
-                  onClick={() => { setRoleFilter('hr'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'hr' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  HR Leads
-                </button>
               </div>
 
               <div className="text-xs text-slate-400">
@@ -1205,7 +1164,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       <td className="p-3 font-mono font-bold text-sky-600">{e.employee_id}</td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          e.role_name === 'hr' ? 'bg-emerald-100 text-emerald-800' :
                           e.role_name === 'manager' ? 'bg-purple-100 text-purple-800' :
                           'bg-sky-100 text-sky-800'
                         }`}>
@@ -1229,25 +1187,19 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                               <span className="truncate max-w-[100px]">Mgr: {e.manager_name}</span>
                             </span>
                           )}
-                          {e.hr_name && (
-                            <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-semibold flex items-center gap-1 shadow-xs" title={`Reports to HR: ${e.hr_name} (${e.hr_code || ''})`}>
-                              <Shield className="w-2.5 h-2.5 shrink-0 text-emerald-600" />
-                              <span className="truncate max-w-[100px]">HR: {e.hr_name}</span>
-                            </span>
-                          )}
-                          {(e.reports_to_admin || e.role_name === 'hr') && (
+                          {e.reports_to_admin && (
                             <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-semibold flex items-center gap-1 shadow-xs" title="Reports directly to Company Administrator">
                               <Shield className="w-2.5 h-2.5 shrink-0 text-amber-600" />
                               <span>Direct Admin</span>
                             </span>
                           )}
-                          {!e.manager_name && !e.hr_name && !e.reports_to_admin && e.role_name !== 'hr' && (
+                          {!e.manager_name && !e.reports_to_admin && (
                             <span className="text-slate-400 italic text-[11px]">Direct Report</span>
                           )}
                         </div>
                       </td>
                       <td className="p-3">
-                        {(e.role_name === 'manager' || e.role_name === 'hr') && !e.geofence_id ? (
+                        {e.role_name === 'manager' && !e.geofence_id ? (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
                             Exempt (Not Required)
                           </span>
@@ -1895,11 +1847,11 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     Employee Only
                   </span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">
-                    Manager & HR Exempt
+                    Manager Exempt
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Geofence boundaries are enforced <strong>strictly for staff with the Employee role</strong>. Managers and HR personnel are exempt from location boundaries and can mark attendance from anywhere.
+                  Geofence boundaries are enforced <strong>strictly for staff with the Employee role</strong>. Managers are exempt from location boundaries and can mark attendance from anywhere.
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1 text-xs">
                   <div className="flex items-center gap-2 text-slate-700 bg-white/70 p-2.5 rounded-xl border border-sky-100/60">
@@ -2220,7 +2172,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                             <div className="flex items-center gap-1.5">
                               <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
                                 emp.role_name === 'manager' ? 'bg-purple-100 text-purple-700' :
-                                emp.role_name === 'hr' ? 'bg-amber-100 text-amber-700' :
                                 'bg-slate-100 text-slate-700'
                               }`}>
                                 {emp.role_name}
@@ -2499,25 +2450,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   >
                     Manager
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setStaffForm({
-                      ...staffForm,
-                      role: 'hr',
-                      department: 'Human Resources',
-                      designation: 'HR Lead',
-                      reports_to_manager: false,
-                      manager_id: '',
-                      reports_to_hr: false,
-                      hr_id: '',
-                      reports_to_admin: true
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      staffForm.role === 'hr' ? 'bg-emerald-50 border-emerald-500 text-emerald-700 ring-1 ring-emerald-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    HR Lead
-                  </button>
                 </div>
               </div>
 
@@ -2526,10 +2458,10 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-slate-800 flex items-center gap-1.5">
                     <GitMerge className="w-4 h-4 text-sky-600" />
-                    Multi-Level Reporting Hierarchy
+                    Reporting Line
                   </span>
                   <span className="text-[10px] text-slate-500 font-medium">
-                    {staffForm.role === 'employee' ? 'Tick one or more' : staffForm.role === 'manager' ? 'Tick HR, Admin, or both' : 'Direct Admin Report'}
+                    {staffForm.role === 'employee' ? 'Select reporting manager or direct admin' : 'Direct Admin Report'}
                   </span>
                 </div>
 
@@ -2567,90 +2499,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       )}
                     </div>
 
-                    {/* Checkbox 2: HR Lead */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={staffForm.reports_to_hr}
-                          onChange={(e) => setStaffForm({
-                            ...staffForm,
-                            reports_to_hr: e.target.checked,
-                            hr_id: e.target.checked ? staffForm.hr_id : ''
-                          })}
-                          className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4"
-                        />
-                        <span>Report to HR Lead</span>
-                      </label>
-                      {staffForm.reports_to_hr && (
-                        <div className="ml-6 mt-1.5">
-                          <select
-                            value={staffForm.hr_id}
-                            onChange={(e) => setStaffForm({ ...staffForm, hr_id: e.target.value })}
-                            className="w-full p-2 border rounded-lg bg-white text-xs"
-                            required={staffForm.reports_to_hr}
-                          >
-                            <option value="">-- Select Reporting HR Lead * --</option>
-                            {employees.filter(e => e.role_name === 'hr').map(h => (
-                              <option key={h.id} value={h.id}>{h.full_name} ({h.employee_id}) - {h.designation || 'HR Lead'}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Checkbox 3: Direct Admin */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={staffForm.reports_to_admin}
-                          onChange={(e) => setStaffForm({ ...staffForm, reports_to_admin: e.target.checked })}
-                          className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
-                        />
-                        <span className="flex items-center gap-1.5">
-                          <span>Report Directly to Company Admin</span>
-                          <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">Admin Level</span>
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                {staffForm.role === 'manager' && (
-                  <div className="space-y-2.5 pt-1">
-                    {/* Checkbox 1: HR Lead */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={staffForm.reports_to_hr}
-                          onChange={(e) => setStaffForm({
-                            ...staffForm,
-                            reports_to_hr: e.target.checked,
-                            hr_id: e.target.checked ? staffForm.hr_id : ''
-                          })}
-                          className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4"
-                        />
-                        <span>Report to HR Lead</span>
-                      </label>
-                      {staffForm.reports_to_hr && (
-                        <div className="ml-6 mt-1.5">
-                          <select
-                            value={staffForm.hr_id}
-                            onChange={(e) => setStaffForm({ ...staffForm, hr_id: e.target.value })}
-                            className="w-full p-2 border rounded-lg bg-white text-xs"
-                            required={staffForm.reports_to_hr}
-                          >
-                            <option value="">-- Select Reporting HR Lead * --</option>
-                            {employees.filter(e => e.role_name === 'hr').map(h => (
-                              <option key={h.id} value={h.id}>{h.full_name} ({h.employee_id}) - {h.designation || 'HR Lead'}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
                     {/* Checkbox 2: Direct Admin */}
                     <div>
                       <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
@@ -2669,11 +2517,11 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   </div>
                 )}
 
-                {staffForm.role === 'hr' && (
-                  <div className="flex items-center gap-2 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                {staffForm.role === 'manager' && (
+                  <div className="flex items-center gap-2 p-2.5 bg-purple-50 border border-purple-200 rounded-lg text-purple-800">
+                    <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
                     <span className="text-[11px] font-medium">
-                      Direct Report: Company Admin (All HR personnel report directly to the Company Administrator).
+                      Direct Report: Company Admin (All Managers report directly to the Company Administrator).
                     </span>
                   </div>
                 )}
@@ -2686,7 +2534,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     <Compass className="w-4 h-4 text-sky-600" />
                     Geofencing & Shift Assignment
                   </span>
-                  {staffForm.role === 'manager' || staffForm.role === 'hr' ? (
+                  {staffForm.role === 'manager' ? (
                     <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" /> Geofencing Optional (Exempt)
                     </span>
@@ -2716,7 +2564,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     <p className="text-[10px] text-slate-500 mt-1">
                       {staffForm.role === 'employee'
                         ? 'Attendance punches are strictly blocked outside this perimeter.'
-                        : 'Managers and HR are exempt; can punch from anywhere unless customized.'}
+                        : 'Managers are exempt; can punch from anywhere unless customized.'}
                     </p>
                   </div>
                   <div>
@@ -2904,16 +2752,13 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                         role: newRole,
                         reports_to_manager: newRole === 'employee' ? editStaffForm.reports_to_manager : false,
                         manager_id: newRole === 'employee' ? editStaffForm.manager_id : '',
-                        reports_to_hr: newRole === 'hr' ? false : editStaffForm.reports_to_hr,
-                        hr_id: newRole === 'hr' ? '' : editStaffForm.hr_id,
-                        reports_to_admin: newRole === 'hr' ? true : editStaffForm.reports_to_admin
+                        reports_to_admin: newRole === 'manager' ? true : editStaffForm.reports_to_admin
                       });
                     }}
                     className="w-full p-2 border rounded-lg bg-white capitalize font-medium text-slate-800"
                   >
                     <option value="employee">Employee</option>
                     <option value="manager">Manager</option>
-                    <option value="hr">HR Lead</option>
                   </select>
                 </div>
               </div>
@@ -2923,10 +2768,10 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-slate-800 flex items-center gap-1.5">
                     <GitMerge className="w-4 h-4 text-sky-600" />
-                    Multi-Level Reporting Hierarchy
+                    Reporting Line
                   </span>
                   <span className="text-[10px] text-slate-500 font-medium">
-                    {editStaffForm.role === 'employee' ? 'Tick one or more' : editStaffForm.role === 'manager' ? 'Tick HR, Admin, or both' : 'Direct Admin Report'}
+                    {editStaffForm.role === 'employee' ? 'Select reporting manager or direct admin' : 'Direct Admin Report'}
                   </span>
                 </div>
 
@@ -2964,90 +2809,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       )}
                     </div>
 
-                    {/* Checkbox 2: HR Lead */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={editStaffForm.reports_to_hr}
-                          onChange={(e) => setEditStaffForm({
-                            ...editStaffForm,
-                            reports_to_hr: e.target.checked,
-                            hr_id: e.target.checked ? editStaffForm.hr_id : ''
-                          })}
-                          className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4"
-                        />
-                        <span>Report to HR Lead</span>
-                      </label>
-                      {editStaffForm.reports_to_hr && (
-                        <div className="ml-6 mt-1.5">
-                          <select
-                            value={editStaffForm.hr_id}
-                            onChange={(e) => setEditStaffForm({ ...editStaffForm, hr_id: e.target.value })}
-                            className="w-full p-2 border rounded-lg bg-white text-xs"
-                            required={editStaffForm.reports_to_hr}
-                          >
-                            <option value="">-- Select Reporting HR Lead * --</option>
-                            {employees.filter(e => e.role_name === 'hr' && e.id !== editingStaffId).map(h => (
-                              <option key={h.id} value={h.id}>{h.full_name} ({h.employee_id}) - {h.designation || 'HR Lead'}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Checkbox 3: Direct Admin */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={editStaffForm.reports_to_admin}
-                          onChange={(e) => setEditStaffForm({ ...editStaffForm, reports_to_admin: e.target.checked })}
-                          className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
-                        />
-                        <span className="flex items-center gap-1.5">
-                          <span>Report Directly to Company Admin</span>
-                          <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">Admin Level</span>
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                {editStaffForm.role === 'manager' && (
-                  <div className="space-y-2.5 pt-1">
-                    {/* Checkbox 1: HR Lead */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={editStaffForm.reports_to_hr}
-                          onChange={(e) => setEditStaffForm({
-                            ...editStaffForm,
-                            reports_to_hr: e.target.checked,
-                            hr_id: e.target.checked ? editStaffForm.hr_id : ''
-                          })}
-                          className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4"
-                        />
-                        <span>Report to HR Lead</span>
-                      </label>
-                      {editStaffForm.reports_to_hr && (
-                        <div className="ml-6 mt-1.5">
-                          <select
-                            value={editStaffForm.hr_id}
-                            onChange={(e) => setEditStaffForm({ ...editStaffForm, hr_id: e.target.value })}
-                            className="w-full p-2 border rounded-lg bg-white text-xs"
-                            required={editStaffForm.reports_to_hr}
-                          >
-                            <option value="">-- Select Reporting HR Lead * --</option>
-                            {employees.filter(e => e.role_name === 'hr' && e.id !== editingStaffId).map(h => (
-                              <option key={h.id} value={h.id}>{h.full_name} ({h.employee_id}) - {h.designation || 'HR Lead'}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
                     {/* Checkbox 2: Direct Admin */}
                     <div>
                       <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
@@ -3066,11 +2827,11 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   </div>
                 )}
 
-                {editStaffForm.role === 'hr' && (
-                  <div className="flex items-center gap-2 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                {editStaffForm.role === 'manager' && (
+                  <div className="flex items-center gap-2 p-2.5 bg-purple-50 border border-purple-200 rounded-lg text-purple-800">
+                    <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
                     <span className="text-[11px] font-medium">
-                      Direct Report: Company Admin (All HR personnel report directly to the Company Administrator).
+                      Direct Report: Company Admin (All Managers report directly to the Company Administrator).
                     </span>
                   </div>
                 )}
@@ -3083,7 +2844,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     <Compass className="w-4 h-4 text-sky-600" />
                     Geofencing & Shift Assignment
                   </span>
-                  {editStaffForm.role === 'manager' || editStaffForm.role === 'hr' ? (
+                  {editStaffForm.role === 'manager' ? (
                     <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" /> Geofencing Optional (Exempt)
                     </span>
@@ -3113,7 +2874,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     <p className="text-[10px] text-slate-500 mt-1">
                       {editStaffForm.role === 'employee'
                         ? 'Attendance punches are strictly blocked outside this perimeter.'
-                        : 'Managers and HR are exempt; can punch anywhere unless customized.'}
+                        : 'Managers are exempt; can punch anywhere unless customized.'}
                     </p>
                   </div>
                   <div>

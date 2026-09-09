@@ -146,7 +146,6 @@ export default function UserProfileModal({ isOpen, onClose, user, onUserUpdate }
       case 'super_admin': return 'bg-rose-100 text-rose-800 border-rose-200';
       case 'support': return 'bg-purple-100 text-purple-800 border-purple-200';
       case 'company_admin': return 'bg-sky-100 text-sky-800 border-sky-200';
-      case 'hr': return 'bg-emerald-100 text-emerald-800 border-emerald-200';
       case 'manager': return 'bg-amber-100 text-amber-800 border-amber-200';
       default: return 'bg-blue-100 text-blue-800 border-blue-200';
     }
@@ -239,7 +238,7 @@ export default function UserProfileModal({ isOpen, onClose, user, onUserUpdate }
                     </label>
                     {(user?.role === 'employee' || profile.role === 'employee') && (
                       <span className="text-[10px] text-amber-600 font-medium">
-                        Admin/HR Managed
+                        Admin Managed
                       </span>
                     )}
                   </div>
@@ -261,7 +260,7 @@ export default function UserProfileModal({ isOpen, onClose, user, onUserUpdate }
                   </div>
                   {(user?.role === 'employee' || profile.role === 'employee') && (
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Username can only be modified by Company Admin, HR, or Manager.
+                      Username can only be modified by Company Admin or Manager.
                     </p>
                   )}
                 </div>

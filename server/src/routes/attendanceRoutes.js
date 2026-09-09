@@ -217,8 +217,8 @@ router.get('/reverse-geocode', async (req, res) => {
 
 // Employee GPS Punch In
 router.post('/punch-in', verifyAuth, async (req, res) => {
-  if (!['employee', 'manager', 'hr'].includes(req.user.role_name)) {
-    return res.status(403).json({ error: 'Only staff members (employees, managers, HR) can punch attendance.' });
+  if (!['employee', 'manager'].includes(req.user.role_name)) {
+    return res.status(403).json({ error: 'Only staff members (employees, managers) can punch attendance.' });
   }
 
   const { latitude, longitude, accuracy, location_name } = req.body;
@@ -328,8 +328,8 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
 
 // Employee GPS Punch Out
 router.post('/punch-out', verifyAuth, async (req, res) => {
-  if (!['employee', 'manager', 'hr'].includes(req.user.role_name)) {
-    return res.status(403).json({ error: 'Only staff members (employees, managers, HR) can punch attendance.' });
+  if (!['employee', 'manager'].includes(req.user.role_name)) {
+    return res.status(403).json({ error: 'Only staff members (employees, managers) can punch attendance.' });
   }
 
   const { latitude, longitude, accuracy, location_name } = req.body;
@@ -566,9 +566,9 @@ router.get('/list', verifyAuth, (req, res) => {
   });
 });
 
-// Manual Attendance Correction (Super Admin, Support L2+, Company Admin, HR, Manager)
+// Manual Attendance Correction (Super Admin, Support L2+, Company Admin, Manager)
 router.put('/correct/:id', verifyAuth, (req, res) => {
-  const allowedRoles = ['super_admin', 'company_admin', 'hr', 'manager', 'support'];
+  const allowedRoles = ['super_admin', 'company_admin', 'manager', 'support'];
   if (!allowedRoles.includes(req.user.role_name)) {
     return res.status(403).json({ error: 'Unauthorized to manually edit attendance.' });
   }
@@ -683,7 +683,7 @@ router.get('/excel/template', verifyAuth, (req, res) => {
 });
 
 // Validate Attendance Excel Import
-router.post('/excel/validate', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
+router.post('/excel/validate', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Please upload an Excel file.' });
   }
@@ -698,7 +698,7 @@ router.post('/excel/validate', verifyAuth, requireRole(['company_admin', 'hr', '
 });
 
 // Commit Attendance Excel Import
-router.post('/excel/commit', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+router.post('/excel/commit', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const { validRows } = req.body;
   if (!Array.isArray(validRows) || validRows.length === 0) {
     return res.status(400).json({ error: 'No valid attendance rows provided.' });
@@ -1120,8 +1120,8 @@ router.post('/correction-request', verifyAuth, (req, res) => {
     reason.trim()
   );
 
-  // Notify assigned reporting manager, HR lead, or Admin
-  const emp = db.prepare('SELECT full_name, employee_id, manager_id, hr_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);
+  // Notify assigned reporting manager or Admin
+  const emp = db.prepare('SELECT full_name, employee_id, manager_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);
   const notifyUserIds = new Set();
 
   if (emp) {
@@ -1129,26 +1129,18 @@ router.post('/correction-request', verifyAuth, (req, res) => {
       const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
       if (mgrUser && mgrUser.user_id) notifyUserIds.add(mgrUser.user_id);
     }
-    if (emp.hr_id) {
-      const hrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.hr_id);
-      if (hrUser && hrUser.user_id) notifyUserIds.add(hrUser.user_id);
-    }
 
     try {
-      const mappings = db.prepare('SELECT manager_id, hr_id FROM employee_mappings WHERE employee_id = ?').all(employeeId);
+      const mappings = db.prepare('SELECT manager_id FROM employee_mappings WHERE employee_id = ?').all(employeeId);
       for (const m of mappings) {
         if (m.manager_id) {
           const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.manager_id);
           if (u && u.user_id) notifyUserIds.add(u.user_id);
         }
-        if (m.hr_id) {
-          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.hr_id);
-          if (u && u.user_id) notifyUserIds.add(u.user_id);
-        }
       }
     } catch (e) {}
 
-    // If no specific manager/hr assigned or reports_to_admin is true, notify company admins
+    // If no specific manager assigned or reports_to_admin is true, notify company admins
     if (notifyUserIds.size === 0 || emp.reports_to_admin) {
       const admins = db.prepare(`
         SELECT u.id FROM users u
@@ -1216,8 +1208,8 @@ router.get('/correction-requests', verifyAuth, (req, res) => {
 });
 
 // Review Attendance Correction Request (Approve or Reject/Cancel)
-// Company Admin, HR, Manager, Super Admin
-router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+// Company Admin, Manager, Super Admin
+router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const requestId = parseInt(req.params.id, 10);
   const { status, review_notes } = req.body; // 'approved' or 'rejected'
 

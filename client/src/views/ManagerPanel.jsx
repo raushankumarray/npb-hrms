@@ -72,8 +72,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
     geofence_id: '',
     role: 'employee',
     reports_to_manager: true,
-    reports_to_hr: false,
-    hr_id: '',
     reports_to_admin: false
   });
 
@@ -88,8 +86,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
     role: 'employee',
     reports_to_manager: true,
     manager_id: '',
-    reports_to_hr: false,
-    hr_id: '',
     reports_to_admin: false,
     shift_id: '',
     geofence_id: '',
@@ -154,9 +150,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
       const payload = {
         ...newEmp,
         manager_id: user?.employee_id || user?.id,
-        hr_id: newEmp.reports_to_hr ? newEmp.hr_id : null,
+        hr_id: null,
         reports_to_admin: newEmp.reports_to_admin ? 1 : 0,
-        geofence_mode: (newEmp.role === 'manager' || newEmp.role === 'hr')
+        geofence_mode: newEmp.role === 'manager'
           ? (newEmp.geofence_id ? 'custom' : 'none')
           : (newEmp.geofence_id ? 'custom' : 'company')
       };
@@ -171,7 +167,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
         employee_id: '', full_name: '', username: '', password: 'User@12345',
         email: '', mobile: '', department: 'Operations', designation: 'Associate',
         city: '', shift_id: '', geofence_id: '', role: 'employee',
-        reports_to_manager: true, reports_to_hr: false, hr_id: '', reports_to_admin: false
+        reports_to_manager: true, reports_to_admin: false
       });
       fetchData();
     } catch (err) {
@@ -190,11 +186,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
       department: emp.department || 'Operations',
       designation: emp.designation || 'Associate',
       city: emp.city || '',
-      role: role,
+      role: role === 'hr' ? 'employee' : role,
       manager_id: emp.manager_id ? String(emp.manager_id) : String(user?.employee_id || user?.id),
-      hr_id: emp.hr_id ? String(emp.hr_id) : '',
       reports_to_manager: true,
-      reports_to_hr: !!emp.hr_id,
       reports_to_admin: !!emp.reports_to_admin,
       shift_id: emp.shift_id ? String(emp.shift_id) : '',
       geofence_id: emp.geofence_id ? String(emp.geofence_id) : '',
@@ -210,9 +204,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
       const payload = {
         ...editEmpForm,
         manager_id: user?.employee_id || user?.id,
-        hr_id: editEmpForm.reports_to_hr ? editEmpForm.hr_id : null,
+        hr_id: null,
         reports_to_admin: editEmpForm.reports_to_admin ? 1 : 0,
-        geofence_mode: (editEmpForm.role === 'manager' || editEmpForm.role === 'hr')
+        geofence_mode: editEmpForm.role === 'manager'
           ? (editEmpForm.geofence_id ? 'custom' : 'none')
           : (editEmpForm.geofence_id ? 'custom' : 'company')
       };
@@ -412,15 +406,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
                 >
                   Managers
                 </button>
-                <button
-                  type="button"
-                  onClick={() => { setRoleFilter('hr'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'hr' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  HR Leads
-                </button>
               </div>
 
               <div className="text-xs text-slate-400">
@@ -549,10 +534,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                           e.role_name === 'manager' ? 'bg-purple-100 text-purple-700' :
-                          e.role_name === 'hr' ? 'bg-emerald-100 text-emerald-700' :
                           'bg-sky-100 text-sky-700'
                         }`}>
-                          {e.role_name === 'manager' ? 'Manager' : e.role_name === 'hr' ? 'HR Lead' : 'Employee'}
+                          {e.role_name === 'manager' ? 'Manager' : 'Employee'}
                         </span>
                       </td>
                       <td className="p-3">
@@ -569,7 +553,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                         )}
                       </td>
                       <td className="p-3">
-                        {e.role_name === 'manager' || e.role_name === 'hr' ? (
+                        {e.role_name === 'manager' ? (
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                             Exempt (Not Required)
                           </span>
@@ -1059,21 +1043,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
                   >
                     Manager
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewEmp({
-                      ...newEmp,
-                      role: 'hr',
-                      department: 'Human Resources',
-                      designation: 'HR Lead',
-                      reports_to_admin: true
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      newEmp.role === 'hr' ? 'bg-emerald-50 border-emerald-500 text-emerald-700 ring-1 ring-emerald-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    HR Lead
-                  </button>
                 </div>
               </div>
 
@@ -1082,7 +1051,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-slate-800 flex items-center gap-1.5">
                     <GitMerge className="w-4 h-4 text-sky-600" />
-                    Multi-Level Reporting Hierarchy
+                    Reporting Line
                   </span>
                   <span className="text-[10px] text-slate-500 font-medium">
                     {newEmp.role === 'employee' ? 'Auto-assigned to your team' : 'Direct Admin Report'}
@@ -1116,7 +1085,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     <Compass className="w-4 h-4 text-sky-600" />
                     Geofencing & Shift Assignment
                   </span>
-                  {newEmp.role === 'manager' || newEmp.role === 'hr' ? (
+                  {newEmp.role === 'manager' ? (
                     <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" /> Geofencing Optional (Exempt)
                     </span>
@@ -1146,7 +1115,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     <p className="text-[10px] text-slate-500 mt-1">
                       {newEmp.role === 'employee'
                         ? 'Attendance punches are strictly blocked outside this perimeter.'
-                        : 'Managers and HR are exempt; can punch from anywhere unless customized.'}
+                        : 'Managers are exempt; can punch from anywhere unless customized.'}
                     </p>
                   </div>
                   <div>
@@ -1342,19 +1311,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
                   >
                     Manager
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditEmpForm({
-                      ...editEmpForm,
-                      role: 'hr',
-                      reports_to_admin: true
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      editEmpForm.role === 'hr' ? 'bg-emerald-50 border-emerald-500 text-emerald-700 ring-1 ring-emerald-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    HR Lead
-                  </button>
                 </div>
               </div>
 
@@ -1362,7 +1318,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
                 <span className="font-semibold text-slate-800 flex items-center gap-1.5">
                   <GitMerge className="w-4 h-4 text-sky-600" />
-                  Reporting Hierarchy
+                  Reporting Line
                 </span>
                 <div className="space-y-2 pt-1 text-slate-700">
                   <label className="flex items-center gap-2 text-slate-700 font-medium">
@@ -1391,7 +1347,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     <Compass className="w-4 h-4 text-sky-600" />
                     Geofencing & Shift Assignment
                   </span>
-                  {editEmpForm.role === 'manager' || editEmpForm.role === 'hr' ? (
+                  {editEmpForm.role === 'manager' ? (
                     <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" /> Geofencing Optional (Exempt)
                     </span>
@@ -1421,7 +1377,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     <p className="text-[10px] text-slate-500 mt-1">
                       {editEmpForm.role === 'employee'
                         ? 'Attendance punches are strictly blocked outside this perimeter.'
-                        : 'Managers and HR are exempt; can punch anywhere unless customized.'}
+                        : 'Managers are exempt; can punch anywhere unless customized.'}
                     </p>
                   </div>
                   <div>

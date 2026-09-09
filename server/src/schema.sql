@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_company_modules ON company_modules(company_id, mo
 -- 4. Roles & Permissions
 CREATE TABLE IF NOT EXISTS roles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT UNIQUE NOT NULL CHECK(name IN ('super_admin', 'support', 'company_admin', 'hr', 'manager', 'employee')),
+  name TEXT UNIQUE NOT NULL CHECK(name IN ('super_admin', 'support', 'company_admin', 'manager', 'employee')),
   description TEXT
 );
 
@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS employee_mappings (
   company_id INTEGER NOT NULL,
   manager_id INTEGER NOT NULL,
   employee_id INTEGER NOT NULL,
-  mapping_type TEXT DEFAULT 'manager' CHECK(mapping_type IN ('manager', 'hr')),
+  mapping_type TEXT DEFAULT 'manager' CHECK(mapping_type IN ('manager')),
   assigned_by INTEGER,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(manager_id, employee_id, mapping_type),

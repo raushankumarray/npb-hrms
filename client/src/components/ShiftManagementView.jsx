@@ -428,10 +428,9 @@ export default function ShiftManagementView({ company, role = 'company_admin' })
                 onChange={(e) => setRoleFilter(e.target.value)}
                 className="w-full p-2 border rounded-xl bg-slate-50 text-xs"
               >
-                <option value="all">All Roles (Staff, Mgr, HR)</option>
+                <option value="all">All Roles (Staff, Managers)</option>
                 <option value="employee">Employees Only</option>
                 <option value="manager">Managers Only</option>
-                <option value="hr">HR Personnel Only</option>
                 <option value="admin_reports">Direct Admin Reports</option>
               </select>
             </div>
@@ -592,7 +591,6 @@ export default function ShiftManagementView({ company, role = 'company_admin' })
                       <div className="flex items-center gap-1.5">
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
                           emp.role_name === 'manager' ? 'bg-purple-100 text-purple-700' :
-                          emp.role_name === 'hr' ? 'bg-emerald-100 text-emerald-700' :
                           'bg-slate-100 text-slate-700'
                         }`}>
                           {emp.role_name}
@@ -610,10 +608,7 @@ export default function ShiftManagementView({ company, role = 'company_admin' })
                       ) : emp.manager_name ? (
                         <div className="text-[11px]">
                           <span className="text-slate-700 font-medium">Mgr: {emp.manager_name}</span>
-                          {emp.hr_name && <span className="text-slate-400 block text-[10px]">HR: {emp.hr_name}</span>}
                         </div>
-                      ) : emp.hr_name ? (
-                        <span className="text-slate-700 font-medium text-[11px]">HR: {emp.hr_name}</span>
                       ) : (
                         <span className="text-slate-400 text-[11px]">None</span>
                       )}

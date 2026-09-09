@@ -24,7 +24,6 @@ router.get('/', verifyAuth, (req, res) => {
     department,
     designation,
     manager_id,
-    hr_id,
     reports_to_admin,
     mapping_status,
     status,
@@ -49,7 +48,6 @@ router.get('/', verifyAuth, (req, res) => {
     LEFT JOIN weekly_off_settings w ON e.weekly_off_id = w.id
     LEFT JOIN geofences g ON e.geofence_id = g.id
     LEFT JOIN employees m ON e.manager_id = m.id
-    LEFT JOIN employees h ON e.hr_id = h.id
     WHERE e.is_deleted = 0
   `;
   const params = [];
@@ -60,7 +58,7 @@ router.get('/', verifyAuth, (req, res) => {
     params.push(companyId);
   }
 
-  // Filter by user role if requested (e.g. 'hr', 'manager', 'employee')
+  // Filter by user role if requested (e.g. 'manager', 'employee')
   if (role && role !== 'all') {
     baseQuery += ' AND r.name = ?';
     params.push(role);
@@ -97,16 +95,6 @@ router.get('/', verifyAuth, (req, res) => {
     }
   }
 
-  // HR Lead filter
-  if (hr_id && hr_id !== 'all') {
-    if (hr_id === 'none' || hr_id === 'unassigned') {
-      baseQuery += ' AND (e.hr_id IS NULL OR e.hr_id = 0)';
-    } else {
-      baseQuery += ' AND e.hr_id = ?';
-      params.push(parseInt(hr_id, 10));
-    }
-  }
-
   // Reports to Admin filter
   if (reports_to_admin !== undefined && reports_to_admin !== null && reports_to_admin !== 'all') {
     if (reports_to_admin === '1' || reports_to_admin === 'true' || reports_to_admin === 1) {
@@ -121,14 +109,12 @@ router.get('/', verifyAuth, (req, res) => {
     if (mapping_status === 'mapped') {
       baseQuery += ` AND (
         (e.manager_id IS NOT NULL AND e.manager_id != 0)
-        OR (e.hr_id IS NOT NULL AND e.hr_id != 0)
         OR e.reports_to_admin = 1
         OR e.id IN (SELECT employee_id FROM employee_mappings)
       )`;
     } else if (mapping_status === 'unmapped' || mapping_status === 'not_mapped') {
       baseQuery += ` AND (
         (e.manager_id IS NULL OR e.manager_id = 0)
-        AND (e.hr_id IS NULL OR e.hr_id = 0)
         AND (e.reports_to_admin = 0 OR e.reports_to_admin IS NULL)
         AND e.id NOT IN (SELECT employee_id FROM employee_mappings)
       )`;
@@ -159,7 +145,6 @@ router.get('/', verifyAuth, (req, res) => {
            w.name as weekly_off_name,
            g.location_name as geofence_name, g.radius as geofence_radius,
            m.full_name as manager_name, m.employee_id as manager_code,
-           h.full_name as hr_name, h.employee_id as hr_code,
            COALESCE(e.reports_to_admin, 0) as reports_to_admin
     ${baseQuery}
     ORDER BY e.id DESC
@@ -183,17 +168,6 @@ router.get('/', verifyAuth, (req, res) => {
   `;
   const managersList = db.prepare(managersQuery).all(...(companyId ? [companyId] : []));
 
-  // HR leads list for dropdowns
-  const hrsQuery = `
-    SELECT e.id, e.full_name, e.employee_id, e.department, e.designation, e.city
-    FROM employees e
-    JOIN users u ON e.user_id = u.id
-    JOIN roles r ON u.role_id = r.id
-    WHERE r.name = 'hr' AND e.is_deleted = 0 ${companyId ? 'AND e.company_id = ?' : ''}
-    ORDER BY e.full_name ASC
-  `;
-  const hrsList = db.prepare(hrsQuery).all(...(companyId ? [companyId] : []));
-
   // Companies list for Super Admin dropdown
   const companiesList = (req.user.role_name === 'super_admin' || req.user.role_name === 'support')
     ? db.prepare("SELECT id, name, code FROM companies WHERE is_deleted = 0 ORDER BY name ASC").all()
@@ -205,7 +179,7 @@ router.get('/', verifyAuth, (req, res) => {
     cities,
     companies: companiesList,
     managers: managersList,
-    hrs: hrsList
+    hrs: []
   });
 });
 
@@ -281,8 +255,8 @@ router.get('/:id', verifyAuth, (req, res) => {
   res.json({ employee, leaveBalances: balances });
 });
 
-// Add Employee manually (Company Admin, HR, Manager, Super Admin)
-router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+// Add Employee manually (Company Admin, Manager, Super Admin)
+router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   if (!companyId) {
     return res.status(400).json({ error: 'Target company must be specified.' });
@@ -321,7 +295,7 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'sup
 
   // Multi-level reporting resolution
   const finalRole = role || 'employee';
-  const finalReportsToAdmin = (finalRole === 'hr' || reports_to_admin) ? 1 : 0;
+  const finalReportsToAdmin = reports_to_admin ? 1 : 0;
 
   // If created by manager, manager_id defaults to that manager's employee_id
   let finalManagerId = null;
@@ -331,11 +305,11 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'sup
     finalManagerId = manager_id || null;
   }
 
-  const finalHrId = (finalRole === 'employee' || finalRole === 'manager') ? (hr_id || null) : null;
+  const finalHrId = null;
 
-  // Geofencing: for Manager and HR, geofencing is not required
+  // Geofencing: for Manager, geofencing is not required
   let finalGeofenceMode = 'company';
-  if (finalRole === 'manager' || finalRole === 'hr') {
+  if (finalRole === 'manager') {
     finalGeofenceMode = geofence_id ? 'custom' : 'none';
   } else {
     finalGeofenceMode = geofence_mode || (geofence_id ? 'custom' : 'company');
@@ -377,12 +351,6 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'sup
         VALUES (?, ?, ?, 'manager', ?)
       `).run(companyId, finalManagerId, empDbId, req.user.id);
     }
-    if (finalHrId) {
-      db.prepare(`
-        INSERT OR REPLACE INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
-        VALUES (?, ?, ?, 'hr', ?)
-      `).run(companyId, finalHrId, empDbId, req.user.id);
-    }
 
     // 4. Initialize leave balances (strictly Casual Leave = 12, Earned Leave = 0 [earned 1.25/mo])
     const leaveTypes = db.prepare("SELECT id, name FROM leave_types WHERE company_id = ? AND name NOT LIKE '%Paid Leave%'").all(companyId);
@@ -419,8 +387,8 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'sup
   res.status(201).json({ success: true, employeeId: createdId, employeeCode: finalEmpId, message: 'Personnel added successfully.' });
 });
 
-// Update Employee (Company Admin, HR, Manager, Super Admin, Support L2+)
-router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin', 'support']), (req, res) => {
+// Update Employee (Company Admin, Manager, Super Admin, Support L2+)
+router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
   const empId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
 
@@ -445,13 +413,13 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 's
   }
 
   const effectiveRole = role || (db.prepare('SELECT r.name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?').get(currentEmp.user_id)?.name || 'employee');
-  const finalReportsToAdmin = effectiveRole === 'hr' ? 1 : (reports_to_admin !== undefined ? (reports_to_admin ? 1 : 0) : currentEmp.reports_to_admin);
+  const finalReportsToAdmin = reports_to_admin !== undefined ? (reports_to_admin ? 1 : 0) : currentEmp.reports_to_admin;
   const finalManagerId = effectiveRole === 'employee' ? (manager_id !== undefined ? (manager_id || null) : currentEmp.manager_id) : null;
-  const finalHrId = (effectiveRole === 'employee' || effectiveRole === 'manager') ? (hr_id !== undefined ? (hr_id || null) : currentEmp.hr_id) : null;
+  const finalHrId = null;
   
-  // Geofencing: for Manager and HR, geofencing is not required
+  // Geofencing: for Manager, geofencing is not required
   let finalGeofenceMode = currentEmp.geofence_mode;
-  if (effectiveRole === 'manager' || effectiveRole === 'hr') {
+  if (effectiveRole === 'manager') {
     finalGeofenceMode = geofence_id ? 'custom' : 'none';
   } else {
     finalGeofenceMode = geofence_mode || (geofence_id ? 'custom' : currentEmp.geofence_mode);
@@ -522,16 +490,6 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 's
       }
     }
 
-    if (hr_id !== undefined || role !== undefined) {
-      db.prepare('DELETE FROM employee_mappings WHERE employee_id = ? AND mapping_type = ?').run(empId, 'hr');
-      if (finalHrId) {
-        db.prepare(`
-          INSERT OR REPLACE INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
-          VALUES (?, ?, ?, 'hr', ?)
-        `).run(currentEmp.company_id, finalHrId, empId, req.user.id);
-      }
-    }
-
     logAudit({
       companyId: currentEmp.company_id,
       userId: req.user.id,
@@ -552,7 +510,7 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 's
 });
 
 // Toggle / Update Employee Account Status (active / suspended)
-router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin', 'support']), (req, res) => {
+router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
   const empId = parseInt(req.params.id, 10);
   const { status } = req.body;
 
@@ -587,7 +545,7 @@ router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'hr'
 });
 
 // Dedicated Direct Change Password for Employee
-router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin', 'support']), (req, res) => {
+router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
   const empId = parseInt(req.params.id, 10);
   const { new_password, password } = req.body;
   const targetPassword = new_password || password;
@@ -620,7 +578,7 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'h
 });
 
 // Permanent Delete Employee (Cannot be backed up / permanently deleted from database)
-router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const empId = parseInt(req.params.id, 10);
   const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(empId);
 
@@ -658,7 +616,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager',
       db.prepare('DELETE FROM users WHERE id = ?').run(emp.user_id);
     }
 
-    // 6. Delete employee record permanently
+    // 6. Delete Employee Record
     db.prepare('DELETE FROM employees WHERE id = ?').run(empId);
 
     logAudit({
@@ -679,10 +637,10 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'manager',
   res.json({ success: true, message: `Employee "${emp.full_name}" has been permanently deleted from the database.` });
 });
 
-// One-Time Bulk Employee Mapping (Company Admin, HR, Manager, Super Admin)
-router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+// One-Time Bulk Employee Mapping (Company Admin, Manager, Super Admin)
+router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
-  const { employee_ids, manager_id, hr_id, reports_to_admin } = req.body;
+  const { employee_ids, manager_id, reports_to_admin } = req.body;
 
   if (!Array.isArray(employee_ids) || employee_ids.length === 0) {
     return res.status(400).json({ error: 'employee_ids must be a non-empty array of employee IDs.' });
@@ -691,10 +649,6 @@ router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'hr', 'ma
   const parsedManagerId = (manager_id === 'unchanged' || manager_id === undefined)
     ? 'unchanged'
     : (manager_id === null || manager_id === '' || manager_id === 'none' || manager_id === 0) ? null : parseInt(manager_id, 10);
-
-  const parsedHrId = (hr_id === 'unchanged' || hr_id === undefined)
-    ? 'unchanged'
-    : (hr_id === null || hr_id === '' || hr_id === 'none' || hr_id === 0) ? null : parseInt(hr_id, 10);
 
   const parsedAdminReport = (reports_to_admin === 'unchanged' || reports_to_admin === undefined)
     ? 'unchanged'
@@ -718,28 +672,13 @@ router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'hr', 'ma
         if (parsedManagerId === null) {
           db.prepare('UPDATE employees SET manager_id = NULL WHERE id = ?').run(eId);
           db.prepare("DELETE FROM employee_mappings WHERE employee_id = ? AND mapping_type = 'manager'").run(eId);
-        } else if (parsedManagerId !== eId && emp.role_name !== 'hr') {
+        } else if (parsedManagerId !== eId) {
           db.prepare('UPDATE employees SET manager_id = ? WHERE id = ?').run(parsedManagerId, eId);
           db.prepare("DELETE FROM employee_mappings WHERE employee_id = ? AND mapping_type = 'manager'").run(eId);
           db.prepare(`
             INSERT OR REPLACE INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
             VALUES (?, ?, ?, 'manager', ?)
           `).run(companyId || emp.company_id, parsedManagerId, eId, req.user.id);
-        }
-      }
-
-      // Update HR Lead Mapping if not unchanged
-      if (parsedHrId !== 'unchanged') {
-        if (parsedHrId === null) {
-          db.prepare('UPDATE employees SET hr_id = NULL WHERE id = ?').run(eId);
-          db.prepare("DELETE FROM employee_mappings WHERE employee_id = ? AND mapping_type = 'hr'").run(eId);
-        } else if (parsedHrId !== eId) {
-          db.prepare('UPDATE employees SET hr_id = ? WHERE id = ?').run(parsedHrId, eId);
-          db.prepare("DELETE FROM employee_mappings WHERE employee_id = ? AND mapping_type = 'hr'").run(eId);
-          db.prepare(`
-            INSERT OR REPLACE INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
-            VALUES (?, ?, ?, 'hr', ?)
-          `).run(companyId || emp.company_id, parsedHrId, eId, req.user.id);
         }
       }
 
@@ -760,7 +699,6 @@ router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'hr', 'ma
       newValues: {
         employee_count: employee_ids.length,
         manager_id: parsedManagerId,
-        hr_id: parsedHrId,
         reports_to_admin: parsedAdminReport
       },
       reason: `Bulk mapped ${employee_ids.length} employees`
@@ -774,8 +712,8 @@ router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'hr', 'ma
   });
 });
 
-// Employee Mapping: Assign to Manager or HR
-router.post('/mapping', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+// Employee Mapping: Assign to Manager
+router.post('/mapping', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { supervisor_id, manager_id, role_type = 'manager', employee_ids } = req.body;
   const targetSupervisorId = supervisor_id || manager_id;
@@ -791,20 +729,12 @@ router.post('/mapping', verifyAuth, requireRole(['company_admin', 'hr', 'manager
   `);
 
   const updateEmpManager = db.prepare('UPDATE employees SET manager_id = ? WHERE id = ?');
-  const updateEmpHr = db.prepare('UPDATE employees SET hr_id = ? WHERE id = ?');
 
   const transaction = db.transaction(() => {
     for (const eId of employee_ids) {
-      // Remove any existing mapping of this type for this employee to prevent duplicate supervisors
       db.prepare('DELETE FROM employee_mappings WHERE employee_id = ? AND mapping_type = ?').run(eId, role_type);
-
       insertMapping.run(companyId, targetSupervisorId, eId, role_type, req.user.id);
-
-      if (role_type === 'hr') {
-        updateEmpHr.run(targetSupervisorId, eId);
-      } else {
-        updateEmpManager.run(targetSupervisorId, eId);
-      }
+      updateEmpManager.run(targetSupervisorId, eId);
     }
 
     logAudit({
@@ -821,11 +751,11 @@ router.post('/mapping', verifyAuth, requireRole(['company_admin', 'hr', 'manager
   });
 
   transaction();
-  res.json({ success: true, message: `${employee_ids.length} employees mapped to ${role_type} successfully.` });
+  res.json({ success: true, message: `${employee_ids.length} employees mapped successfully.` });
 });
 
 // Remove Employee Mapping
-router.delete('/mapping/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.delete('/mapping/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const mappingId = parseInt(req.params.id, 10);
   const mapping = db.prepare('SELECT * FROM employee_mappings WHERE id = ?').get(mappingId);
 
@@ -835,12 +765,7 @@ router.delete('/mapping/:id', verifyAuth, requireRole(['company_admin', 'hr', 's
 
   const transaction = db.transaction(() => {
     db.prepare('DELETE FROM employee_mappings WHERE id = ?').run(mappingId);
-
-    if (mapping.mapping_type === 'hr') {
-      db.prepare('UPDATE employees SET hr_id = NULL WHERE id = ? AND hr_id = ?').run(mapping.employee_id, mapping.manager_id);
-    } else {
-      db.prepare('UPDATE employees SET manager_id = NULL WHERE id = ? AND manager_id = ?').run(mapping.employee_id, mapping.manager_id);
-    }
+    db.prepare('UPDATE employees SET manager_id = NULL WHERE id = ? AND manager_id = ?').run(mapping.employee_id, mapping.manager_id);
 
     logAudit({
       companyId: mapping.company_id,
@@ -868,7 +793,7 @@ router.get('/excel/template', verifyAuth, (req, res) => {
 });
 
 // Validate Employee Import (Excel)
-router.post('/excel/import-validate', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
+router.post('/excel/import-validate', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Please upload an Excel (.xlsx) file.' });
   }
@@ -883,7 +808,7 @@ router.post('/excel/import-validate', verifyAuth, requireRole(['company_admin', 
 });
 
 // Commit Employee Import (Excel)
-router.post('/excel/import-commit', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+router.post('/excel/import-commit', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const { validRecords } = req.body;
   if (!Array.isArray(validRecords) || validRecords.length === 0) {
     return res.status(400).json({ error: 'No valid records provided for commit.' });
@@ -899,7 +824,7 @@ router.post('/excel/import-commit', verifyAuth, requireRole(['company_admin', 'h
 });
 
 // Diff Preview for Employee Update (Excel)
-router.post('/excel/diff-preview', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
+router.post('/excel/diff-preview', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Please upload an Excel (.xlsx) file.' });
   }
@@ -914,7 +839,7 @@ router.post('/excel/diff-preview', verifyAuth, requireRole(['company_admin', 'hr
 });
 
 // Commit Employee Diff Update (Excel)
-router.post('/excel/diff-commit', verifyAuth, requireRole(['company_admin', 'hr', 'manager', 'super_admin']), (req, res) => {
+router.post('/excel/diff-commit', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const { diffs } = req.body;
   if (!Array.isArray(diffs) || diffs.length === 0) {
     return res.status(400).json({ error: 'No diff items provided for update.' });

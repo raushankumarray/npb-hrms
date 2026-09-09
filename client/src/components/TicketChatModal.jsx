@@ -99,7 +99,7 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
 
   if (!isOpen) return null;
 
-  const isStaffOrSupport = currentUser && ['super_admin', 'support', 'company_admin', 'hr', 'manager'].includes(currentUser.role);
+  const isStaffOrSupport = currentUser && ['super_admin', 'support', 'company_admin', 'manager'].includes(currentUser.role);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
@@ -228,7 +228,7 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
           {messages.map((msg, idx) => {
             const isMe = currentUser && (msg.user_id === currentUser.id || msg.sender_name?.includes(currentUser.username));
             const isSupport = msg.sender_role === 'support' || msg.sender_role === 'super_admin';
-            const isAdminOrHr = msg.sender_role === 'company_admin' || msg.sender_role === 'hr';
+            const isAdmin = msg.sender_role === 'company_admin';
 
             return (
               <div
@@ -239,7 +239,7 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
                   <span className="font-bold text-slate-700">{msg.sender_name}</span>
                   <span className={`px-1.5 py-0.2 rounded text-[9px] font-semibold uppercase ${
                     isSupport ? 'bg-purple-100 text-purple-800' :
-                    isAdminOrHr ? 'bg-sky-100 text-sky-800' :
+                    isAdmin ? 'bg-sky-100 text-sky-800' :
                     'bg-slate-200 text-slate-600'
                   }`}>
                     {msg.sender_role?.replace('_', ' ')}

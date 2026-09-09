@@ -31,7 +31,6 @@ router.get('/', verifyAuth, (req, res) => {
     SELECT e.id, e.user_id, e.employee_id, e.full_name, e.department, e.designation, e.city, e.reports_to_admin,
            r.name as role_name,
            e.manager_id, m.full_name as manager_name,
-           e.hr_id, h.full_name as hr_name,
            e.shift_id, s.name as current_shift_name, s.name as shift_name, s.start_time as shift_start_time, s.end_time as shift_end_time, s.grace_time_mins as shift_grace_mins,
            sa.effective_from as shift_effective_date, sa.effective_from,
            e.weekly_off_id, w.name as weekly_off_name, w.off_days_json as weekly_off_days, w.is_default as weekly_off_is_default
@@ -39,7 +38,6 @@ router.get('/', verifyAuth, (req, res) => {
     JOIN users u ON e.user_id = u.id
     JOIN roles r ON u.role_id = r.id
     LEFT JOIN employees m ON e.manager_id = m.id
-    LEFT JOIN employees h ON e.hr_id = h.id
     LEFT JOIN shifts s ON e.shift_id = s.id
     LEFT JOIN weekly_off_settings w ON w.id = COALESCE(e.weekly_off_id, (SELECT id FROM weekly_off_settings WHERE company_id = e.company_id AND is_default = 1))
     LEFT JOIN (
@@ -55,7 +53,7 @@ router.get('/', verifyAuth, (req, res) => {
 });
 
 // Create Shift
-router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { name, start_time, end_time, grace_time_mins, working_hours, break_time_mins, is_rotational } = req.body;
 
@@ -91,7 +89,7 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin'])
 });
 
 // Edit Shift
-router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const shiftId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
   const { name, start_time, end_time, grace_time_mins, working_hours, break_time_mins, is_rotational, status } = req.body;
@@ -143,7 +141,7 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin'
 });
 
 // Delete Shift
-router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const shiftId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
 
@@ -177,7 +175,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'hr', 'super_adm
 });
 
 // Master & Manual Shift Assignment (One time multiple employee assignment with effective date & notifications)
-router.post('/assign', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.post('/assign', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { employee_ids, shift_id, effective_date } = req.body;
 
@@ -275,7 +273,7 @@ router.post('/assign', verifyAuth, requireRole(['company_admin', 'hr', 'super_ad
 });
 
 // Configure Weekly Off Settings (Master or Custom per Employee with notifications)
-router.post('/employee-weekly-off', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.post('/employee-weekly-off', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { employee_ids, off_days, is_master, name } = req.body;
   const isMaster = is_master !== undefined ? is_master : req.body.master_apply;
@@ -412,7 +410,7 @@ router.post('/employee-weekly-off', verifyAuth, requireRole(['company_admin', 'h
 });
 
 // Legacy single weekly off route (kept for backwards compatibility)
-router.post('/weekly-off', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.post('/weekly-off', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { name, off_days, is_default } = req.body;
 

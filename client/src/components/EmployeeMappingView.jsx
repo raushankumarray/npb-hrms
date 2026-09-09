@@ -12,7 +12,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
   const [totalCount, setTotalCount] = useState(0);
   const [citiesList, setCitiesList] = useState([]);
   const [managersList, setManagersList] = useState([]);
-  const [hrsList, setHrsList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -27,9 +26,8 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
   const [search, setSearch] = useState('');
   const [mappingStatus, setMappingStatus] = useState('all'); // 'all' | 'mapped' | 'unmapped'
   const [selectedCity, setSelectedCity] = useState('all');
-  const [selectedPosition, setSelectedPosition] = useState('all'); // 'all' | 'employee' | 'manager' | 'hr'
+  const [selectedPosition, setSelectedPosition] = useState('all'); // 'all' | 'employee' | 'manager'
   const [selectedManager, setSelectedManager] = useState('all'); // 'all' | 'none' | managerId
-  const [selectedHr, setSelectedHr] = useState('all'); // 'all' | 'none' | hrId
   const [selectedAdminReport, setSelectedAdminReport] = useState('all'); // 'all' | '1' | '0'
 
   // Selection state for bulk operations
@@ -39,7 +37,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTargetStaff, setModalTargetStaff] = useState([]); // array of employee objects
   const [modalManagerId, setModalManagerId] = useState('unchanged');
-  const [modalHrId, setModalHrId] = useState('unchanged');
   const [modalAdminReport, setModalAdminReport] = useState('unchanged');
   const [modalSubmitting, setModalSubmitting] = useState(false);
 
@@ -58,7 +55,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
       if (selectedCity !== 'all') params.append('city', selectedCity);
       if (selectedPosition !== 'all') params.append('role', selectedPosition);
       if (selectedManager !== 'all') params.append('manager_id', selectedManager);
-      if (selectedHr !== 'all') params.append('hr_id', selectedHr);
       if (selectedAdminReport !== 'all') params.append('reports_to_admin', selectedAdminReport);
 
       const res = await apiRequest(`/employees?${params.toString()}`);
@@ -66,7 +62,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
       setTotalCount(res.total || 0);
       if (res.cities) setCitiesList(res.cities);
       if (res.managers) setManagersList(res.managers);
-      if (res.hrs) setHrsList(res.hrs);
     } catch (err) {
       setError(err.message || 'Failed to load employee directory.');
     } finally {
@@ -76,7 +71,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
 
   useEffect(() => {
     fetchEmployees();
-  }, [page, limit, mappingStatus, selectedCity, selectedPosition, selectedManager, selectedHr, selectedAdminReport]);
+  }, [page, limit, mappingStatus, selectedCity, selectedPosition, selectedManager, selectedAdminReport]);
 
   // Handle Search Debounce / Trigger
   useEffect(() => {
@@ -140,7 +135,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
     const targets = employees.filter(e => selectedIds.includes(e.id));
     setModalTargetStaff(targets);
     setModalManagerId('unchanged');
-    setModalHrId('unchanged');
     setModalAdminReport('unchanged');
     setModalOpen(true);
   };
@@ -149,7 +143,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
   const handleOpenQuickMap = (emp) => {
     setModalTargetStaff([emp]);
     setModalManagerId(emp.manager_id || 'none');
-    setModalHrId(emp.hr_id || 'none');
     setModalAdminReport(emp.reports_to_admin ? '1' : '0');
     setModalOpen(true);
   };
@@ -168,7 +161,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
         body: {
           employee_ids: empIds,
           manager_id: modalManagerId === 'none' ? null : modalManagerId,
-          hr_id: modalHrId === 'none' ? null : modalHrId,
+          hr_id: null,
           reports_to_admin: modalAdminReport === 'unchanged' ? 'unchanged' : (modalAdminReport === '1' ? 1 : 0)
         }
       });
@@ -213,7 +206,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
   // Derived stats
   const totalPages = Math.max(1, Math.ceil(totalCount / limit));
   const mappedCount = useMemo(() => {
-    return employees.filter(e => (e.manager_id || e.hr_id || e.reports_to_admin)).length;
+    return employees.filter(e => (e.manager_id || e.reports_to_admin)).length;
   }, [employees]);
 
   return (
@@ -231,7 +224,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
                   {role === 'manager' ? 'Team Member Mapping' : 'Employee Mapping & Hierarchy Master'}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  One-time multiple mapping: Filter, select, and assign reporting hierarchy (Manager, HR Lead, Admin) in bulk
+                  One-time multiple mapping: Filter, select, and assign reporting hierarchy (Manager, Direct Admin) in bulk
                 </p>
               </div>
             </div>
@@ -275,7 +268,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
         )}
 
         {/* Stats Strip */}
-        <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-slate-100 text-xs">
+        <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3 pt-4 border-t border-slate-100 text-xs">
           <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/60">
             <div className="text-slate-400 text-[11px] font-medium">Total Staff on Record</div>
             <div className="text-base font-bold text-slate-800 mt-0.5">{totalCount}</div>
@@ -287,10 +280,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
           <div className="bg-purple-50/80 rounded-xl p-3 border border-purple-200/60">
             <div className="text-purple-700 text-[11px] font-medium">Active Managers</div>
             <div className="text-base font-bold text-purple-800 mt-0.5">{managersList.length}</div>
-          </div>
-          <div className="bg-indigo-50/80 rounded-xl p-3 border border-indigo-200/60">
-            <div className="text-indigo-700 text-[11px] font-medium">Active HR Leads</div>
-            <div className="text-base font-bold text-indigo-800 mt-0.5">{hrsList.length}</div>
           </div>
         </div>
       </div>
@@ -366,7 +355,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
         )}
 
         {/* Filters Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
           {/* Search Box */}
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
@@ -416,7 +405,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
               <option value="all">Position: All Roles</option>
               <option value="employee">Position: Employee</option>
               <option value="manager">Position: Manager</option>
-              <option value="hr">Position: HR Lead</option>
             </select>
           </div>
 
@@ -431,21 +419,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
               <option value="none">Manager: Unassigned</option>
               {managersList.map((m) => (
                 <option key={m.id} value={m.id}>Manager: {m.full_name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* HR Lead Filter */}
-          <div>
-            <select
-              value={selectedHr}
-              onChange={(e) => handleFilterChange(setSelectedHr, e.target.value)}
-              className="w-full py-2 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-purple-500 font-medium"
-            >
-              <option value="all">HR Lead: All</option>
-              <option value="none">HR Lead: Unassigned</option>
-              {hrsList.map((h) => (
-                <option key={h.id} value={h.id}>HR: {h.full_name}</option>
               ))}
             </select>
           </div>
@@ -536,7 +509,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
                 <th className="p-3">Position</th>
                 <th className="p-3">City</th>
                 <th className="p-3">Reporting Manager</th>
-                <th className="p-3">Reporting HR</th>
                 <th className="p-3">Admin Direct Report</th>
                 <th className="p-3">Mapping Status</th>
                 <th className="p-3 text-right">Actions</th>
@@ -545,14 +517,14 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="p-12 text-center text-slate-400">
+                  <td colSpan={8} className="p-12 text-center text-slate-400">
                     <RefreshCw className="w-6 h-6 animate-spin mx-auto text-purple-500 mb-2" />
                     Loading employee directory and hierarchy mappings...
                   </td>
                 </tr>
               ) : employees.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-12 text-center text-slate-400">
+                  <td colSpan={8} className="p-12 text-center text-slate-400">
                     <AlertTriangle className="w-6 h-6 mx-auto text-slate-300 mb-2" />
                     No employees found matching the selected filters.
                   </td>
@@ -560,7 +532,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
               ) : (
                 employees.map((emp) => {
                   const isSelected = selectedIds.includes(emp.id);
-                  const isMapped = !!(emp.manager_id || emp.hr_id || emp.reports_to_admin);
+                  const isMapped = !!(emp.manager_id || emp.reports_to_admin);
 
                   return (
                     <tr
@@ -601,12 +573,10 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
                           className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                             emp.role_name === 'manager'
                               ? 'bg-purple-100 text-purple-800'
-                              : emp.role_name === 'hr'
-                              ? 'bg-emerald-100 text-emerald-800'
                               : 'bg-sky-100 text-sky-800'
                           }`}
                         >
-                          {emp.role_name === 'hr' ? 'HR Lead' : emp.role_name}
+                          {emp.role_name}
                         </span>
                       </td>
 
@@ -624,28 +594,10 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
 
                       {/* Manager */}
                       <td className="p-3">
-                        {emp.role_name === 'hr' ? (
-                          <span className="text-[11px] text-slate-400 italic">Not Applicable (HR)</span>
-                        ) : emp.manager_name ? (
+                        {emp.manager_name ? (
                           <div>
                             <div className="font-semibold text-slate-900">{emp.manager_name}</div>
                             <div className="text-[10px] font-mono text-purple-600">{emp.manager_code}</div>
-                          </div>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                            Unassigned
-                          </span>
-                        )}
-                      </td>
-
-                      {/* HR Lead */}
-                      <td className="p-3">
-                        {emp.role_name === 'hr' ? (
-                          <span className="text-[11px] text-slate-400 italic">Self (HR)</span>
-                        ) : emp.hr_name ? (
-                          <div>
-                            <div className="font-semibold text-slate-900">{emp.hr_name}</div>
-                            <div className="text-[10px] font-mono text-emerald-600">{emp.hr_code}</div>
                           </div>
                         ) : (
                           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
@@ -785,7 +737,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
                       : `One-Time Bulk Mapping (${modalTargetStaff.length} Selected)`}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Assign multi-level hierarchy (Manager, HR Lead, Direct Admin) in one transaction
+                    Assign reporting hierarchy (Manager, Direct Admin) in one transaction
                   </p>
                 </div>
               </div>
@@ -814,10 +766,9 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
 
             {/* Position Hierarchy Guidance Notice */}
             <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 space-y-0.5">
-              <div className="font-semibold text-slate-800">&bull; Multi-level Mapping Rules:</div>
-              <div>- <strong>Employees</strong> can report to a Manager, an HR Lead, and/or directly to Company Admin.</div>
-              <div>- <strong>Managers</strong> can report to an HR Lead and/or directly to Company Admin.</div>
-              <div>- <strong>HR Leads</strong> report directly to the Company Administrator.</div>
+              <div className="font-semibold text-slate-800">&bull; Hierarchy Mapping Rules:</div>
+              <div>- <strong>Employees</strong> can report to a Manager and/or directly to Company Admin.</div>
+              <div>- <strong>Managers</strong> can report directly to Company Admin.</div>
             </div>
 
             {/* Mapping Form */}
@@ -837,26 +788,6 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
                   {managersList.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.full_name} ({m.employee_id}) - {m.department} {m.city ? `[${m.city}]` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Assign HR Lead */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Reporting HR Lead:
-                </label>
-                <select
-                  value={modalHrId}
-                  onChange={(e) => setModalHrId(e.target.value)}
-                  className="w-full py-2 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:ring-1 focus:ring-purple-500 font-medium"
-                >
-                  <option value="unchanged">-- Keep Current HR Lead (No Change) --</option>
-                  <option value="none">-- Remove / Unassigned (No HR Lead) --</option>
-                  {hrsList.map((h) => (
-                    <option key={h.id} value={h.id}>
-                      {h.full_name} ({h.employee_id}) - {h.department} {h.city ? `[${h.city}]` : ''}
                     </option>
                   ))}
                 </select>

@@ -87,7 +87,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
       case 'company_admin':
         return [
           { id: 'dashboard', label: 'Dashboard', icon: Layers },
-          { id: 'employees', label: 'Employees & HR', icon: Users },
+          { id: 'employees', label: 'Employees & Staff', icon: Users },
           { id: 'mapping', label: 'Employee Mapping', icon: UserCheck },
           { id: 'attendance', label: 'Attendance', icon: Clock },
           { id: 'corrections', label: 'Attendance Corrections', icon: Edit3 },
@@ -100,22 +100,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
           { id: 'reports', label: 'Custom Reports & Export', icon: FileText },
           { id: 'settings', label: 'Company Settings', icon: Settings }
-        ];
-
-      case 'hr':
-        return [
-          { id: 'dashboard', label: 'HR Dashboard', icon: Layers },
-          { id: 'employees', label: 'Employee Master', icon: Users },
-          { id: 'mapping', label: 'Employee Mapping', icon: UserCheck },
-          { id: 'attendance', label: 'Attendance & Sheets', icon: Clock },
-          { id: 'corrections', label: 'Attendance Corrections', icon: Edit3 },
-          { id: 'calendar', label: 'Attendance Calendar', icon: Calendar },
-          { id: 'leave', label: 'Leave Approvals', icon: Calendar },
-          { id: 'shifts', label: 'Shifts & Rotational', icon: Clock },
-          { id: 'holidays', label: 'Holidays & Weekly Off', icon: Calendar },
-          { id: 'live-map', label: 'Live Employee Map', icon: MapPin },
-          { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
-          { id: 'reports', label: 'Reports & Export', icon: FileText }
         ];
 
       case 'manager':

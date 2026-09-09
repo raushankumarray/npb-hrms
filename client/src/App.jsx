@@ -5,7 +5,6 @@ import Layout from './components/Layout';
 import SuperAdminPanel from './views/SuperAdminPanel';
 import SupportPanel from './views/SupportPanel';
 import CompanyAdminPanel from './views/CompanyAdminPanel';
-import HRPanel from './views/HRPanel';
 import ManagerPanel from './views/ManagerPanel';
 import EmployeePanel from './views/EmployeePanel';
 
@@ -169,8 +168,6 @@ export default function App() {
             onUpdateCompany={(updated) => setCompany(prev => ({ ...prev, ...updated }))}
           />
         );
-      case 'hr':
-        return <HRPanel user={user} company={company} activeTab={activeTab} />;
       case 'manager':
         return <ManagerPanel user={user} company={company} activeTab={activeTab} />;
       case 'employee':

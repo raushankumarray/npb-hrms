@@ -1151,9 +1151,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                                 <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded font-semibold">
                                   {c.total_managers || 0} Mgrs
                                 </span>
-                                <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded font-semibold">
-                                  {c.total_hrs || 0} HRs
-                                </span>
                                 <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded font-semibold">
                                   {c.total_users || 0} Users
                                 </span>
@@ -1248,15 +1245,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   }`}
                 >
                   Managers
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setDirRoleFilter('hr'); setDirPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    dirRoleFilter === 'hr' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  HR Leads
                 </button>
               </div>
 
@@ -1404,10 +1392,9 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                           e.role_name === 'manager' ? 'bg-purple-100 text-purple-700' :
-                          e.role_name === 'hr' ? 'bg-emerald-100 text-emerald-700' :
                           'bg-sky-100 text-sky-700'
                         }`}>
-                          {e.role_name === 'manager' ? 'Manager' : e.role_name === 'hr' ? 'HR Lead' : 'Employee'}
+                          {e.role_name === 'manager' ? 'Manager' : 'Employee'}
                         </span>
                       </td>
                       <td className="p-3">
@@ -2562,7 +2549,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 This will permanently delete from the database:
               </p>
               <ul className="list-disc list-inside text-[11px] space-y-0.5 text-rose-700">
-                <li>All company staff, HR, managers & employees</li>
+                <li>All company staff, managers & employees</li>
                 <li>All user login accounts & device bindings</li>
                 <li>All attendance logs, GPS punches & tracking coordinates</li>
                 <li>All leave records, balances, quotas & transactions</li>

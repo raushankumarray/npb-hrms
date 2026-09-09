@@ -39,9 +39,9 @@ router.get('/types', verifyAuth, (req, res) => {
   res.json({ leaveTypes: types });
 });
 
-// Master Apply Leave Policy (Company Admin, HR, Super Admin)
+// Master Apply Leave Policy (Company Admin, Super Admin)
 // Configures Casual Leave (12/yr) and Earned Leave (1.25/mo) and batch applies to all employees
-router.post('/master-apply', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+router.post('/master-apply', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { cl_yearly_quota = 12.0, el_monthly_rate = 1.25 } = req.body;
   const clQuota = parseFloat(cl_yearly_quota) || 12.0;
@@ -203,8 +203,8 @@ router.get('/summary', verifyAuth, (req, res) => {
   });
 });
 
-// Configure / Add Leave Type (Company Admin, HR, Super Admin)
-router.post('/types', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+// Configure / Add Leave Type (Company Admin, Super Admin)
+router.post('/types', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { name, default_yearly_quota, monthly_accrual_rate, is_carry_forward, max_carry_forward } = req.body;
 
@@ -315,8 +315,8 @@ router.post('/requests', verifyAuth, (req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
   `).run(companyId, employeeId, leave_type_id, start_date, end_date, parseFloat(total_days), reason.trim());
 
-  // Notify Manager / HR / Admin approvers
-  const emp = db.prepare('SELECT full_name, manager_id, hr_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);
+  // Notify Manager / Admin approvers
+  const emp = db.prepare('SELECT full_name, manager_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);
   const notifyUserIds = new Set();
 
   if (emp) {
@@ -324,20 +324,12 @@ router.post('/requests', verifyAuth, (req, res) => {
       const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
       if (mgrUser && mgrUser.user_id) notifyUserIds.add(mgrUser.user_id);
     }
-    if (emp.hr_id) {
-      const hrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.hr_id);
-      if (hrUser && hrUser.user_id) notifyUserIds.add(hrUser.user_id);
-    }
 
     try {
-      const mappings = db.prepare('SELECT manager_id, hr_id FROM employee_mappings WHERE employee_id = ?').all(employeeId);
+      const mappings = db.prepare('SELECT manager_id FROM employee_mappings WHERE employee_id = ?').all(employeeId);
       for (const m of mappings) {
         if (m.manager_id) {
           const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.manager_id);
-          if (u && u.user_id) notifyUserIds.add(u.user_id);
-        }
-        if (m.hr_id) {
-          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.hr_id);
           if (u && u.user_id) notifyUserIds.add(u.user_id);
         }
       }
@@ -405,8 +397,8 @@ router.get('/requests', verifyAuth, (req, res) => {
   res.json({ requests });
 });
 
-// Approve or Reject Leave Request (Manager, HR, Company Admin)
-router.put('/requests/:id', verifyAuth, requireRole(['manager', 'hr', 'company_admin', 'super_admin']), (req, res) => {
+// Approve or Reject Leave Request (Manager, Company Admin, Super Admin)
+router.put('/requests/:id', verifyAuth, requireRole(['manager', 'company_admin', 'super_admin']), (req, res) => {
   const requestId = parseInt(req.params.id, 10);
   const { status, rejection_reason } = req.body; // 'approved' or 'rejected'
 
@@ -518,8 +510,8 @@ router.put('/requests/:id', verifyAuth, requireRole(['manager', 'hr', 'company_a
   res.json({ success: true, message: `Leave request ${status} successfully.` });
 });
 
-// Run Monthly Accrual for Earned Leave (Company Admin, HR, Super Admin)
-router.post('/accrual/monthly', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+// Run Monthly Accrual for Earned Leave (Company Admin, Super Admin)
+router.post('/accrual/monthly', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const now = new Date();
   const month = parseInt(req.body.month || (now.getMonth() + 1), 10);
@@ -617,8 +609,8 @@ router.post('/accrual/monthly', verifyAuth, requireRole(['company_admin', 'hr', 
   });
 });
 
-// Manual Leave Credit (Company Admin, HR, Super Admin)
-router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+// Manual Leave Credit (Company Admin, Super Admin)
+router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { employee_id, leave_type_id, days, reason, apply_to_all, cadence = 'month' } = req.body;
   const numDays = parseFloat(days);
@@ -703,8 +695,8 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'hr', 's
 });
 
 // Delete or Deduct Leave (Master Reset or Manual Deduct)
-// Role: Company Admin, HR, Super Admin
-router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'hr', 'super_admin']), (req, res) => {
+// Role: Company Admin, Super Admin
+router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
   const { employee_id, leave_type_id, action_type, days, reason, apply_to_all, target_type } = req.body;
   const isApplyToAll = Boolean(apply_to_all || target_type === 'all');
