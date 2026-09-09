@@ -148,11 +148,23 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   });
   const [submittingCorrection, setSubmittingCorrection] = useState(false);
 
-  // Resolve human-readable location address via OpenStreetMap Nominatim reverse geocoding
+  // Resolve human-readable location address strictly via map reverse geocoding
   const resolveLocationName = async (lat, lon) => {
     if (!lat || !lon) return '';
     setIsResolvingAddress(true);
     try {
+      // 1. Try server backend reverse geocode endpoint (reliable, no browser CORS)
+      try {
+        const serverRes = await apiRequest(`/attendance/reverse-geocode?lat=${lat}&lon=${lon}`);
+        if (serverRes && serverRes.locationName) {
+          setCurrentAddressName(serverRes.locationName);
+          return serverRes.locationName;
+        }
+      } catch (e) {
+        // Continue to direct browser fetch
+      }
+
+      // 2. Direct OpenStreetMap Nominatim reverse geocode
       const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`, {
         headers: { 'Accept-Language': 'en' }
       });
@@ -180,10 +192,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     } finally {
       setIsResolvingAddress(false);
     }
-    const fallback = myGeofence ? myGeofence.location_name : 'Current Device GPS Location';
-    if (!currentAddressName) {
-      setCurrentAddressName(fallback);
-    }
+    // Strictly GPS map area - no random office area fallback
+    const fallback = `Map Area (${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)})`;
+    setCurrentAddressName(fallback);
     return fallback;
   };
 
@@ -517,12 +528,10 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
     setPunchLoading(true);
     try {
-      let locName = currentAddressName;
-      if (!locName && coords?.latitude && coords?.longitude) {
-        locName = await resolveLocationName(coords.latitude, coords.longitude);
-      }
+      // Strictly resolve exact map area from current GPS coordinates - no random fallback
+      let locName = await resolveLocationName(coords.latitude, coords.longitude);
       if (!locName) {
-        locName = myGeofence ? myGeofence.location_name : 'Current Device Location';
+        locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
       }
 
       const res = await apiRequest('/attendance/punch-in', {
@@ -571,12 +580,10 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
 
     setPunchLoading(true);
     try {
-      let locName = currentAddressName;
-      if (!locName && coords?.latitude && coords?.longitude) {
-        locName = await resolveLocationName(coords.latitude, coords.longitude);
-      }
+      // Strictly resolve exact map area from current GPS coordinates - no random fallback
+      let locName = await resolveLocationName(coords.latitude, coords.longitude);
       if (!locName) {
-        locName = myGeofence ? myGeofence.location_name : 'Current Device Location';
+        locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
       }
 
       const res = await apiRequest('/attendance/punch-out', {
@@ -1212,14 +1219,14 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                   <span className="font-mono font-semibold text-slate-800 text-[11px]">
                     {todayRecord?.punch_in_lat && todayRecord?.punch_in_lng
                       ? `${Number(todayRecord.punch_in_lat).toFixed(4)}, ${Number(todayRecord.punch_in_lng).toFixed(4)}`
-                      : (gpsLocation ? `${gpsLocation.latitude.toFixed(4)}, ${gpsLocation.longitude.toFixed(4)}` : '--')}
+                      : '--'}
                   </span>
                 </div>
 
                 <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100/80">
                   <span className="text-slate-500 whitespace-nowrap">Captured Address:</span>
                   <span className="text-slate-800 font-medium text-right line-clamp-2 text-xs select-text">
-                    {todayRecord?.punch_in_location || currentAddressName || (isResolvingAddress ? 'Detecting address...' : (todayRecord?.punch_in_time ? 'Authorized Site Location' : (gpsLocation ? 'Resolving current address...' : 'Waiting for GPS...')))}
+                    {todayRecord?.punch_in_location || '--'}
                   </span>
                 </div>
               </div>
@@ -1260,9 +1267,7 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500">Punch Out Time:</span>
                   <span className="font-mono font-bold text-slate-900 text-sm">
-                    {todayRecord?.punch_out_time
-                      ? format12Hour(todayRecord.punch_out_time)
-                      : (todayRecord?.punch_in_time ? 'Currently Working' : '--:--')}
+                    {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--'}
                   </span>
                 </div>
 
@@ -1271,14 +1276,14 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
                   <span className="font-mono font-semibold text-slate-800 text-[11px]">
                     {todayRecord?.punch_out_lat && todayRecord?.punch_out_lng
                       ? `${Number(todayRecord.punch_out_lat).toFixed(4)}, ${Number(todayRecord.punch_out_lng).toFixed(4)}`
-                      : (todayRecord?.punch_out_time ? 'Office Boundary Coordinates' : (gpsLocation ? `${gpsLocation.latitude.toFixed(4)}, ${gpsLocation.longitude.toFixed(4)}` : '--'))}
+                      : '--'}
                   </span>
                 </div>
 
                 <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100/80">
                   <span className="text-slate-500 whitespace-nowrap">Captured Address:</span>
                   <span className="text-slate-800 font-medium text-right line-clamp-2 text-xs select-text">
-                    {todayRecord?.punch_out_location || (todayRecord?.punch_out_time ? 'Authorized Site Location' : currentAddressName || (isResolvingAddress ? 'Detecting address...' : '--'))}
+                    {todayRecord?.punch_out_location || '--'}
                   </span>
                 </div>
               </div>

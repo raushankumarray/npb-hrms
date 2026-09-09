@@ -165,8 +165,49 @@ router.get('/calendar', verifyAuth, (req, res) => {
   });
 });
 
+// Reverse geocode latitude and longitude to human-readable map area name
+async function reverseGeocodeLocation(lat, lon) {
+  if (lat === undefined || lat === null || lon === undefined || lon === null) return null;
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`, {
+      headers: {
+        'User-Agent': 'NPB-HRMS/1.0',
+        'Accept-Language': 'en'
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.address) {
+        const a = data.address;
+        const area = a.neighbourhood || a.suburb || a.colony || a.residential || a.road || a.quarter || a.hamlet;
+        const city = a.city || a.town || a.village || a.city_district || a.county;
+        const state = a.state;
+        const parts = [area, city, state].filter(Boolean);
+        if (parts.length > 0) return parts.join(', ');
+        if (data.display_name) return data.display_name.split(',').slice(0, 3).join(', ').trim();
+      }
+    }
+  } catch (err) {
+    console.error('Reverse geocoding error:', err.message);
+  }
+  return null;
+}
+
+// Reverse Geocode Route for Employee Panel
+router.get('/reverse-geocode', async (req, res) => {
+  const { lat, lon } = req.query;
+  if (!lat || !lon) {
+    return res.status(400).json({ error: 'lat and lon are required' });
+  }
+  const locationName = await reverseGeocodeLocation(lat, lon);
+  return res.json({
+    success: true,
+    locationName: locationName || `Map Area (${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)})`
+  });
+});
+
 // Employee GPS Punch In
-router.post('/punch-in', verifyAuth, (req, res) => {
+router.post('/punch-in', verifyAuth, async (req, res) => {
   if (!['employee', 'manager', 'hr'].includes(req.user.role_name)) {
     return res.status(403).json({ error: 'Only staff members (employees, managers, HR) can punch attendance.' });
   }
@@ -221,6 +262,15 @@ router.post('/punch-in', verifyAuth, (req, res) => {
   // Get employee's assigned shift
   const emp = db.prepare('SELECT shift_id FROM employees WHERE id = ?').get(employeeId);
 
+  // Resolve location strictly from GPS map area reverse geocoding (no random fallback)
+  let resolvedLocation = location_name;
+  if (!resolvedLocation || resolvedLocation.includes('Office Location') || resolvedLocation.includes('Employee Device') || resolvedLocation.includes('Authorized Site') || resolvedLocation.includes('Open Field')) {
+    resolvedLocation = await reverseGeocodeLocation(latitude, longitude);
+  }
+  if (!resolvedLocation && latitude !== undefined && longitude !== undefined) {
+    resolvedLocation = `Map Area (${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)})`;
+  }
+
   const transaction = db.transaction(() => {
     db.prepare(`
       INSERT INTO attendance_records (
@@ -239,7 +289,7 @@ router.post('/punch-in', verifyAuth, (req, res) => {
         updated_at = CURRENT_TIMESTAMP
     `).run(
       companyId, employeeId, today, nowTime,
-      latitude, longitude, location_name || geofenceCheck.geofenceName || 'Office Location', accuracy || 10,
+      latitude, longitude, resolvedLocation, accuracy || 10,
       emp ? emp.shift_id : null, geofenceCheck.reason
     );
 
@@ -247,7 +297,7 @@ router.post('/punch-in', verifyAuth, (req, res) => {
     db.prepare(`
       INSERT INTO location_tracking_logs (company_id, employee_id, latitude, longitude, accuracy, location_name)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(companyId, employeeId, latitude, longitude, accuracy, location_name || 'Punch In Point');
+    `).run(companyId, employeeId, latitude, longitude, accuracy, resolvedLocation || 'Punch In Point');
   });
 
   transaction();
@@ -256,12 +306,12 @@ router.post('/punch-in', verifyAuth, (req, res) => {
     success: true,
     message: `Punched in successfully at ${nowTime}`,
     punchInTime: nowTime,
-    location: location_name || geofenceCheck.geofenceName
+    location: resolvedLocation
   });
 });
 
 // Employee GPS Punch Out
-router.post('/punch-out', verifyAuth, (req, res) => {
+router.post('/punch-out', verifyAuth, async (req, res) => {
   if (!['employee', 'manager', 'hr'].includes(req.user.role_name)) {
     return res.status(403).json({ error: 'Only staff members (employees, managers, HR) can punch attendance.' });
   }
@@ -330,6 +380,15 @@ router.post('/punch-out', verifyAuth, (req, res) => {
     attendanceStatus = 'Present';
   }
 
+  // Resolve location strictly from GPS map area reverse geocoding (no random fallback)
+  let resolvedLocation = location_name;
+  if (!resolvedLocation || resolvedLocation.includes('Office Location') || resolvedLocation.includes('Employee Device') || resolvedLocation.includes('Authorized Site') || resolvedLocation.includes('Open Field')) {
+    resolvedLocation = await reverseGeocodeLocation(latitude, longitude);
+  }
+  if (!resolvedLocation && latitude !== undefined && longitude !== undefined) {
+    resolvedLocation = `Map Area (${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)})`;
+  }
+
   const transaction = db.transaction(() => {
     db.prepare(`
       UPDATE attendance_records SET
@@ -343,14 +402,14 @@ router.post('/punch-out', verifyAuth, (req, res) => {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
-      nowTime, latitude, longitude, location_name || geofenceCheck.geofenceName || 'Office Location',
+      nowTime, latitude, longitude, resolvedLocation,
       accuracy || 10, totalHours, attendanceStatus, existing.id
     );
 
     db.prepare(`
       INSERT INTO location_tracking_logs (company_id, employee_id, latitude, longitude, accuracy, location_name)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(companyId, employeeId, latitude, longitude, accuracy, location_name || 'Punch Out Point');
+    `).run(companyId, employeeId, latitude, longitude, accuracy, resolvedLocation || 'Punch Out Point');
   });
 
   transaction();
