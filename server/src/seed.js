@@ -291,7 +291,7 @@ function seedDatabase() {
     insertMapping.run(npbId, mgrEmp.lastInsertRowid, emp1.lastInsertRowid, compAdminUser.lastInsertRowid);
     insertMapping.run(npbId, mgrEmp.lastInsertRowid, emp2.lastInsertRowid, compAdminUser.lastInsertRowid);
 
-    // Seed Leave Balances for Employees (Earned Leave 1.25/mo = 15/yr, CL 12/yr, PL 10/yr)
+    // Seed Leave Balances for Employees (CL 12/yr, Earned Leave 1.25/mo = 15/yr)
     const currentYear = new Date().getFullYear();
     const insertLeaveBal = db.prepare(`
       INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
@@ -301,7 +301,6 @@ function seedDatabase() {
     [emp1.lastInsertRowid, emp2.lastInsertRowid].forEach(eId => {
       insertLeaveBal.run(eId, ltCL.lastInsertRowid, currentYear, 12.0, 0.0, 2.0, 10.0);
       insertLeaveBal.run(eId, ltEL.lastInsertRowid, currentYear, 15.0, 10.0, 3.0, 12.0); // 1.25 monthly accrued
-      insertLeaveBal.run(eId, ltPL.lastInsertRowid, currentYear, 10.0, 0.0, 1.0, 9.0);
     });
 
     // Initial Notifications
@@ -310,8 +309,6 @@ function seedDatabase() {
     insertNotif.run(compAdminUser.lastInsertRowid, npbId, 'Company Setup Complete', 'Company portal and geofences are initialized.', 'system', '/settings');
 
     console.log('Seeding completed successfully with zero dummy attendance!');
-
-    console.log('Seeding completed successfully!');
   });
 
   runInTransaction();

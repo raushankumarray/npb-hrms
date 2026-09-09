@@ -7,6 +7,19 @@ import {
 } from 'lucide-react';
 import { apiRequest } from '../api';
 
+function calculateShiftDurationHours(startTime, endTime) {
+  if (!startTime || !endTime) return 8.0;
+  const [h1, m1] = startTime.split(':').map(Number);
+  const [h2, m2] = endTime.split(':').map(Number);
+  let totalMinutes = (h2 * 60 + m2) - (h1 * 60 + m1);
+  if (totalMinutes < 0) {
+    // Crosses midnight, e.g. 22:00 to 06:30
+    totalMinutes += 24 * 60;
+  }
+  const hours = Math.round((totalMinutes / 60) * 10) / 10;
+  return hours > 0 ? hours : 8.0;
+}
+
 export default function ShiftManagementView({ company, role = 'company_admin' }) {
   const [shifts, setShifts] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -702,7 +715,11 @@ export default function ShiftManagementView({ company, role = 'company_admin' })
                     type="time"
                     required
                     value={shiftForm.start_time}
-                    onChange={(e) => setShiftForm({ ...shiftForm, start_time: e.target.value })}
+                    onChange={(e) => {
+                      const newStart = e.target.value;
+                      const hours = calculateShiftDurationHours(newStart, shiftForm.end_time);
+                      setShiftForm({ ...shiftForm, start_time: newStart, working_hours: hours });
+                    }}
                     className="w-full p-2.5 border rounded-xl font-mono text-sm"
                   />
                 </div>
@@ -712,7 +729,11 @@ export default function ShiftManagementView({ company, role = 'company_admin' })
                     type="time"
                     required
                     value={shiftForm.end_time}
-                    onChange={(e) => setShiftForm({ ...shiftForm, end_time: e.target.value })}
+                    onChange={(e) => {
+                      const newEnd = e.target.value;
+                      const hours = calculateShiftDurationHours(shiftForm.start_time, newEnd);
+                      setShiftForm({ ...shiftForm, end_time: newEnd, working_hours: hours });
+                    }}
                     className="w-full p-2.5 border rounded-xl font-mono text-sm"
                   />
                 </div>
@@ -733,15 +754,20 @@ export default function ShiftManagementView({ company, role = 'company_admin' })
                   <span className="text-[10px] text-slate-400">Late mark grace period</span>
                 </div>
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Daily Work Hours</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700">Daily Work Hours</label>
+                    <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-100">
+                      Auto-calculated
+                    </span>
+                  </div>
                   <input
                     type="number"
                     step="0.5"
                     min="1"
                     max="24"
                     value={shiftForm.working_hours}
-                    onChange={(e) => setShiftForm({ ...shiftForm, working_hours: parseFloat(e.target.value) })}
-                    className="w-full p-2.5 border rounded-xl font-mono"
+                    onChange={(e) => setShiftForm({ ...shiftForm, working_hours: parseFloat(e.target.value) || 8.0 })}
+                    className="w-full p-2.5 border rounded-xl font-mono font-bold text-slate-900"
                   />
                   <span className="text-[10px] text-slate-400">Standard hours/day</span>
                 </div>

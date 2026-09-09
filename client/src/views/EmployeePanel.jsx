@@ -47,6 +47,16 @@ function format12Hour(timeStr) {
   return `${h < 10 ? '0' + h : h}:${m} ${ampm}`;
 }
 
+function calculateInclusiveDays(startDateStr, endDateStr) {
+  if (!startDateStr || !endDateStr) return 1;
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return 1;
+  const diffTime = end.getTime() - start.getTime();
+  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24)) + 1;
+  return diffDays > 0 ? diffDays : 1;
+}
+
 export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   // Live Current Time Clock State (ticks continuously every 1 sec)
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -604,13 +614,19 @@ Please deregister this device in the Support Panel so I can register and log in 
         locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
       }
 
+      const now = new Date();
+      const currentPunchTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const currentPunchDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
       const res = await apiRequest('/attendance/punch-in', {
         method: 'POST',
         body: {
           latitude: coords.latitude,
           longitude: coords.longitude,
           accuracy: 10,
-          location_name: locName
+          location_name: locName,
+          punch_time: currentPunchTime,
+          punch_date: currentPunchDate
         }
       });
       setSuccess(res.message);
@@ -661,13 +677,19 @@ Please deregister this device in the Support Panel so I can register and log in 
         locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
       }
 
+      const now = new Date();
+      const currentPunchTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const currentPunchDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
       const res = await apiRequest('/attendance/punch-out', {
         method: 'POST',
         body: {
           latitude: coords.latitude,
           longitude: coords.longitude,
           accuracy: 10,
-          location_name: locName
+          location_name: locName,
+          punch_time: currentPunchTime,
+          punch_date: currentPunchDate
         }
       });
       setSuccess(res.message);
@@ -1993,7 +2015,15 @@ Please deregister this device in the Support Panel so I can register and log in 
                     type="date"
                     required
                     value={leaveForm.start_date}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, start_date: e.target.value })}
+                    onChange={(e) => {
+                      const newStart = e.target.value;
+                      let newEnd = leaveForm.end_date;
+                      if (newEnd && new Date(newEnd) < new Date(newStart)) {
+                        newEnd = newStart;
+                      }
+                      const days = calculateInclusiveDays(newStart, newEnd);
+                      setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
+                    }}
                     className="w-full p-2.5 border rounded-lg"
                   />
                 </div>
@@ -2003,7 +2033,15 @@ Please deregister this device in the Support Panel so I can register and log in 
                     type="date"
                     required
                     value={leaveForm.end_date}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, end_date: e.target.value })}
+                    onChange={(e) => {
+                      const newEnd = e.target.value;
+                      let newStart = leaveForm.start_date;
+                      if (newStart && new Date(newEnd) < new Date(newStart)) {
+                        newStart = newEnd;
+                      }
+                      const days = calculateInclusiveDays(newStart, newEnd);
+                      setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
+                    }}
                     className="w-full p-2.5 border rounded-lg"
                   />
                 </div>
@@ -2011,15 +2049,20 @@ Please deregister this device in the Support Panel so I can register and log in 
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Total Days *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700">Total Days *</label>
+                    <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-100">
+                      Auto-calculated
+                    </span>
+                  </div>
                   <input
                     type="number"
                     step="0.5"
                     min="0.5"
                     required
                     value={leaveForm.total_days}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, total_days: parseFloat(e.target.value) })}
-                    className="w-full p-2.5 border rounded-lg"
+                    onChange={(e) => setLeaveForm({ ...leaveForm, total_days: parseFloat(e.target.value) || 1 })}
+                    className="w-full p-2.5 border rounded-lg font-bold text-slate-900"
                   />
                 </div>
                 <div className="sm:col-span-2">

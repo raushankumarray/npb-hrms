@@ -291,8 +291,16 @@ router.post('/requests', verifyAuth, (req, res) => {
   const companyId = req.user.company_id || req.body.company_id;
   const { leave_type_id, start_date, end_date, total_days, reason } = req.body;
 
-  if (!leave_type_id || !start_date || !end_date || !total_days || !reason) {
-    return res.status(400).json({ error: 'All fields (leave type, start date, end date, total days, reason) are required.' });
+  let days = parseFloat(total_days);
+  if (!days || isNaN(days) || days <= 0) {
+    const s = new Date(start_date);
+    const e = new Date(end_date);
+    const diff = Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    days = diff > 0 ? diff : 1;
+  }
+
+  if (!leave_type_id || !start_date || !end_date || !reason) {
+    return res.status(400).json({ error: 'All fields (leave type, start date, end date, reason) are required.' });
   }
 
   // Check current balance
@@ -303,9 +311,9 @@ router.post('/requests', verifyAuth, (req, res) => {
   `).get(employeeId, leave_type_id, currentYear);
 
   const availableBalance = balanceRow ? balanceRow.balance : 0;
-  if (availableBalance < parseFloat(total_days)) {
+  if (availableBalance < days) {
     return res.status(400).json({
-      error: `Insufficient leave balance. You requested ${total_days} days, but only have ${availableBalance} days available.`
+      error: `Insufficient leave balance. You requested ${days} days, but only have ${availableBalance} days available.`
     });
   }
 
@@ -313,7 +321,7 @@ router.post('/requests', verifyAuth, (req, res) => {
     INSERT INTO leave_requests (
       company_id, employee_id, leave_type_id, start_date, end_date, total_days, reason, status
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
-  `).run(companyId, employeeId, leave_type_id, start_date, end_date, parseFloat(total_days), reason.trim());
+  `).run(companyId, employeeId, leave_type_id, start_date, end_date, days, reason.trim());
 
   // Notify Manager / Admin approvers
   const emp = db.prepare('SELECT full_name, manager_id, reports_to_admin FROM employees WHERE id = ?').get(employeeId);

@@ -24,13 +24,50 @@ function calculateHours(punchIn, punchOut) {
   return Math.round((totalSeconds / 3600) * 100) / 100;
 }
 
+// Helper to get company-local current date (YYYY-MM-DD), default to Asia/Kolkata
+function getCompanyToday(companyId) {
+  let tz = 'Asia/Kolkata';
+  if (companyId) {
+    try {
+      const sett = db.prepare('SELECT timezone FROM company_settings WHERE company_id = ?').get(companyId);
+      if (sett && sett.timezone) tz = sett.timezone;
+    } catch (e) {}
+  }
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(new Date());
+}
+
+// Helper to get company-local current time (HH:MM:SS), default to Asia/Kolkata
+function getCompanyCurrentTime(companyId) {
+  let tz = 'Asia/Kolkata';
+  if (companyId) {
+    try {
+      const sett = db.prepare('SELECT timezone FROM company_settings WHERE company_id = ?').get(companyId);
+      if (sett && sett.timezone) tz = sett.timezone;
+    } catch (e) {}
+  }
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  return formatter.format(new Date());
+}
+
 // Get today's attendance status for logged-in employee
 router.get('/today', verifyAuth, (req, res) => {
   if (req.user.role_name !== 'employee') {
     return res.status(400).json({ error: 'This endpoint is for employees.' });
   }
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = req.query.date || getCompanyToday(req.user.company_id);
   const record = db.prepare(`
     SELECT * FROM attendance_records
     WHERE employee_id = ? AND date = ?
@@ -221,7 +258,7 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     return res.status(403).json({ error: 'Only staff members (employees, managers) can punch attendance.' });
   }
 
-  const { latitude, longitude, accuracy, location_name } = req.body;
+  const { latitude, longitude, accuracy, location_name, punch_time, punch_date } = req.body;
 
   // 1. Mandatory GPS verification & 10m Accuracy Check (desktop & mobile)
   if (latitude === undefined || latitude === null || longitude === undefined || longitude === null) {
@@ -239,8 +276,8 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
 
   const companyId = req.user.company_id;
   const employeeId = req.user.employee_id;
-  const today = new Date().toISOString().split('T')[0];
-  const nowTime = new Date().toTimeString().split(' ')[0]; // HH:MM:SS
+  const today = punch_date || getCompanyToday(companyId);
+  const nowTime = punch_time || getCompanyCurrentTime(companyId);
 
   // 2. Mandatory Geofencing check
   const geofenceCheck = validateGeofence({
@@ -332,7 +369,7 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     return res.status(403).json({ error: 'Only staff members (employees, managers) can punch attendance.' });
   }
 
-  const { latitude, longitude, accuracy, location_name } = req.body;
+  const { latitude, longitude, accuracy, location_name, punch_time, punch_date } = req.body;
 
   // 1. Mandatory GPS verification & 10m Accuracy Check (desktop & mobile)
   if (latitude === undefined || latitude === null || longitude === undefined || longitude === null) {
@@ -350,8 +387,8 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
 
   const companyId = req.user.company_id;
   const employeeId = req.user.employee_id;
-  const today = new Date().toISOString().split('T')[0];
-  const nowTime = new Date().toTimeString().split(' ')[0]; // HH:MM:SS
+  const today = punch_date || getCompanyToday(companyId);
+  const nowTime = punch_time || getCompanyCurrentTime(companyId);
 
   // 2. Mandatory Geofencing check
   const geofenceCheck = validateGeofence({
@@ -1395,7 +1432,7 @@ router.post('/monthly-matrix-pdf', verifyAuth, (req, res) => {
   let countLeave = 0;
   let countAbsent = 0;
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getCompanyToday(emp.company_id);
 
   for (let d = 1; d <= daysInMonth; d++) {
     const dStr = String(d).padStart(2, '0');
