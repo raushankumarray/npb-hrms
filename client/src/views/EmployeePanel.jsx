@@ -312,13 +312,31 @@ Please deregister this device in the Support Panel so I can register and log in 
     });
   };
 
-  // 10m GPS accuracy check verification for both Desktop & Mobile mode
-  const isGpsAccuracyValid = Boolean(
+  // Rule 2 Check: Device Location GPS Enabled or Disabled
+  const isGpsEnabled = Boolean(
     gpsLocation &&
-    gpsLocation.latitude &&
-    gpsLocation.longitude &&
-    (gpsLocation.accuracyValid === true || gpsLocation.accuracy <= 10)
+    !gpsError &&
+    typeof gpsLocation.latitude === 'number' &&
+    typeof gpsLocation.longitude === 'number' &&
+    (gpsLocation.latitude !== 0 || gpsLocation.longitude !== 0)
   );
+
+  // Rule 3 Check: GPS Accuracy 90% to 100% calibration
+  const gpsAccuracyPercent = (() => {
+    if (!isGpsEnabled) return 0;
+    const rawAcc = Number(gpsLocation.rawAccuracy ?? gpsLocation.accuracy ?? 10);
+    // If accuracy is <= 10m or verified, calibrate smoothly to 90% - 100% range
+    if (gpsLocation.accuracyValid === true || rawAcc <= 10) {
+      const calculated = Math.round(100 - Math.min(10, Math.max(0, rawAcc)) * 0.8);
+      return Math.max(90, Math.min(100, calculated));
+    }
+    // If raw accuracy is poorer than 10m, accuracy drops below 90%
+    const poorPct = Math.round(100 - (rawAcc - 5) * 1.5);
+    return Math.max(10, Math.min(88, poorPct));
+  })();
+
+  const isAccuracy90To100 = Boolean(isGpsEnabled && gpsAccuracyPercent >= 90 && gpsAccuracyPercent <= 100);
+  const isGpsAccuracyValid = Boolean(isGpsEnabled && isAccuracy90To100);
 
   const fetchData = async () => {
     setLoading(true);
@@ -543,31 +561,32 @@ Please deregister this device in the Support Panel so I can register and log in 
     }
   };
 
-  // Compute live geofence verification status
+  // Rule 1: Compute live geofence verification status (both assigned & unassigned treated as TRUE when satisfied)
   const geofenceStatus = (() => {
-    // 1st Check: GPS ON/OFF Status
+    // Check if GPS is acquired
     if (!gpsLocation || gpsError) {
       return {
         checked: false,
         gpsOff: true,
         allowed: false,
+        conditionTrue: false,
         text: gpsError || 'GPS Location is OFF. Turn on device GPS and enable browser location permission to punch attendance.'
       };
     }
 
-    // 2nd Check: Anywhere Attendance / Unassigned Mode
-    // If company policy is anywhere, or employee is not assigned a restricted office zone
+    // Case 1: Geofencing Not Assigned / Anywhere Attendance Allowed -> Condition: TRUE ✓
     if (allowedAnywhere || !myGeofence) {
       return {
         checked: true,
         gpsOff: false,
         allowed: true,
+        conditionTrue: true,
         isAnywhere: true,
-        text: '🌐 Anywhere Attendance Allowed: No geofence restrictions assigned. You can punch from any location.'
+        text: 'Geofencing: Not Assigned (Anywhere Attendance Allowed) [Condition: TRUE ✓]'
       };
     }
 
-    // 3rd Check: Assigned Office Geofence Validation
+    // Case 2: Geofencing Assigned -> Validate distance against authorized zone radius
     const dist = calculateDistanceMeters(
       gpsLocation.latitude,
       gpsLocation.longitude,
@@ -580,22 +599,24 @@ Please deregister this device in the Support Panel so I can register and log in 
         checked: true,
         gpsOff: false,
         allowed: true,
+        conditionTrue: true,
         isAnywhere: false,
         distance: dist,
         radius: myGeofence.radius,
         name: myGeofence.location_name,
-        text: `Inside Zone: ${myGeofence.location_name} (${dist}m away / ${myGeofence.radius}m allowed)`
+        text: `Geofencing: Assigned (${myGeofence.location_name}) — Inside Zone (${dist}m / ${myGeofence.radius}m) [Condition: TRUE ✓]`
       };
     } else {
       return {
         checked: true,
         gpsOff: false,
         allowed: false,
+        conditionTrue: false,
         isAnywhere: false,
         distance: dist,
         radius: myGeofence.radius,
         name: myGeofence.location_name,
-        text: `Outside Zone: ${myGeofence.location_name} (${dist}m away / ${myGeofence.radius}m allowed) - Punch Blocked`
+        text: `Geofencing: Assigned (${myGeofence.location_name}) — Outside Zone (${dist}m / ${myGeofence.radius}m) [Condition: FALSE ✗]`
       };
     }
   })();
@@ -610,35 +631,27 @@ Please deregister this device in the Support Panel so I can register and log in 
       return;
     }
 
-    // 1st check: GPS Location ON/OFF & 10m Accuracy verification (desktop & mobile mode)
-    let coords = gpsLocation;
-    if (!coords || !isGpsAccuracyValid) {
-      setPunchLoading(true);
-      try {
-        coords = await getBrowserGPS();
-      } catch (err) {
-        setError('GPS Location is required: Please turn on device GPS and enable browser location permission to Punch In.');
-        setPunchLoading(false);
-        return;
-      }
-    }
-
-    if (!coords || coords.accuracy > 10) {
-      setError('GPS Accuracy Check Failed: 10m GPS accuracy must be verified (True) before marking attendance.');
+    // Rule 2 check: Device Location GPS Enabled Check (If disabled, punch is not permitted)
+    if (!isGpsEnabled) {
+      setError('Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
       return;
     }
 
-    // 2nd check: Geofencing validation if office zone is assigned
-    if (myGeofence && !allowedAnywhere) {
-      const dist = calculateDistanceMeters(coords.latitude, coords.longitude, myGeofence.latitude, myGeofence.longitude);
-      if (dist > myGeofence.radius) {
-        setError(`Punch Blocked: Outside authorized geofence for ${myGeofence.location_name} (${dist}m away / ${myGeofence.radius}m allowed). You can only punch inside the designated office area.`);
-        return;
-      }
+    // Rule 3 check: GPS Accuracy 90% to 100% check
+    if (!isAccuracy90To100) {
+      setError(`GPS Accuracy Check Failed: Current accuracy is ${gpsAccuracyPercent}%. Accuracy must be between 90% and 100% (True) to mark attendance.`);
+      return;
+    }
+
+    // Rule 1 check: Geofencing condition check (Valid in both assigned-inside or not-assigned cases)
+    if (!geofenceStatus.allowed) {
+      setError(geofenceStatus.text || 'Geofence Check Failed: Outside authorized geofence office area.');
+      return;
     }
 
     setPunchLoading(true);
     try {
+      let coords = gpsLocation;
       // Strictly resolve exact map area from current GPS coordinates - no random fallback
       let locName = await resolveLocationName(coords.latitude, coords.longitude);
       if (!locName) {
@@ -661,7 +674,7 @@ Please deregister this device in the Support Panel so I can register and log in 
         }
       });
       setSuccess(res.message);
-      fetchData();
+      await fetchData();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -679,35 +692,27 @@ Please deregister this device in the Support Panel so I can register and log in 
       return;
     }
 
-    // 1st check: GPS Location ON/OFF & 10m Accuracy verification (desktop & mobile mode)
-    let coords = gpsLocation;
-    if (!coords || !isGpsAccuracyValid) {
-      setPunchLoading(true);
-      try {
-        coords = await getBrowserGPS();
-      } catch (err) {
-        setError('GPS Location is required: Please turn on device GPS and enable browser location permission to Punch Out.');
-        setPunchLoading(false);
-        return;
-      }
-    }
-
-    if (!coords || coords.accuracy > 10) {
-      setError('GPS Accuracy Check Failed: 10m GPS accuracy must be verified (True) before marking attendance.');
+    // Rule 2 check: Device Location GPS Enabled Check (If disabled, punch is not permitted)
+    if (!isGpsEnabled) {
+      setError('Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
       return;
     }
 
-    // 2nd check: Geofencing validation if office zone is assigned
-    if (myGeofence && !allowedAnywhere) {
-      const dist = calculateDistanceMeters(coords.latitude, coords.longitude, myGeofence.latitude, myGeofence.longitude);
-      if (dist > myGeofence.radius) {
-        setError(`Punch Blocked: Outside authorized geofence for ${myGeofence.location_name} (${dist}m away / ${myGeofence.radius}m allowed). You can only punch inside the designated office area.`);
-        return;
-      }
+    // Rule 3 check: GPS Accuracy 90% to 100% check
+    if (!isAccuracy90To100) {
+      setError(`GPS Accuracy Check Failed: Current accuracy is ${gpsAccuracyPercent}%. Accuracy must be between 90% and 100% (True) to mark attendance.`);
+      return;
+    }
+
+    // Rule 1 check: Geofencing condition check (Valid in both assigned-inside or not-assigned cases)
+    if (!geofenceStatus.allowed) {
+      setError(geofenceStatus.text || 'Geofence Check Failed: Outside authorized geofence office area.');
+      return;
     }
 
     setPunchLoading(true);
     try {
+      let coords = gpsLocation;
       // Strictly resolve exact map area from current GPS coordinates - no random fallback
       let locName = await resolveLocationName(coords.latitude, coords.longitude);
       if (!locName) {
@@ -730,7 +735,7 @@ Please deregister this device in the Support Panel so I can register and log in 
         }
       });
       setSuccess(res.message);
-      fetchData();
+      await fetchData();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -937,7 +942,7 @@ Please deregister this device in the Support Panel so I can register and log in 
     }
   };
 
-  // Compute Full Month Day-wise Attendance Logs (1..daysInMonth)
+  // Compute Full Month Day-wise Attendance Logs (1..daysInMonth) with real-time punch & leave integration
   const fullMonthDailyLogs = React.useMemo(() => {
     const daysInMonth = new Date(filterYear, filterMonth, 0).getDate();
     const dayNamesFull = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -947,6 +952,10 @@ Please deregister this device in the Support Panel so I can register and log in 
     const attMap = {};
     (calendarData.records || []).forEach(r => { attMap[r.date] = r; });
     (history || []).forEach(r => { if (!attMap[r.date]) attMap[r.date] = r; });
+    if (todayRecord && (todayRecord.punch_in_time || todayRecord.date)) {
+      const recDate = todayRecord.date || todayStr;
+      attMap[recDate] = { ...(attMap[recDate] || {}), ...todayRecord, date: recDate };
+    }
 
     const holMap = {};
     (calendarData.holidays || []).forEach(h => { holMap[h.holiday_date] = h; });
@@ -964,6 +973,13 @@ Please deregister this device in the Support Panel so I can register and log in 
       const att = attMap[dateStr];
       const hol = holMap[dateStr];
       const isWO = offDays.includes(dayName);
+
+      // Check if employee has an approved leave on this date
+      const onLeaveDay = (leaveRequests || []).find(lr => 
+        lr.status === 'approved' &&
+        dateStr >= lr.start_date &&
+        dateStr <= lr.end_date
+      );
 
       let status = 'Upcoming';
       let statusCode = '-';
@@ -990,6 +1006,9 @@ Please deregister this device in the Support Panel so I can register and log in 
         punchOutLatLong = (att.punch_out_lat && att.punch_out_lng) ? `${Number(att.punch_out_lat).toFixed(4)}, ${Number(att.punch_out_lng).toFixed(4)}` : '-';
         punchOutLocation = att.punch_out_location || '-';
         totalHours = att.total_hours ? `${att.total_hours} hrs` : (att.punch_in_time && !att.punch_out_time ? 'In Progress' : '-');
+      } else if (onLeaveDay) {
+        status = onLeaveDay.leave_type_name || 'Approved Leave';
+        statusCode = 'L';
       } else if (hol) {
         status = `Holiday (${hol.name})`;
         statusCode = 'HO';
@@ -1031,7 +1050,7 @@ Please deregister this device in the Support Panel so I can register and log in 
     }
 
     return logs;
-  }, [filterYear, filterMonth, calendarData, history, user]);
+  }, [filterYear, filterMonth, calendarData, history, user, todayRecord, leaveRequests]);
 
   // Filtered Daily Logs according to optional status filter
   const filteredDailyLogs = React.useMemo(() => {
@@ -1136,61 +1155,50 @@ Please deregister this device in the Support Panel so I can register and log in 
                   {currentTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                 </p>
 
-                {/* GPS Active Lat/Long & 10m Accuracy check (No refresh buttons) */}
-                <div className="pt-2 flex flex-wrap items-center gap-2">
-                  {gpsLocation ? (
-                    <>
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-800/80">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        GPS Active: {gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)}
+                {/* 3-Step Verification Rules Display */}
+                <div className="pt-2 flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Rule 1: Geofencing Assigned or Not Status */}
+                    {geofenceStatus.conditionTrue ? (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
+                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
+                        {geofenceStatus.text}
                       </span>
-                      {/* 10m Accuracy check: True -> Green Tick, False -> Red Cross */}
-                      {isGpsAccuracyValid ? (
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-900/60 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
+                        <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
+                        {geofenceStatus.text}
+                      </span>
+                    )}
+
+                    {/* Rule 2: Device Location GPS Enabled or Disabled */}
+                    {isGpsEnabled ? (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
+                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
+                        Device Location: <span className="text-white font-bold">ENABLED ✓</span> ({gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)})
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
+                        <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
+                        Device Location: <span className="text-white font-bold">DISABLED ✗</span>
+                      </span>
+                    )}
+
+                    {/* Rule 3: Accuracy 90% to 100% check */}
+                    {isGpsEnabled && (
+                      isAccuracy90To100 ? (
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
                           <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
-                          10m GPS Accuracy: <span className="text-white font-mono font-bold">TRUE ✓</span>
+                          GPS Accuracy (90-100%): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [TRUE ✓]</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
                           <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
-                          10m GPS Accuracy: <span className="text-white font-mono font-bold">FALSE ✗</span>
+                          GPS Accuracy (90-100%): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [FALSE ✗]</span>
                         </span>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-950/80 px-3 py-1.5 rounded-xl border border-amber-800/80 font-medium">
-                        <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        GPS Inactive: Coordinates not acquired
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
-                        <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
-                        10m GPS Accuracy: <span className="text-white font-mono font-bold">FALSE ✗</span>
-                      </span>
-                    </>
-                  )}
-                </div>
-
-                {/* Geofencing Assigned or Not Status */}
-                <div className="pt-1">
-                  {myGeofence && !allowedAnywhere ? (
-                    geofenceStatus.allowed ? (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-300 bg-emerald-950/50 px-3 py-1.5 rounded-xl border border-emerald-700/60">
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        Geofencing: Assigned ({myGeofence.location_name}) - Inside Zone ✓
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70">
-                        <ShieldAlert className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                        Geofencing: Assigned ({myGeofence.location_name}) - Outside Zone ✗
-                      </span>
-                    )
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-300 bg-sky-950/50 px-3 py-1.5 rounded-xl border border-sky-700/60">
-                      <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                      Geofencing: Not Assigned (Anywhere Attendance Allowed) 🌐
-                    </span>
-                  )}
+                      )
+                    )}
+                  </div>
                 </div>
 
                 {/* Approved Leave Notice */}
@@ -1204,77 +1212,114 @@ Please deregister this device in the Support Panel so I can register and log in 
                 )}
               </div>
 
-              {/* Punch Buttons */}
+              {/* Punch Buttons Container (Rule 2: If GPS Disabled -> Do NOT Show Buttons) */}
               <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={handlePunchIn}
-                  disabled={
-                    punchLoading ||
-                    todayOnLeave ||
-                    (todayRecord && todayRecord.punch_in_time)
-                  }
-                  className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
-                    todayOnLeave
-                      ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
-                      : todayRecord && todayRecord.punch_in_time
-                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40 hover:scale-105 active:scale-95'
-                  }`}
-                  title={
-                    todayOnLeave
-                      ? 'Attendance punch blocked: Currently on approved leave'
-                      : todayRecord && todayRecord.punch_in_time
-                      ? 'Already punched in today'
-                      : 'Punch In (Auto-verifies GPS & marks attendance)'
-                  }
-                >
-                  <span>PUNCH IN</span>
-                  <span className="text-[11px] font-normal opacity-80">
-                    {todayOnLeave
-                      ? 'On Leave'
-                      : todayRecord && todayRecord.punch_in_time
-                      ? todayRecord.punch_in_time
-                      : 'Start Work'}
-                  </span>
-                </button>
+                {!isGpsEnabled ? (
+                  <div className="flex flex-col items-center justify-center p-4 rounded-2xl bg-rose-950/50 border border-rose-500/50 text-center max-w-xs sm:max-w-sm w-full">
+                    <AlertCircle className="w-6 h-6 text-rose-400 mb-1.5 shrink-0 animate-bounce" />
+                    <span className="font-bold text-xs text-rose-200 uppercase tracking-wide">Device Location is Disabled</span>
+                    <p className="text-[11px] text-rose-300/80 mt-1 leading-relaxed">
+                      Turn on device GPS & browser location permission. Punch In & Punch Out buttons will appear once location is enabled.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleRefreshGPS}
+                      disabled={gpsFetching}
+                      className="mt-2.5 px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-rose-900/40 flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${gpsFetching ? 'animate-spin' : ''}`} />
+                      {gpsFetching ? 'Detecting GPS...' : 'Enable / Detect GPS'}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handlePunchIn}
+                      disabled={
+                        punchLoading ||
+                        todayOnLeave ||
+                        !isAccuracy90To100 ||
+                        !geofenceStatus.allowed ||
+                        (todayRecord && todayRecord.punch_in_time)
+                      }
+                      className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
+                        todayOnLeave
+                          ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
+                          : !isAccuracy90To100 || !geofenceStatus.allowed
+                          ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-75'
+                          : todayRecord && todayRecord.punch_in_time
+                          ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40 hover:scale-105 active:scale-95 cursor-pointer'
+                      }`}
+                      title={
+                        todayOnLeave
+                          ? 'Attendance punch blocked: Currently on approved leave'
+                          : !geofenceStatus.allowed
+                          ? 'Geofence rule check failed: Outside office boundary'
+                          : !isAccuracy90To100
+                          ? 'GPS Accuracy check failed: 90-100% accuracy required'
+                          : todayRecord && todayRecord.punch_in_time
+                          ? 'Already punched in today'
+                          : 'Punch In (Rule checks passed: GPS enabled, Accuracy 90-100%, Geofence valid)'
+                      }
+                    >
+                      <span>PUNCH IN</span>
+                      <span className="text-[11px] font-normal opacity-80">
+                        {todayOnLeave
+                          ? 'On Leave'
+                          : todayRecord && todayRecord.punch_in_time
+                          ? todayRecord.punch_in_time
+                          : 'Start Work'}
+                      </span>
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={handlePunchOut}
-                  disabled={
-                    punchLoading ||
-                    todayOnLeave ||
-                    !todayRecord ||
-                    !todayRecord.punch_in_time ||
-                    todayRecord.punch_out_time
-                  }
-                  className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
-                    todayOnLeave
-                      ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
-                      : !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
-                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                      : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-900/40 hover:scale-105 active:scale-95'
-                  }`}
-                  title={
-                    todayOnLeave
-                      ? 'Attendance punch blocked: Currently on approved leave'
-                      : !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
-                      ? 'Punch out unavailable'
-                      : 'Punch Out (Auto-verifies GPS & ends shift)'
-                  }
-                >
-                  <span>PUNCH OUT</span>
-                  <span className="text-[11px] font-normal opacity-80">
-                    {todayOnLeave
-                      ? 'On Leave'
-                      : todayRecord?.punch_out_time
-                      ? todayRecord.punch_out_time
-                      : !todayRecord?.punch_in_time
-                      ? 'Not Punched In'
-                      : 'End Shift'}
-                  </span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={handlePunchOut}
+                      disabled={
+                        punchLoading ||
+                        todayOnLeave ||
+                        !isAccuracy90To100 ||
+                        !geofenceStatus.allowed ||
+                        !todayRecord ||
+                        !todayRecord.punch_in_time ||
+                        todayRecord.punch_out_time
+                      }
+                      className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
+                        todayOnLeave
+                          ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
+                          : !isAccuracy90To100 || !geofenceStatus.allowed
+                          ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-75'
+                          : !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
+                          ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
+                          : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-900/40 hover:scale-105 active:scale-95 cursor-pointer'
+                      }`}
+                      title={
+                        todayOnLeave
+                          ? 'Attendance punch blocked: Currently on approved leave'
+                          : !geofenceStatus.allowed
+                          ? 'Geofence rule check failed: Outside office boundary'
+                          : !isAccuracy90To100
+                          ? 'GPS Accuracy check failed: 90-100% accuracy required'
+                          : !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
+                          ? 'Punch out unavailable'
+                          : 'Punch Out (Rule checks passed: GPS enabled, Accuracy 90-100%, Geofence valid)'
+                      }
+                    >
+                      <span>PUNCH OUT</span>
+                      <span className="text-[11px] font-normal opacity-80">
+                        {todayOnLeave
+                          ? 'On Leave'
+                          : todayRecord?.punch_out_time
+                          ? todayRecord.punch_out_time
+                          : !todayRecord?.punch_in_time
+                          ? 'Not Punched In'
+                          : 'End Shift'}
+                      </span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1754,10 +1799,8 @@ Please deregister this device in the Support Panel so I can register and log in 
                     <th className="p-3">Name</th>
                     <th className="p-3">Date</th>
                     <th className="p-3 text-center">Status</th>
-                    <th className="p-3">Punch In</th>
-                    <th className="p-3">GPS Lat/Long (In)</th>
-                    <th className="p-3">Punch Out</th>
-                    <th className="p-3">GPS Lat/Long (Out)</th>
+                    <th className="p-3 min-w-[200px]">Punch In Details</th>
+                    <th className="p-3 min-w-[200px]">Punch Out Details</th>
                     <th className="p-3 text-right">Working Hrs</th>
                   </tr>
                 </thead>
@@ -1784,27 +1827,49 @@ Please deregister this device in the Support Panel so I can register and log in 
                           {log.status}
                         </span>
                       </td>
-                      <td className="p-3 font-mono font-bold text-emerald-700 whitespace-nowrap">
-                        {log.punchIn}
+                      <td className="p-3">
+                        {log.punchIn !== '--:--' ? (
+                          <div className="space-y-1">
+                            <div className="font-mono font-bold text-emerald-700 text-xs">
+                              {log.punchIn}
+                            </div>
+                            {log.punchInLatLong !== '-' && (
+                              <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-emerald-500 shrink-0" />
+                                <span>{log.punchInLatLong}</span>
+                              </div>
+                            )}
+                            {log.punchInLocation !== '-' && (
+                              <div className="text-[11px] text-slate-700 font-medium line-clamp-2 max-w-[240px]" title={log.punchInLocation}>
+                                {log.punchInLocation}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="font-mono text-slate-400">--:--</span>
+                        )}
                       </td>
-                      <td className="p-3 font-mono text-[10px] text-slate-600 whitespace-nowrap" title={log.punchInLocation}>
-                        {log.punchInLatLong !== '-' ? (
-                          <span className="inline-flex items-center gap-1">
-                            <MapPin className="w-3 h-3 text-emerald-500 shrink-0" />
-                            {log.punchInLatLong}
-                          </span>
-                        ) : '-'}
-                      </td>
-                      <td className="p-3 font-mono font-bold text-rose-700 whitespace-nowrap">
-                        {log.punchOut}
-                      </td>
-                      <td className="p-3 font-mono text-[10px] text-slate-600 whitespace-nowrap" title={log.punchOutLocation}>
-                        {log.punchOutLatLong !== '-' ? (
-                          <span className="inline-flex items-center gap-1">
-                            <MapPin className="w-3 h-3 text-rose-500 shrink-0" />
-                            {log.punchOutLatLong}
-                          </span>
-                        ) : '-'}
+                      <td className="p-3">
+                        {log.punchOut !== '--:--' ? (
+                          <div className="space-y-1">
+                            <div className="font-mono font-bold text-rose-700 text-xs">
+                              {log.punchOut}
+                            </div>
+                            {log.punchOutLatLong !== '-' && (
+                              <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-rose-500 shrink-0" />
+                                <span>{log.punchOutLatLong}</span>
+                              </div>
+                            )}
+                            {log.punchOutLocation !== '-' && (
+                              <div className="text-[11px] text-slate-700 font-medium line-clamp-2 max-w-[240px]" title={log.punchOutLocation}>
+                                {log.punchOutLocation}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="font-mono text-slate-400">--:--</span>
+                        )}
                       </td>
                       <td className="p-3 text-right font-medium text-slate-900 font-mono whitespace-nowrap">
                         {log.totalHours}
@@ -1813,7 +1878,7 @@ Please deregister this device in the Support Panel so I can register and log in 
                   ))}
                   {paginatedLogs.length === 0 && (
                     <tr>
-                      <td colSpan="8" className="p-8 text-center text-slate-400">
+                      <td colSpan="6" className="p-8 text-center text-slate-400">
                         No attendance records match the selected filter.
                       </td>
                     </tr>
