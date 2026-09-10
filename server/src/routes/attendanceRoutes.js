@@ -81,9 +81,19 @@ router.get('/today', verifyAuth, (req, res) => {
     WHERE e.id = ?
   `).get(req.user.employee_id);
 
+  // Check if employee is on approved leave today
+  const onLeave = db.prepare(`
+    SELECT lr.*, lt.name as leave_type_name
+    FROM leave_requests lr
+    LEFT JOIN leave_types lt ON lr.leave_type_id = lt.id
+    WHERE lr.employee_id = ? AND lr.status = 'approved'
+      AND ? BETWEEN lr.start_date AND lr.end_date
+  `).get(req.user.employee_id, today);
+
   res.json({
     record: record || null,
     today,
+    onLeave: onLeave || null,
     shift: empShift ? {
       name: empShift.shift_name || 'General Shift',
       start_time: empShift.start_time || '09:00:00',
@@ -279,6 +289,21 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
   const today = punch_date || getCompanyToday(companyId);
   const nowTime = punch_time || getCompanyCurrentTime(companyId);
 
+  // Check if employee is on approved leave today
+  const onLeave = db.prepare(`
+    SELECT lr.*, lt.name as leave_type_name
+    FROM leave_requests lr
+    LEFT JOIN leave_types lt ON lr.leave_type_id = lt.id
+    WHERE lr.employee_id = ? AND lr.status = 'approved'
+      AND ? BETWEEN lr.start_date AND lr.end_date
+  `).get(employeeId, today);
+
+  if (onLeave) {
+    return res.status(403).json({
+      error: `Cannot mark attendance: You are on approved ${onLeave.leave_type_name || 'Leave'} today (${today}). If attendance needs to be marked, your Manager or Admin can modify the leave record.`
+    });
+  }
+
   // 2. Mandatory Geofencing check
   const geofenceCheck = validateGeofence({
     companyId,
@@ -389,6 +414,21 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
   const employeeId = req.user.employee_id;
   const today = punch_date || getCompanyToday(companyId);
   const nowTime = punch_time || getCompanyCurrentTime(companyId);
+
+  // Check if employee is on approved leave today
+  const onLeave = db.prepare(`
+    SELECT lr.*, lt.name as leave_type_name
+    FROM leave_requests lr
+    LEFT JOIN leave_types lt ON lr.leave_type_id = lt.id
+    WHERE lr.employee_id = ? AND lr.status = 'approved'
+      AND ? BETWEEN lr.start_date AND lr.end_date
+  `).get(employeeId, today);
+
+  if (onLeave) {
+    return res.status(403).json({
+      error: `Cannot mark attendance: You are on approved ${onLeave.leave_type_name || 'Leave'} today (${today}). If attendance needs to be marked, your Manager or Admin can modify the leave record.`
+    });
+  }
 
   // 2. Mandatory Geofencing check
   const geofenceCheck = validateGeofence({
@@ -1196,6 +1236,163 @@ router.post('/export', verifyAuth, (req, res) => {
   }
 
   // MULTI-DATE / MONTH / ALL DATES MODE
+
+  // If exporting monthly report for a specific employee (or logged-in employee), generate FULL 1 to 31 date-wise calendar rows!
+  const isEmployeeMonthly = month && year && (req.user.role_name === 'employee' || (employee_id && employee_id !== 'all' && !employee_ids));
+  if (isEmployeeMonthly) {
+    const targetEmpId = req.user.role_name === 'employee' ? req.user.employee_id : parseInt(employee_id, 10);
+    const emp = db.prepare(`
+      SELECT e.*, c.name as company_name, s.name as shift_name, s.start_time, s.end_time
+      FROM employees e
+      JOIN companies c ON e.company_id = c.id
+      LEFT JOIN shifts s ON e.shift_id = s.id
+      WHERE e.id = ?
+    `).get(targetEmpId);
+
+    if (emp) {
+      let offDays = ['Sunday'];
+      const empW = db.prepare(`
+        SELECT w.off_days_json 
+        FROM employees e
+        LEFT JOIN weekly_off_settings w ON e.weekly_off_id = w.id
+        WHERE e.id = ?
+      `).get(targetEmpId);
+      if (empW && empW.off_days_json) {
+        try { offDays = JSON.parse(empW.off_days_json); } catch (e) {}
+      } else {
+        const masterW = db.prepare('SELECT off_days_json FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(emp.company_id);
+        if (masterW && masterW.off_days_json) {
+          try { offDays = JSON.parse(masterW.off_days_json); } catch (e) {}
+        }
+      }
+
+      const mInt = parseInt(month, 10);
+      const yInt = parseInt(year, 10);
+      const mStr = String(mInt).padStart(2, '0');
+      const daysInMonth = new Date(yInt, mInt, 0).getDate();
+      const todayStr = getCompanyToday(emp.company_id);
+
+      const holidays = db.prepare(`
+        SELECT holiday_date, name FROM holidays
+        WHERE company_id = ? AND holiday_date LIKE ?
+      `).all(emp.company_id, `${yInt}-${mStr}-%`);
+      const holMap = {};
+      holidays.forEach(h => { holMap[h.holiday_date] = h.name; });
+
+      const leaves = db.prepare(`
+        SELECT lr.*, lt.name as leave_name
+        FROM leave_requests lr
+        LEFT JOIN leave_types lt ON lr.leave_type_id = lt.id
+        WHERE lr.employee_id = ? AND lr.status = 'approved'
+          AND (lr.start_date <= ? AND lr.end_date >= ?)
+      `).all(targetEmpId, `${yInt}-${mStr}-${daysInMonth}`, `${yInt}-${mStr}-01`);
+
+      const attList = db.prepare(`
+        SELECT * FROM attendance_records
+        WHERE employee_id = ? AND date LIKE ?
+      `).all(targetEmpId, `${yInt}-${mStr}-%`);
+      const attMap = {};
+      attList.forEach(a => { attMap[a.date] = a; });
+
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const monthRows = [];
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dStr = String(d).padStart(2, '0');
+        const curDateStr = `${yInt}-${mStr}-${dStr}`;
+        const dObj = new Date(yInt, mInt - 1, d);
+        const dayOfWeek = dayNames[dObj.getDay()];
+
+        const att = attMap[curDateStr];
+        const isHoliday = holMap[curDateStr];
+        const isWO = offDays.includes(dayOfWeek);
+        const leave = leaves.find(l => curDateStr >= l.start_date && curDateStr <= l.end_date);
+
+        let status = '-';
+        let punchIn = '-';
+        let punchOut = '-';
+        let hours = '0 hrs';
+        let loc = '-';
+        let remarks = '';
+
+        if (att) {
+          status = att.status || 'Present';
+          punchIn = att.punch_in_time || '-';
+          punchOut = att.punch_out_time || '-';
+          hours = `${att.total_hours || 0} hrs`;
+          loc = att.punch_in_location || (att.punch_in_lat ? `${Number(att.punch_in_lat).toFixed(4)}, ${Number(att.punch_in_lng).toFixed(4)}` : '-');
+          remarks = att.remarks || status;
+        } else if (leave) {
+          status = 'Leave';
+          remarks = `On Approved ${leave.leave_name || 'Leave'}`;
+        } else if (isHoliday) {
+          status = 'Holiday';
+          remarks = `Official Holiday: ${isHoliday}`;
+        } else if (isWO) {
+          status = 'Weekly Off';
+          remarks = `Scheduled Weekly Off (${dayOfWeek})`;
+        } else if (curDateStr <= todayStr) {
+          status = 'Absent';
+          remarks = 'Absent (No punch recorded)';
+        } else {
+          status = 'Upcoming';
+          remarks = 'Upcoming Date';
+        }
+
+        monthRows.push({
+          "Employee": `${emp.full_name} (${emp.employee_id || 'EMP'})`,
+          "Employee Name": emp.full_name,
+          "Employee ID": emp.employee_id || '-',
+          "Date": `${curDateStr} (${dayOfWeek.substring(0, 3)})`,
+          "Punch In": punchIn,
+          "Punch Out": punchOut,
+          "Hours": hours,
+          "Working Hours": hours,
+          "Status": status,
+          "Location / Geofence": loc,
+          "GPS Lat/Long (Punch In)": att?.punch_in_lat ? `${Number(att.punch_in_lat).toFixed(4)}, ${Number(att.punch_in_lng).toFixed(4)}` : '-',
+          "Address (Punch In)": att?.punch_in_location || '-',
+          "GPS Lat/Long (Punch Out)": att?.punch_out_lat ? `${Number(att.punch_out_lat).toFixed(4)}, ${Number(att.punch_out_lng).toFixed(4)}` : '-',
+          "Address (Punch Out)": att?.punch_out_location || '-',
+          "Remarks": remarks,
+          "Department": emp.department || '',
+          "Shift": emp.shift_name || 'General'
+        });
+      }
+
+      const dateRangeLabel = `Month: ${yInt}-${mStr} (Days 1 to ${daysInMonth})`;
+
+      if (format === 'xlsx' || format === 'excel') {
+        const excelBuffer = exportCustomExcel({
+          data: monthRows,
+          selectedColumns: activeCols,
+          sheetName: `Attendance ${yInt}-${mStr}`,
+          companyName,
+          reportTitle: `Monthly Attendance Log Report (Days 1 to ${daysInMonth}) - ${emp.full_name}`,
+          dateRange: dateRangeLabel,
+          totalRecords: monthRows.length
+        });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="Daily_Attendance_${yInt}_${mStr}_${emp.employee_id || 'emp'}.xlsx"`);
+        return res.send(excelBuffer);
+      } else if (format === 'pdf' || format === 'html') {
+        const htmlReport = exportHtmlReport({
+          data: monthRows,
+          selectedColumns: activeCols,
+          title: `Monthly Attendance Log Report (Days 1 to ${daysInMonth}) - ${emp.full_name}`,
+          companyName,
+          dateRange: dateRangeLabel,
+          totalRecords: monthRows.length,
+          generatedBy: req.user.username
+        });
+
+        res.setHeader('Content-Type', 'text/html');
+        return res.send(htmlReport);
+      }
+    }
+  }
+
   let baseQuery = `
     FROM attendance_records a
     JOIN employees e ON a.employee_id = e.id

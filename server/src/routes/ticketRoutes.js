@@ -84,9 +84,11 @@ router.get('/service-requests', verifyAuth, (req, res) => {
   let query = `
     SELECT sr.*, e.employee_id as employee_code, e.full_name as employee_name, e.department,
            c.name as company_name, c.code as company_code,
-           u.username as resolver_name
+           u.username as resolver_name,
+           COALESCE(usr.username, e.full_name, 'Employee') as created_by_username
     FROM service_requests sr
     JOIN employees e ON sr.employee_id = e.id
+    LEFT JOIN users usr ON e.user_id = usr.id
     LEFT JOIN companies c ON sr.company_id = c.id
     LEFT JOIN users u ON sr.resolved_by = u.id
     WHERE 1=1
@@ -105,11 +107,11 @@ router.get('/service-requests', verifyAuth, (req, res) => {
     query += ' AND sr.is_archived = 1';
   }
 
-  // Employee sees own tickets
-  if (req.user.role_name === 'employee') {
+  // If scope is explicitly 'own' or for specific employee
+  if (req.query.scope === 'own') {
     query += ' AND sr.employee_id = ?';
     params.push(req.user.employee_id);
-  } else if (req.user.role_name === 'manager') {
+  } else if (req.user.role_name === 'manager' && req.query.scope === 'team') {
     query += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
     params.push(req.user.employee_id, req.user.employee_id);
   }

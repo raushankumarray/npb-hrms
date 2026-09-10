@@ -291,17 +291,55 @@ router.post('/requests', verifyAuth, (req, res) => {
   const companyId = req.user.company_id || req.body.company_id;
   const { leave_type_id, start_date, end_date, total_days, reason } = req.body;
 
-  let days = parseFloat(total_days);
-  if (!days || isNaN(days) || days <= 0) {
-    const s = new Date(start_date);
-    const e = new Date(end_date);
-    const diff = Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    days = diff > 0 ? diff : 1;
-  }
-
   if (!leave_type_id || !start_date || !end_date || !reason) {
     return res.status(400).json({ error: 'All fields (leave type, start date, end date, reason) are required.' });
   }
+
+  // Calculate working leave days excluding Weekly Offs and Holidays
+  let offDays = ['Sunday'];
+  if (employeeId) {
+    const empW = db.prepare(`
+      SELECT w.off_days_json 
+      FROM employees e
+      LEFT JOIN weekly_off_settings w ON e.weekly_off_id = w.id
+      WHERE e.id = ?
+    `).get(employeeId);
+    if (empW && empW.off_days_json) {
+      try { offDays = JSON.parse(empW.off_days_json); } catch (e) {}
+    } else {
+      const masterW = db.prepare('SELECT off_days_json FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(companyId);
+      if (masterW && masterW.off_days_json) {
+        try { offDays = JSON.parse(masterW.off_days_json); } catch (e) {}
+      }
+    }
+  }
+
+  const holidays = db.prepare(`
+    SELECT holiday_date FROM holidays
+    WHERE company_id = ? AND holiday_date BETWEEN ? AND ?
+  `).all(companyId, start_date, end_date).map(h => h.holiday_date);
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const cur = new Date(start_date + 'T00:00:00');
+  const end = new Date(end_date + 'T00:00:00');
+  let workingDaysCount = 0;
+
+  while (cur <= end) {
+    const y = cur.getFullYear();
+    const m = String(cur.getMonth() + 1).padStart(2, '0');
+    const d = String(cur.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${d}`;
+    const dayName = dayNames[cur.getDay()];
+    const isWO = offDays.includes(dayName);
+    const isHoliday = holidays.includes(dateStr);
+
+    if (!isWO && !isHoliday) {
+      workingDaysCount++;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  const days = workingDaysCount > 0 ? workingDaysCount : 1;
 
   // Check current balance
   const currentYear = new Date().getFullYear();

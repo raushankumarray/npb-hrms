@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  MapPin, Clock, Calendar, ShieldCheck, AlertCircle, CheckCircle2,
+  MapPin, Clock, Calendar, ShieldCheck, AlertCircle, AlertTriangle, CheckCircle2,
   Ticket, KeyRound, User, Smartphone, RefreshCw, Send, ArrowUpRight,
   ShieldAlert, CheckCircle, Navigation, MessageSquare, Edit3, Sparkles, FileEdit, Check, X, Globe,
   FileText, Download, SlidersHorizontal, Printer, ChevronDown, CheckSquare, Square,
@@ -47,14 +47,35 @@ function format12Hour(timeStr) {
   return `${h < 10 ? '0' + h : h}:${m} ${ampm}`;
 }
 
-function calculateInclusiveDays(startDateStr, endDateStr) {
+// Calculate working days strictly excluding Weekly Offs (WO) and official holidays
+function calculateWorkingDaysExcludingWO(startDateStr, endDateStr, offDays = ['Sunday'], holidays = []) {
   if (!startDateStr || !endDateStr) return 1;
   const start = new Date(startDateStr);
   const end = new Date(endDateStr);
   if (isNaN(start.getTime()) || isNaN(end.getTime())) return 1;
-  const diffTime = end.getTime() - start.getTime();
-  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24)) + 1;
-  return diffDays > 0 ? diffDays : 1;
+  if (end < start) return 1;
+
+  const dayNamesFull = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const holidayDates = new Set((holidays || []).map(h => typeof h === 'string' ? h : h.holiday_date));
+  const offDaysSet = new Set((offDays && offDays.length > 0 ? offDays : ['Sunday']).map(d => String(d).trim().toLowerCase()));
+
+  let workingDays = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    const dayName = dayNamesFull[cur.getDay()].toLowerCase();
+    const dateStr = cur.toISOString().split('T')[0];
+    const isWO = offDaysSet.has(dayName);
+    const isHoliday = holidayDates.has(dateStr);
+    if (!isWO && !isHoliday) {
+      workingDays++;
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return workingDays > 0 ? workingDays : 0;
+}
+
+function calculateInclusiveDays(startDateStr, endDateStr, offDays = ['Sunday'], holidays = []) {
+  return calculateWorkingDaysExcludingWO(startDateStr, endDateStr, offDays, holidays);
 }
 
 export default function EmployeePanel({ user, company, activeTab, onLogout }) {
@@ -69,6 +90,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   }, []);
 
   const [todayRecord, setTodayRecord] = useState(null);
+  const [todayOnLeave, setTodayOnLeave] = useState(null);
+  const [leaveHistoryTab, setLeaveHistoryTab] = useState('pending'); // 'pending' | 'approved'
+  const [insufficientLeaveError, setInsufficientLeaveError] = useState('');
   const [history, setHistory] = useState([]);
   const [calendarData, setCalendarData] = useState({ records: [], holidays: [], offDays: ['Sunday'] });
   const [leaveBalances, setLeaveBalances] = useState([]);
@@ -303,6 +327,7 @@ Please deregister this device in the Support Panel so I can register and log in 
       // 1. Today's attendance
       const todayRes = await apiRequest('/attendance/today');
       setTodayRecord(todayRes.record);
+      setTodayOnLeave(todayRes.onLeave || null);
       if (todayRes.shift) {
         setShiftInfo(todayRes.shift);
       }
@@ -579,6 +604,12 @@ Please deregister this device in the Support Panel so I can register and log in 
     setError('');
     setSuccess('');
 
+    // 0th check: Prevent punch if employee is on approved leave today
+    if (todayOnLeave) {
+      setError(`Punch Blocked: You are currently on approved leave (${todayOnLeave.leave_type_name || 'Approved Leave'}, ${todayOnLeave.start_date} to ${todayOnLeave.end_date}). Attendance marking is disabled while on leave.`);
+      return;
+    }
+
     // 1st check: GPS Location ON/OFF & 10m Accuracy verification (desktop & mobile mode)
     let coords = gpsLocation;
     if (!coords || !isGpsAccuracyValid) {
@@ -642,6 +673,12 @@ Please deregister this device in the Support Panel so I can register and log in 
     setError('');
     setSuccess('');
 
+    // 0th check: Prevent punch if employee is on approved leave today
+    if (todayOnLeave) {
+      setError(`Punch Blocked: You are currently on approved leave (${todayOnLeave.leave_type_name || 'Approved Leave'}, ${todayOnLeave.start_date} to ${todayOnLeave.end_date}). Attendance marking is disabled while on leave.`);
+      return;
+    }
+
     // 1st check: GPS Location ON/OFF & 10m Accuracy verification (desktop & mobile mode)
     let coords = gpsLocation;
     if (!coords || !isGpsAccuracyValid) {
@@ -704,22 +741,42 @@ Please deregister this device in the Support Panel so I can register and log in 
   const handleSubmitLeave = async (e) => {
     e.preventDefault();
     setError('');
+    setInsufficientLeaveError('');
+
+    const reqDays = parseFloat(leaveForm.total_days) || 0;
+    if (reqDays <= 0) {
+      setInsufficientLeaveError('Selected dates contain only Weekly Offs (WO) or Holidays. Working days count to deduct is 0.');
+      return;
+    }
+
+    // Check available balance
+    const selectedBal = leaveBalances.find(b => String(b.leave_type_id) === String(leaveForm.leave_type_id));
+    if (selectedBal && reqDays > parseFloat(selectedBal.balance || 0)) {
+      setInsufficientLeaveError(`Insufficient leave balance! You requested ${reqDays} day(s), but your available balance for ${selectedBal.leave_type_name} is only ${selectedBal.balance} day(s).`);
+      return;
+    }
+
     try {
       await apiRequest('/leave/requests', {
         method: 'POST',
         body: leaveForm
       });
-      setSuccess('Leave application submitted for approval.');
+      setSuccess('Leave application submitted successfully for approval.');
+      const tomorrow = new Date();
       setLeaveForm({
         leave_type_id: leaveBalances[0]?.leave_type_id || '',
-        start_date: new Date().toISOString().split('T')[0],
-        end_date: new Date().toISOString().split('T')[0],
-        total_days: 1,
+        start_date: tomorrow.toISOString().split('T')[0],
+        end_date: tomorrow.toISOString().split('T')[0],
+        total_days: calculateWorkingDaysExcludingWO(tomorrow.toISOString().split('T')[0], tomorrow.toISOString().split('T')[0], calendarData.offDays, calendarData.holidays),
         reason: ''
       });
       fetchData();
     } catch (err) {
-      setError(err.message);
+      if (err.message && err.message.toLowerCase().includes('insufficient')) {
+        setInsufficientLeaveError(err.message);
+      } else {
+        setError(err.message);
+      }
     }
   };
 
@@ -1031,23 +1088,6 @@ Please deregister this device in the Support Panel so I can register and log in 
 
             <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-[11px] font-semibold border border-sky-400/30">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>Employee Dashboard</span>
-                  </div>
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/25 text-indigo-300 text-[11px] font-semibold border border-indigo-400/40 shadow-xs">
-                    <Clock className="w-3.5 h-3.5 text-indigo-300 shrink-0" />
-                    <span>
-                      Shift: {shiftInfo?.name || 'General Shift'} ({format12Hour(shiftInfo?.start_time || '09:00:00')} - {format12Hour(shiftInfo?.end_time || '18:00:00')})
-                    </span>
-                  </div>
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/25 text-purple-300 text-[11px] font-semibold border border-purple-400/40 shadow-xs" title="Device Registration & Security Lock Active (1-Device Policy)">
-                    <Laptop className="w-3.5 h-3.5 text-purple-300 shrink-0" />
-                    <span>Locked Device: {registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'Active')}</span>
-                  </div>
-                </div>
-
                 <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
                   Welcome, {user.fullName || user.username}
                   {user.employeeCode && (
@@ -1063,11 +1103,19 @@ Please deregister this device in the Support Panel so I can register and log in 
 
               <div className="flex sm:flex-col items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-slate-700/60 pt-3 sm:pt-0 sm:pl-6 shrink-0">
                 <div className="text-right">
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Shift Status</span>
-                  <p className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end mt-0.5">
-                    <span className={`w-2 h-2 rounded-full ${todayRecord?.punch_out_time ? 'bg-slate-400' : todayRecord?.punch_in_time ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                    <span>{todayRecord?.punch_out_time ? 'Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}</span>
-                  </p>
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Status</span>
+                  <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end mt-0.5">
+                    {todayOnLeave ? (
+                      <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/40 text-[11px] font-bold">
+                        On Approved Leave
+                      </span>
+                    ) : (
+                      <>
+                        <span className={`w-2 h-2 rounded-full ${todayRecord?.punch_out_time ? 'bg-slate-400' : todayRecord?.punch_in_time ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                        <span>{todayRecord?.punch_out_time ? 'Shift Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1076,7 +1124,7 @@ Please deregister this device in the Support Panel so I can register and log in 
           {/* Punch Hero Card */}
           <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden border border-slate-700">
             <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between gap-6">
-              <div className="space-y-2 text-center sm:text-left">
+              <div className="space-y-2.5 text-center sm:text-left">
                 <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-xs font-semibold border border-sky-500/30">
                   <MapPin className="w-3.5 h-3.5" />
                   Mandatory GPS Attendance
@@ -1088,76 +1136,70 @@ Please deregister this device in the Support Panel so I can register and log in 
                   {currentTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                 </p>
 
-                {/* GPS Accuracy Status Badge with Auto-fetch & Refresh */}
-                <div className="pt-2">
-                  {gpsFetching ? (
-                    <span className="text-xs text-slate-300 flex items-center gap-1.5 bg-slate-800/60 px-3 py-1.5 rounded-xl border border-slate-700">
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-sky-400" /> Auto-fetching live GPS coordinates...
-                    </span>
-                  ) : gpsLocation ? (
-                    <div className="flex flex-wrap items-center gap-2">
+                {/* GPS Active Lat/Long & 10m Accuracy check (No refresh buttons) */}
+                <div className="pt-2 flex flex-wrap items-center gap-2">
+                  {gpsLocation ? (
+                    <>
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-800/80">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                         GPS Active: {gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)}
                       </span>
-                      {/* 10m Accuracy Verification Badge (Both Desktop & Mobile mode) */}
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-900/60 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
-                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
-                        10m GPS Accuracy: <span className="text-white font-mono font-bold">TRUE ✓</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleRefreshGPS}
-                        disabled={gpsFetching}
-                        className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-300 hover:text-sky-200 bg-sky-950/60 hover:bg-sky-900/80 px-2.5 py-1.5 rounded-xl border border-sky-800/60 transition-colors"
-                        title="Auto-fetch and refresh current GPS coordinates"
-                      >
-                        <RefreshCw className={`w-3 h-3 ${gpsFetching ? 'animate-spin' : ''}`} />
-                        Refresh GPS
-                      </button>
-                    </div>
+                      {/* 10m Accuracy check: True -> Green Tick, False -> Red Cross */}
+                      {isGpsAccuracyValid ? (
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-900/60 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
+                          <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
+                          10m GPS Accuracy: <span className="text-white font-mono font-bold">TRUE ✓</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
+                          <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
+                          10m GPS Accuracy: <span className="text-white font-mono font-bold">FALSE ✗</span>
+                        </span>
+                      )}
+                    </>
                   ) : (
-                    <div className="flex flex-wrap items-center gap-2">
+                    <>
                       <span className="inline-flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-950/80 px-3 py-1.5 rounded-xl border border-amber-800/80 font-medium">
                         <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        {gpsError || 'GPS Location is OFF: Enable device GPS to mark attendance.'}
+                        GPS Inactive: Coordinates not acquired
                       </span>
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-300/90 bg-amber-950/60 px-3 py-1.5 rounded-xl border border-amber-800/60">
-                        10m GPS Accuracy: <span className="font-mono text-amber-200 font-bold">FALSE ✗ (Required)</span>
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
+                        <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
+                        10m GPS Accuracy: <span className="text-white font-mono font-bold">FALSE ✗</span>
                       </span>
-                      <button
-                        type="button"
-                        onClick={handleRefreshGPS}
-                        disabled={gpsFetching}
-                        className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 bg-emerald-950/90 hover:bg-emerald-900 px-3 py-1.5 rounded-xl border border-emerald-700 transition-colors"
-                        title="Turn on device GPS and acquire coordinates"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${gpsFetching ? 'animate-spin' : ''}`} />
-                        Turn On / Fetch GPS
-                      </button>
-                    </div>
+                    </>
                   )}
                 </div>
 
-                {/* Geofence Authorization Status Badge */}
-                {gpsLocation && (
-                  <div className="pt-1">
-                    {geofenceStatus.isAnywhere ? (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-300 bg-sky-950/50 px-3 py-1.5 rounded-xl border border-sky-700/60">
-                        <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                        {geofenceStatus.text}
-                      </span>
-                    ) : geofenceStatus.allowed ? (
+                {/* Geofencing Assigned or Not Status */}
+                <div className="pt-1">
+                  {myGeofence && !allowedAnywhere ? (
+                    geofenceStatus.allowed ? (
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-300 bg-emerald-950/50 px-3 py-1.5 rounded-xl border border-emerald-700/60">
                         <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        {geofenceStatus.text}
+                        Geofencing: Assigned ({myGeofence.location_name}) - Inside Zone ✓
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70">
                         <ShieldAlert className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                        {geofenceStatus.text}
+                        Geofencing: Assigned ({myGeofence.location_name}) - Outside Zone ✗
                       </span>
-                    )}
+                    )
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-300 bg-sky-950/50 px-3 py-1.5 rounded-xl border border-sky-700/60">
+                      <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                      Geofencing: Not Assigned (Anywhere Attendance Allowed) 🌐
+                    </span>
+                  )}
+                </div>
+
+                {/* Approved Leave Notice */}
+                {todayOnLeave && (
+                  <div className="mt-2 p-2.5 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-200 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>
+                      <strong>On Approved Leave:</strong> You are currently on approved {todayOnLeave.leave_type_name || 'Leave'} ({todayOnLeave.start_date} to {todayOnLeave.end_date}). Marking attendance is blocked.
+                    </span>
                   </div>
                 )}
               </div>
@@ -1169,42 +1211,30 @@ Please deregister this device in the Support Panel so I can register and log in 
                   onClick={handlePunchIn}
                   disabled={
                     punchLoading ||
-                    (todayRecord && todayRecord.punch_in_time) ||
-                    !gpsLocation ||
-                    !isGpsAccuracyValid ||
-                    (geofenceStatus.checked && !geofenceStatus.allowed)
+                    todayOnLeave ||
+                    (todayRecord && todayRecord.punch_in_time)
                   }
                   className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
-                    todayRecord && todayRecord.punch_in_time
-                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                      : !gpsLocation || !isGpsAccuracyValid
+                    todayOnLeave
                       ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
-                      : geofenceStatus.checked && !geofenceStatus.allowed
-                      ? 'bg-rose-950/70 text-rose-300 border border-rose-800/80 cursor-not-allowed opacity-80'
+                      : todayRecord && todayRecord.punch_in_time
+                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
                       : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40 hover:scale-105 active:scale-95'
                   }`}
                   title={
-                    todayRecord && todayRecord.punch_in_time
+                    todayOnLeave
+                      ? 'Attendance punch blocked: Currently on approved leave'
+                      : todayRecord && todayRecord.punch_in_time
                       ? 'Already punched in today'
-                      : !gpsLocation
-                      ? 'Device GPS is OFF. Please turn on GPS to punch in.'
-                      : !isGpsAccuracyValid
-                      ? '10m GPS Accuracy check required (True) to punch in'
-                      : geofenceStatus.checked && !geofenceStatus.allowed
-                      ? 'Punch blocked: Outside authorized geofence'
-                      : 'Punch In'
+                      : 'Punch In (Auto-verifies GPS & marks attendance)'
                   }
                 >
                   <span>PUNCH IN</span>
                   <span className="text-[11px] font-normal opacity-80">
-                    {todayRecord && todayRecord.punch_in_time
+                    {todayOnLeave
+                      ? 'On Leave'
+                      : todayRecord && todayRecord.punch_in_time
                       ? todayRecord.punch_in_time
-                      : !gpsLocation
-                      ? 'GPS Required'
-                      : !isGpsAccuracyValid
-                      ? '10m Acc. Required'
-                      : geofenceStatus.checked && !geofenceStatus.allowed
-                      ? 'Outside Zone'
                       : 'Start Work'}
                   </span>
                 </button>
@@ -1214,46 +1244,34 @@ Please deregister this device in the Support Panel so I can register and log in 
                   onClick={handlePunchOut}
                   disabled={
                     punchLoading ||
+                    todayOnLeave ||
                     !todayRecord ||
                     !todayRecord.punch_in_time ||
-                    todayRecord.punch_out_time ||
-                    !gpsLocation ||
-                    !isGpsAccuracyValid ||
-                    (geofenceStatus.checked && !geofenceStatus.allowed)
+                    todayRecord.punch_out_time
                   }
                   className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
-                    !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
-                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
-                      : !gpsLocation || !isGpsAccuracyValid
+                    todayOnLeave
                       ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
-                      : geofenceStatus.checked && !geofenceStatus.allowed
-                      ? 'bg-rose-950/70 text-rose-300 border border-rose-800/80 cursor-not-allowed opacity-80'
+                      : !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
+                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed border border-slate-600'
                       : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-900/40 hover:scale-105 active:scale-95'
                   }`}
                   title={
-                    !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
+                    todayOnLeave
+                      ? 'Attendance punch blocked: Currently on approved leave'
+                      : !todayRecord || !todayRecord.punch_in_time || todayRecord.punch_out_time
                       ? 'Punch out unavailable'
-                      : !gpsLocation
-                      ? 'Device GPS is OFF. Please turn on GPS to punch out.'
-                      : !isGpsAccuracyValid
-                      ? '10m GPS Accuracy check required (True) to punch out'
-                      : geofenceStatus.checked && !geofenceStatus.allowed
-                      ? 'Punch blocked: Outside authorized geofence'
-                      : 'Punch Out'
+                      : 'Punch Out (Auto-verifies GPS & ends shift)'
                   }
                 >
                   <span>PUNCH OUT</span>
                   <span className="text-[11px] font-normal opacity-80">
-                    {todayRecord?.punch_out_time
+                    {todayOnLeave
+                      ? 'On Leave'
+                      : todayRecord?.punch_out_time
                       ? todayRecord.punch_out_time
                       : !todayRecord?.punch_in_time
                       ? 'Not Punched In'
-                      : !gpsLocation
-                      ? 'GPS Required'
-                      : !isGpsAccuracyValid
-                      ? '10m Acc. Required'
-                      : geofenceStatus.checked && !geofenceStatus.allowed
-                      ? 'Outside Zone'
                       : 'End Shift'}
                   </span>
                 </button>
@@ -1265,156 +1283,150 @@ Please deregister this device in the Support Panel so I can register and log in 
             <div className="absolute -bottom-12 -left-12 w-48 h-48 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
           </div>
 
-          {/* Live Work Session Timer (While Punched In) */}
-          {todayRecord?.punch_in_time && !todayRecord?.punch_out_time && (
-            <div className="bg-gradient-to-r from-emerald-900 to-teal-900 text-white p-5 rounded-2xl border border-emerald-600/50 shadow-lg flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-3.5">
-                <span className="relative flex h-4 w-4">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500"></span>
-                </span>
+          {/* Consolidated Today's Work Shift & Punch Details Card (ONE Card for all details) */}
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
+            {/* Header: Shift Information */}
+            <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-5 sm:p-6 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
+                  <Clock className="w-5 h-5" />
+                </div>
                 <div>
-                  <span className="text-[11px] uppercase font-bold text-emerald-300 tracking-wider flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5" />
-                    Live Working Timer (Punch In Active)
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm sm:text-base font-bold text-white">
+                      Today's Work Shift: {shiftInfo?.name || 'General Shift'}
+                    </h3>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                      todayRecord?.punch_out_time ? 'bg-slate-700 text-slate-300' :
+                      todayRecord?.punch_in_time ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/40 animate-pulse' :
+                      'bg-amber-500/20 text-amber-300 border border-amber-400/30'
+                    }`}>
+                      {todayRecord?.punch_out_time ? 'Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Timing: <strong className="text-white font-mono">{format12Hour(shiftInfo?.start_time || '09:00:00')} - {format12Hour(shiftInfo?.end_time || '18:00:00')}</strong>
+                    <span className="mx-2 opacity-40">•</span>
+                    Duration: <span className="font-semibold text-sky-300">9.0 Hours</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Live Timer or Total Hours */}
+              {todayRecord?.punch_in_time && !todayRecord?.punch_out_time ? (
+                <div className="flex items-center gap-3 bg-emerald-950/60 px-4 py-2 rounded-2xl border border-emerald-500/40 shadow-xs">
+                  <span className="relative flex h-3.5 w-3.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
                   </span>
-                  <div className="text-3xl font-black font-mono tracking-tight text-white mt-0.5">
-                    {elapsedTime}
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-right text-xs space-y-1">
-                <div className="text-emerald-200 font-semibold flex items-center gap-1.5 justify-end">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Work Session in Progress</span>
-                </div>
-                <div className="text-[11px] text-slate-300 font-mono">
-                  Started at: <span className="text-white font-bold">{format12Hour(todayRecord.punch_in_time)}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Shift Completed Summary */}
-          {todayRecord?.punch_out_time && (
-            <div className="bg-slate-900 text-white p-4 rounded-2xl border border-slate-800 shadow-md flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-2 text-emerald-400 font-bold">
-                <CheckCircle className="w-4 h-4" />
-                <span>Today's Work Shift Completed ({todayRecord.total_hours} Hours)</span>
-              </div>
-              <div className="text-slate-400 font-mono">
-                {format12Hour(todayRecord.punch_in_time)} &rarr; {format12Hour(todayRecord.punch_out_time)}
-              </div>
-            </div>
-          )}
-
-          {/* Dedicated Punch In & Punch Out Captured Details Cards (Below Punching) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Punch In Card */}
-            <div className={`p-5 rounded-2xl border shadow-sm space-y-3 transition-all ${
-              todayRecord?.punch_in_time
-                ? 'bg-emerald-50/50 border-emerald-200'
-                : 'bg-white border-slate-200'
-            }`}>
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className={`p-2 rounded-xl ${todayRecord?.punch_in_time ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                    <Clock className="w-4 h-4" />
-                  </div>
                   <div>
-                    <h4 className="text-xs font-bold text-slate-900">Punch In Details</h4>
-                    <span className="text-[10px] text-slate-400">Recorded entry timestamp & GPS</span>
+                    <span className="text-[10px] uppercase font-bold text-emerald-300 block">Live Working Timer</span>
+                    <span className="text-xl font-black font-mono text-white">{elapsedTime}</span>
                   </div>
                 </div>
-                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
-                  todayRecord?.punch_in_time
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-slate-100 text-slate-500'
-                }`}>
-                  {todayRecord?.punch_in_time ? 'Punch In Recorded' : 'Not Punched In'}
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Punch In Time:</span>
-                  <span className="font-mono font-bold text-slate-900 text-sm">
-                    {todayRecord?.punch_in_time ? format12Hour(todayRecord.punch_in_time) : '--:--'}
-                  </span>
+              ) : todayRecord?.punch_out_time ? (
+                <div className="flex items-center gap-2 bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-bold text-white font-mono">Completed: {todayRecord.total_hours || '0'} hrs</span>
                 </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">GPS Coordinates:</span>
-                  <span className="font-mono font-semibold text-slate-800 text-[11px]">
-                    {todayRecord?.punch_in_lat && todayRecord?.punch_in_lng
-                      ? `${Number(todayRecord.punch_in_lat).toFixed(4)}, ${Number(todayRecord.punch_in_lng).toFixed(4)}`
-                      : '--'}
-                  </span>
-                </div>
-
-                <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100/80">
-                  <span className="text-slate-500 whitespace-nowrap">Captured Address:</span>
-                  <span className="text-slate-800 font-medium text-right line-clamp-2 text-xs select-text">
-                    {todayRecord?.punch_in_location || '--'}
-                  </span>
-                </div>
-              </div>
+              ) : null}
             </div>
 
-            {/* Punch Out Card */}
-            <div className={`p-5 rounded-2xl border shadow-sm space-y-3 transition-all ${
-              todayRecord?.punch_out_time
-                ? 'bg-rose-50/50 border-rose-200'
-                : 'bg-white border-slate-200'
-            }`}>
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className={`p-2 rounded-xl ${todayRecord?.punch_out_time ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                    <Clock className="w-4 h-4" />
+            {/* Body: Punch In & Punch Out Details in 2 Sub-Columns inside this single card */}
+            <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Punch In Details Sub-Section */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                todayRecord?.punch_in_time
+                  ? 'bg-emerald-50/50 border-emerald-200'
+                  : 'bg-slate-50/70 border-slate-200'
+              }`}>
+                <div className="flex items-center justify-between border-b border-slate-200/70 pb-2.5 mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-1.5 rounded-xl ${todayRecord?.punch_in_time ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                      <Clock className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Punch In Details</h4>
+                      <span className="text-[10px] text-slate-400">Entry timestamp & GPS location</span>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-900">Punch Out Details</h4>
-                    <span className="text-[10px] text-slate-400">Recorded exit timestamp & GPS</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                    todayRecord?.punch_in_time ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-500'
+                  }`}>
+                    {todayRecord?.punch_in_time ? 'Recorded' : 'Pending'}
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">Punch In Time:</span>
+                    <span className="font-mono font-bold text-slate-900 text-sm">
+                      {todayRecord?.punch_in_time ? format12Hour(todayRecord.punch_in_time) : '--:--'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">GPS Coordinates:</span>
+                    <span className="font-mono font-semibold text-slate-800 text-[11px]">
+                      {todayRecord?.punch_in_lat && todayRecord?.punch_in_lng
+                        ? `${Number(todayRecord.punch_in_lat).toFixed(4)}, ${Number(todayRecord.punch_in_lng).toFixed(4)}`
+                        : '--'}
+                    </span>
+                  </div>
+                  <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
+                    <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
+                    <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
+                      {todayRecord?.punch_in_location || '--'}
+                    </span>
                   </div>
                 </div>
-                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
-                  todayRecord?.punch_out_time
-                    ? 'bg-rose-100 text-rose-800'
-                    : todayRecord?.punch_in_time
-                    ? 'bg-amber-100 text-amber-800'
-                    : 'bg-slate-100 text-slate-500'
-                }`}>
-                  {todayRecord?.punch_out_time
-                    ? 'Punch Out Recorded'
-                    : todayRecord?.punch_in_time
-                    ? 'Punch Out Pending'
-                    : 'Not Started'}
-                </span>
               </div>
 
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Punch Out Time:</span>
-                  <span className="font-mono font-bold text-slate-900 text-sm">
-                    {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--'}
+              {/* Punch Out Details Sub-Section */}
+              <div className={`p-4 rounded-2xl border transition-all ${
+                todayRecord?.punch_out_time
+                  ? 'bg-rose-50/50 border-rose-200'
+                  : 'bg-slate-50/70 border-slate-200'
+              }`}>
+                <div className="flex items-center justify-between border-b border-slate-200/70 pb-2.5 mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className={`p-1.5 rounded-xl ${todayRecord?.punch_out_time ? 'bg-rose-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                      <Clock className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Punch Out Details</h4>
+                      <span className="text-[10px] text-slate-400">Exit timestamp & GPS location</span>
+                    </div>
+                  </div>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                    todayRecord?.punch_out_time ? 'bg-rose-100 text-rose-800' :
+                    todayRecord?.punch_in_time ? 'bg-amber-100 text-amber-800' :
+                    'bg-slate-200 text-slate-500'
+                  }`}>
+                    {todayRecord?.punch_out_time ? 'Recorded' : todayRecord?.punch_in_time ? 'Shift Active' : 'Not Started'}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">GPS Coordinates:</span>
-                  <span className="font-mono font-semibold text-slate-800 text-[11px]">
-                    {todayRecord?.punch_out_lat && todayRecord?.punch_out_lng
-                      ? `${Number(todayRecord.punch_out_lat).toFixed(4)}, ${Number(todayRecord.punch_out_lng).toFixed(4)}`
-                      : '--'}
-                  </span>
-                </div>
-
-                <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-100/80">
-                  <span className="text-slate-500 whitespace-nowrap">Captured Address:</span>
-                  <span className="text-slate-800 font-medium text-right line-clamp-2 text-xs select-text">
-                    {todayRecord?.punch_out_location || '--'}
-                  </span>
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">Punch Out Time:</span>
+                    <span className="font-mono font-bold text-slate-900 text-sm">
+                      {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-medium">GPS Coordinates:</span>
+                    <span className="font-mono font-semibold text-slate-800 text-[11px]">
+                      {todayRecord?.punch_out_lat && todayRecord?.punch_out_lng
+                        ? `${Number(todayRecord.punch_out_lat).toFixed(4)}, ${Number(todayRecord.punch_out_lng).toFixed(4)}`
+                        : '--'}
+                    </span>
+                  </div>
+                  <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
+                    <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
+                    <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
+                      {todayRecord?.punch_out_location || '--'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1962,172 +1974,228 @@ Please deregister this device in the Support Panel so I can register and log in 
       )}
 
       {/* VIEW: LEAVE & BALANCES */}
-      {activeTab === 'leave' && (
-        <div className="space-y-6">
-          {/* Balances Cards (Strictly Casual Leave [12/yr] and Earned Leave [1.25/mo]) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {leaveBalances.filter(b => !b.leave_type_name?.includes('Paid Leave')).map(b => (
-              <div key={b.id} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">{b.leave_type_name}</span>
+      {activeTab === 'leave' && (() => {
+        const pendingLeaves = leaveRequests.filter(r => r.status === 'pending');
+        const approvedLeaves = leaveRequests.filter(r => r.status === 'approved' || r.status === 'rejected');
+        const displayedLeaves = leaveHistoryTab === 'pending' ? pendingLeaves : approvedLeaves;
+
+        return (
+          <div className="space-y-6">
+            {/* 1. Apply for Leave Form (AT THE TOP) */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-100 pb-2.5">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Calendar className="w-4 h-4 text-sky-600" />
-                </div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-black text-slate-900">{b.balance}</span>
-                  <span className="text-xs text-slate-400">/ {b.default_yearly_quota || (b.leave_type_name?.includes('Casual') ? 12 : 15)} total</span>
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
-                  <span>Used: {b.used} days</span>
-                  <span className="font-semibold text-sky-600">
-                    {b.leave_type_name?.includes('Casual') ? '12.0 days / year' : '+1.25 days / month'}
-                  </span>
-                </div>
+                  Apply for Leave
+                </h3>
+                <span className="text-[11px] text-slate-500 font-medium">
+                  * Weekly Offs (WO) and official holidays are automatically excluded
+                </span>
               </div>
-            ))}
-          </div>
 
+              <form onSubmit={handleSubmitLeave} className="space-y-4 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Leave Type *</label>
+                    <select
+                      value={leaveForm.leave_type_id}
+                      onChange={(e) => {
+                        const selId = e.target.value;
+                        setLeaveForm(prev => ({ ...prev, leave_type_id: selId }));
+                      }}
+                      className="w-full p-2.5 border rounded-lg bg-white font-medium"
+                    >
+                      {leaveBalances.map(b => (
+                        <option key={b.leave_type_id} value={b.leave_type_id}>
+                          {b.leave_type_name} ({b.balance} days left)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Start Date *</label>
+                    <input
+                      type="date"
+                      required
+                      value={leaveForm.start_date}
+                      onChange={(e) => {
+                        const newStart = e.target.value;
+                        let newEnd = leaveForm.end_date;
+                        if (newEnd && new Date(newEnd) < new Date(newStart)) {
+                          newEnd = newStart;
+                        }
+                        const days = calculateWorkingDaysExcludingWO(newStart, newEnd, calendarData.offDays, calendarData.holidays);
+                        setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
+                      }}
+                      className="w-full p-2.5 border rounded-lg font-medium"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">End Date *</label>
+                    <input
+                      type="date"
+                      required
+                      value={leaveForm.end_date}
+                      onChange={(e) => {
+                        const newEnd = e.target.value;
+                        let newStart = leaveForm.start_date;
+                        if (newStart && new Date(newEnd) < new Date(newStart)) {
+                          newStart = newEnd;
+                        }
+                        const days = calculateWorkingDaysExcludingWO(newStart, newEnd, calendarData.offDays, calendarData.holidays);
+                        setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
+                      }}
+                      className="w-full p-2.5 border rounded-lg font-medium"
+                    />
+                  </div>
+                </div>
 
-          {/* Apply for Leave Form */}
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-            <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">
-              Apply for Leave
-            </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-semibold text-slate-700">Total Days (Excl. WO) *</label>
+                      <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-100">
+                        Auto-calculated
+                      </span>
+                    </div>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      required
+                      readOnly
+                      value={leaveForm.total_days}
+                      className="w-full p-2.5 border rounded-lg font-bold text-slate-900 bg-slate-100/80 cursor-not-allowed"
+                      title="Auto-calculated working days (excluding Weekly Offs and official holidays)"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="font-semibold text-slate-700 block mb-1">Reason for Absence *</label>
+                    <input
+                      type="text"
+                      required
+                      value={leaveForm.reason}
+                      onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
+                      placeholder="e.g. Family function / Medical consultation"
+                      className="w-full p-2.5 border rounded-lg"
+                    />
+                  </div>
+                </div>
 
-            <form onSubmit={handleSubmitLeave} className="space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Leave Type *</label>
-                  <select
-                    value={leaveForm.leave_type_id}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, leave_type_id: e.target.value })}
-                    className="w-full p-2.5 border rounded-lg bg-white"
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
                   >
-                    {leaveBalances.map(b => (
-                      <option key={b.leave_type_id} value={b.leave_type_id}>
-                        {b.leave_type_name} ({b.balance} days left)
-                      </option>
-                    ))}
-                  </select>
+                    Submit Application
+                  </button>
                 </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Start Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={leaveForm.start_date}
-                    onChange={(e) => {
-                      const newStart = e.target.value;
-                      let newEnd = leaveForm.end_date;
-                      if (newEnd && new Date(newEnd) < new Date(newStart)) {
-                        newEnd = newStart;
-                      }
-                      const days = calculateInclusiveDays(newStart, newEnd);
-                      setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
-                    }}
-                    className="w-full p-2.5 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">End Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={leaveForm.end_date}
-                    onChange={(e) => {
-                      const newEnd = e.target.value;
-                      let newStart = leaveForm.start_date;
-                      if (newStart && new Date(newEnd) < new Date(newStart)) {
-                        newStart = newEnd;
-                      }
-                      const days = calculateInclusiveDays(newStart, newEnd);
-                      setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
-                    }}
-                    className="w-full p-2.5 border rounded-lg"
-                  />
-                </div>
-              </div>
+              </form>
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="font-semibold text-slate-700">Total Days *</label>
-                    <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-100">
-                      Auto-calculated
+            {/* 2. Balances Cards (BELOW APPLY LEAVE FORM: Casual Leave & Earned Leave) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {leaveBalances.filter(b => !b.leave_type_name?.includes('Paid Leave')).map(b => (
+                <div key={b.id} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">{b.leave_type_name}</span>
+                    <Calendar className="w-4 h-4 text-sky-600" />
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-black text-slate-900">{b.balance}</span>
+                    <span className="text-xs text-slate-400">/ {b.default_yearly_quota || (b.leave_type_name?.includes('Casual') ? 12 : 15)} total</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-100">
+                    <span>Used: {b.used} days</span>
+                    <span className="font-semibold text-sky-600">
+                      {b.leave_type_name?.includes('Casual') ? '12.0 days / year' : '+1.25 days / month'}
                     </span>
                   </div>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0.5"
-                    required
-                    value={leaveForm.total_days}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, total_days: parseFloat(e.target.value) || 1 })}
-                    className="w-full p-2.5 border rounded-lg font-bold text-slate-900"
-                  />
                 </div>
-                <div className="sm:col-span-2">
-                  <label className="font-semibold text-slate-700 block mb-1">Reason for Absence *</label>
-                  <input
-                    type="text"
-                    required
-                    value={leaveForm.reason}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
-                    placeholder="e.g. Family function / Medical consultation"
-                    className="w-full p-2.5 border rounded-lg"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
-                >
-                  Submit Application
-                </button>
-              </div>
-            </form>
-          </div>
-
-          {/* Leave History Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-900">My Leave History & Status</h3>
+              ))}
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                  <tr>
-                    <th className="p-3">Leave Type</th>
-                    <th className="p-3">Dates</th>
-                    <th className="p-3">Days</th>
-                    <th className="p-3">Reason</th>
-                    <th className="p-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {leaveRequests.map(r => (
-                    <tr key={r.id} className="hover:bg-slate-50/50">
-                      <td className="p-3 font-semibold text-slate-900">{r.leave_type_name}</td>
-                      <td className="p-3 text-slate-700">{r.start_date} to {r.end_date}</td>
-                      <td className="p-3 font-medium text-slate-800">{r.total_days}</td>
-                      <td className="p-3 text-slate-600">{r.reason}</td>
-                      <td className="p-3">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          r.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                          r.status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
-                        }`}>
-                          {r.status}
-                        </span>
-                      </td>
+
+            {/* 3. Leave History Section with Two Tabs: Pending Leave Approvals & Approved Leave */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">My Leave History & Status</h3>
+                  <p className="text-[11px] text-slate-400">Track pending applications and archived approvals</p>
+                </div>
+
+                {/* Filter Tabs */}
+                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setLeaveHistoryTab('pending')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                      leaveHistoryTab === 'pending'
+                        ? 'bg-white text-amber-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Pending Leave Approvals ({pendingLeaves.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeaveHistoryTab('approved')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                      leaveHistoryTab === 'approved'
+                        ? 'bg-white text-emerald-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Approved Leave ({approvedLeaves.length})</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                    <tr>
+                      <th className="p-3">Leave Type</th>
+                      <th className="p-3">Dates</th>
+                      <th className="p-3">Working Days (Excl. WO)</th>
+                      <th className="p-3">Reason</th>
+                      <th className="p-3">Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {displayedLeaves.map(r => (
+                      <tr key={r.id} className="hover:bg-slate-50/50">
+                        <td className="p-3 font-semibold text-slate-900">{r.leave_type_name}</td>
+                        <td className="p-3 text-slate-700">{r.start_date} to {r.end_date}</td>
+                        <td className="p-3 font-medium text-slate-800">{r.total_days}</td>
+                        <td className="p-3 text-slate-600">{r.reason}</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            r.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                            r.status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
+                          }`}>
+                            {r.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {displayedLeaves.length === 0 && (
+                      <tr>
+                        <td colSpan="5" className="p-8 text-center text-slate-400">
+                          {leaveHistoryTab === 'pending'
+                            ? 'No pending leave applications awaiting approval.'
+                            : 'No approved or archived leave records found.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* VIEW: ATTENDANCE CORRECTION REQUESTS */}
       {activeTab === 'correction' && (
@@ -2409,6 +2477,7 @@ Please deregister this device in the Support Panel so I can register and log in 
                   <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
                     <tr>
                       <th className="p-3">ID</th>
+                      <th className="p-3">Employee</th>
                       <th className="p-3">Subject</th>
                       <th className="p-3">Status</th>
                       <th className="p-3">Created</th>
@@ -2419,6 +2488,9 @@ Please deregister this device in the Support Panel so I can register and log in 
                     {openTickets.map(t => (
                       <tr key={t.id} className="hover:bg-slate-50/50">
                         <td className="p-3 font-mono font-bold text-slate-800">#{t.id}</td>
+                        <td className="p-3 font-semibold text-indigo-700">
+                          {t.created_by_username || t.employee_name || 'Staff'}
+                        </td>
                         <td className="p-3 font-semibold text-slate-900 max-w-sm">
                           <div>{t.title}</div>
                           {t.description && (
@@ -2454,7 +2526,7 @@ Please deregister this device in the Support Panel so I can register and log in 
                     ))}
                     {openTickets.length === 0 && (
                       <tr>
-                        <td colSpan="5" className="p-8 text-center text-slate-400">
+                        <td colSpan="6" className="p-8 text-center text-slate-400">
                           No open service tickets currently. Raise a ticket above if you need assistance.
                         </td>
                       </tr>
@@ -2501,6 +2573,7 @@ Please deregister this device in the Support Panel so I can register and log in 
                       <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
                         <tr>
                           <th className="p-3">ID</th>
+                          <th className="p-3">Employee</th>
                           <th className="p-3">Subject</th>
                           <th className="p-3">Status</th>
                           <th className="p-3">Resolution Notes</th>
@@ -2511,6 +2584,9 @@ Please deregister this device in the Support Panel so I can register and log in 
                         {closedTickets.map(t => (
                           <tr key={t.id} className="hover:bg-slate-50/50">
                             <td className="p-3 font-mono font-bold text-slate-800">#{t.id}</td>
+                            <td className="p-3 font-semibold text-indigo-700">
+                              {t.created_by_username || t.employee_name || 'Staff'}
+                            </td>
                             <td className="p-3 font-semibold text-slate-800 max-w-sm">
                               <div>{t.title}</div>
                               {t.description && (
@@ -2543,7 +2619,7 @@ Please deregister this device in the Support Panel so I can register and log in 
                         ))}
                         {closedTickets.length === 0 && (
                           <tr>
-                            <td colSpan="5" className="p-8 text-center text-slate-400">
+                            <td colSpan="6" className="p-8 text-center text-slate-400">
                               No closed tickets in history.
                             </td>
                           </tr>
@@ -2858,6 +2934,32 @@ Please deregister this device in the Support Panel so I can register and log in 
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* INSUFFICIENT LEAVE BALANCE POPUP MODAL */}
+      {insufficientLeaveError && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-rose-100 space-y-4 animate-in fade-in zoom-in-95 duration-150 text-center">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 mx-auto flex items-center justify-center border border-rose-100">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-slate-900">Insufficient Leave Balance</h3>
+              <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                {insufficientLeaveError}
+              </p>
+            </div>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setInsufficientLeaveError('')}
+                className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm shadow-rose-600/30"
+              >
+                Okay, Understood
+              </button>
+            </div>
           </div>
         </div>
       )}
