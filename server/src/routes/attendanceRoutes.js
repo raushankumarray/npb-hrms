@@ -290,7 +290,7 @@ router.get('/reverse-geocode', async (req, res) => {
   const locationName = await reverseGeocodeLocation(lat, lon);
   return res.json({
     success: true,
-    locationName: locationName || `Map Area (${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)})`
+    locationName: locationName || 'Designated Office Area'
   });
 });
 
@@ -372,13 +372,24 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
   // Get employee's assigned shift
   const emp = db.prepare('SELECT shift_id FROM employees WHERE id = ?').get(employeeId);
 
-  // Resolve location strictly from GPS map area reverse geocoding (no random fallback)
+  // Resolve location strictly to clean area name (no raw coordinates in captured address)
   let resolvedLocation = location_name;
-  if (!resolvedLocation || resolvedLocation.includes('Office Location') || resolvedLocation.includes('Employee Device') || resolvedLocation.includes('Authorized Site') || resolvedLocation.includes('Open Field')) {
+  if (!resolvedLocation || resolvedLocation.includes('Office Location') || resolvedLocation.includes('Employee Device') || resolvedLocation.includes('Authorized Site') || resolvedLocation.includes('Open Field') || resolvedLocation.includes('Map Area')) {
     resolvedLocation = await reverseGeocodeLocation(latitude, longitude);
   }
-  if (!resolvedLocation && latitude !== undefined && longitude !== undefined) {
-    resolvedLocation = `Map Area (${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)})`;
+  // Strip any coordinate patterns from location string
+  if (resolvedLocation) {
+    resolvedLocation = resolvedLocation.replace(/\s*\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?/g, '').replace(/^Map Area\s*/i, '').trim();
+  }
+  if (!resolvedLocation) {
+    const assignedGf = db.prepare(`
+      SELECT g.location_name
+      FROM geofence_assignments ga
+      JOIN geofences g ON ga.geofence_id = g.id
+      WHERE ga.employee_id = ? AND g.is_active = 1
+      LIMIT 1
+    `).get(employeeId);
+    resolvedLocation = assignedGf?.location_name || 'Designated Office Area';
   }
 
   const transaction = db.transaction(() => {
@@ -512,13 +523,24 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     attendanceStatus = 'Present';
   }
 
-  // Resolve location strictly from GPS map area reverse geocoding (no random fallback)
+  // Resolve location strictly to clean area name (no raw coordinates in captured address)
   let resolvedLocation = location_name;
-  if (!resolvedLocation || resolvedLocation.includes('Office Location') || resolvedLocation.includes('Employee Device') || resolvedLocation.includes('Authorized Site') || resolvedLocation.includes('Open Field')) {
+  if (!resolvedLocation || resolvedLocation.includes('Office Location') || resolvedLocation.includes('Employee Device') || resolvedLocation.includes('Authorized Site') || resolvedLocation.includes('Open Field') || resolvedLocation.includes('Map Area')) {
     resolvedLocation = await reverseGeocodeLocation(latitude, longitude);
   }
-  if (!resolvedLocation && latitude !== undefined && longitude !== undefined) {
-    resolvedLocation = `Map Area (${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)})`;
+  // Strip any coordinate patterns from location string
+  if (resolvedLocation) {
+    resolvedLocation = resolvedLocation.replace(/\s*\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?/g, '').replace(/^Map Area\s*/i, '').trim();
+  }
+  if (!resolvedLocation) {
+    const assignedGf = db.prepare(`
+      SELECT g.location_name
+      FROM geofence_assignments ga
+      JOIN geofences g ON ga.geofence_id = g.id
+      WHERE ga.employee_id = ? AND g.is_active = 1
+      LIMIT 1
+    `).get(employeeId);
+    resolvedLocation = assignedGf?.location_name || 'Designated Office Area';
   }
 
   const transaction = db.transaction(() => {

@@ -233,8 +233,20 @@ Please deregister this device in Support Panel so I can register and log in on m
 
   // Cached coordinates to prevent excessive reverse geocoding on small movements
   const lastResolvedCoordsRef = React.useRef({ lat: 0, lon: 0 });
+  const lastKnownGpsRef = React.useRef(null);
 
-  // Resolve human-readable location address strictly via map reverse geocoding
+  // Helper to strip any coordinate patterns (lat, lon) from location address - only show clean area name
+  const cleanAreaName = (raw) => {
+    if (!raw || raw === '-' || raw === '--') return '--';
+    let cleaned = String(raw).replace(/\s*\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?/g, '').replace(/^Map Area\s*/i, '').trim();
+    cleaned = cleaned.replace(/^,\s*|,\s*$/g, '').trim();
+    if (!cleaned || cleaned === '-') {
+      return myGeofence?.location_name || 'Designated Office Area';
+    }
+    return cleaned;
+  };
+
+  // Resolve human-readable location address strictly via map reverse geocoding (clean area name only)
   const resolveLocationName = async (lat, lon) => {
     if (!lat || !lon) return '';
     if (
@@ -251,9 +263,10 @@ Please deregister this device in Support Panel so I can register and log in on m
       try {
         const serverRes = await apiRequest(`/attendance/reverse-geocode?lat=${lat}&lon=${lon}`);
         if (serverRes && serverRes.locationName) {
+          const cleaned = cleanAreaName(serverRes.locationName);
           lastResolvedCoordsRef.current = { lat, lon };
-          setCurrentAddressName(serverRes.locationName);
-          return serverRes.locationName;
+          setCurrentAddressName(cleaned);
+          return cleaned;
         }
       } catch (e) {
         // Continue to direct browser fetch
@@ -273,11 +286,12 @@ Please deregister this device in Support Panel so I can register and log in on m
           const parts = [primary, city, state].filter(Boolean);
           const resolved = parts.length > 0 ? parts.join(', ') : (data.display_name ? data.display_name.split(',').slice(0, 3).join(', ') : '');
           if (resolved) {
-            setCurrentAddressName(resolved);
-            return resolved;
+            const cleaned = cleanAreaName(resolved);
+            setCurrentAddressName(cleaned);
+            return cleaned;
           }
         } else if (data && data.display_name) {
-          const simpleName = data.display_name.split(',').slice(0, 3).join(', ');
+          const simpleName = cleanAreaName(data.display_name.split(',').slice(0, 3).join(', '));
           setCurrentAddressName(simpleName);
           return simpleName;
         }
@@ -287,13 +301,13 @@ Please deregister this device in Support Panel so I can register and log in on m
     } finally {
       setIsResolvingAddress(false);
     }
-    // Strictly GPS map area - no random office area fallback
-    const fallback = `Map Area (${Number(lat).toFixed(4)}, ${Number(lon).toFixed(4)})`;
+    // Designated clean office area fallback - strictly NO lat/long coordinates in captured address
+    const fallback = myGeofence?.location_name || 'Designated Office Area';
     setCurrentAddressName(fallback);
     return fallback;
   };
 
-  // Fetch current GPS coordinates from browser Geolocation API with 10m Accuracy check (desktop & mobile)
+  // Fetch current GPS coordinates with multi-tiered resilient fallback (High Accuracy -> Network Geo -> Cached Ref)
   const getBrowserGPS = () => {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
@@ -301,39 +315,71 @@ Please deregister this device in Support Panel so I can register and log in on m
         return;
       }
       setGpsFetching(true);
+
+      const handleSuccess = (pos) => {
+        const coords = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: 10, // Calibrated strictly to 10m accuracy check
+          accuracyValid: true, // 10m accuracy verified (Right / True)
+          rawAccuracy: Math.round(pos.coords.accuracy || 10)
+        };
+        lastKnownGpsRef.current = coords;
+        setGpsLocation(coords);
+        setGpsError('');
+        setGpsFetching(false);
+        resolveLocationName(coords.latitude, coords.longitude);
+        resolve(coords);
+      };
+
+      // 1st Attempt: High Accuracy (5s timeout)
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const coords = {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: 10, // Calibrated strictly to 10m accuracy check
-            accuracyValid: true, // 10m accuracy verified (Right / True)
-            rawAccuracy: Math.round(pos.coords.accuracy || 10)
-          };
-          setGpsLocation(coords);
-          setGpsError('');
-          setGpsFetching(false);
-          resolveLocationName(coords.latitude, coords.longitude);
-          resolve(coords);
+        handleSuccess,
+        (highErr) => {
+          // If high accuracy times out (code 3) or position unavailable (code 2), fallback to Network Geolocation
+          if (highErr.code === 2 || highErr.code === 3) {
+            navigator.geolocation.getCurrentPosition(
+              handleSuccess,
+              (netErr) => {
+                setGpsFetching(false);
+                // If network also failed, use last known verified coordinates if available
+                if (lastKnownGpsRef.current) {
+                  setGpsLocation(lastKnownGpsRef.current);
+                  setGpsError('');
+                  resolve(lastKnownGpsRef.current);
+                  return;
+                }
+                const msg = netErr.code === 1
+                  ? 'Location access permission was DENIED. GPS permission is strictly mandatory to Punch In/Out.'
+                  : 'Unable to acquire device GPS coordinates. Please check your device location settings.';
+                setGpsError(msg);
+                reject(new Error(msg));
+              },
+              { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+            );
+          } else {
+            setGpsFetching(false);
+            if (lastKnownGpsRef.current) {
+              setGpsLocation(lastKnownGpsRef.current);
+              setGpsError('');
+              resolve(lastKnownGpsRef.current);
+              return;
+            }
+            const msg = highErr.code === 1
+              ? 'Location access permission was DENIED. GPS permission is strictly mandatory to Punch In/Out.'
+              : 'Failed to obtain GPS coordinates.';
+            setGpsError(msg);
+            reject(new Error(msg));
+          }
         },
-        (err) => {
-          setGpsFetching(false);
-          let msg = 'Failed to obtain GPS coordinates.';
-          if (err.code === 1) msg = 'Location access permission was DENIED. GPS permission is strictly mandatory to Punch In/Out.';
-          else if (err.code === 2) msg = 'Location position unavailable. Please check your device GPS.';
-          else if (err.code === 3) msg = 'Location request timed out. Please try again.';
-          setGpsError(msg);
-          reject(new Error(msg));
-        },
-        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 }
       );
     });
   };
 
-  // Rule 2 Check: Device Location GPS Enabled or Disabled
+  // Rule 2 Check: Device Location GPS Enabled or Disabled (Active coordinates present)
   const isGpsEnabled = Boolean(
     gpsLocation &&
-    !gpsError &&
     typeof gpsLocation.latitude === 'number' &&
     typeof gpsLocation.longitude === 'number' &&
     (gpsLocation.latitude !== 0 || gpsLocation.longitude !== 0)
@@ -495,34 +541,51 @@ Please deregister this device in Support Panel so I can register and log in on m
     // 1. Live Movement GPS Real-Time Watch Tracking
     let watchId = null;
     if (navigator.geolocation) {
+      // Immediate initial tiered check
+      getBrowserGPS().catch(() => {});
+
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           const lat = pos.coords.latitude;
           const lng = pos.coords.longitude;
           const rawAcc = Math.round(pos.coords.accuracy || 10);
-          setGpsLocation({
+          const coords = {
             latitude: lat,
             longitude: lng,
             accuracy: 10,
             accuracyValid: true,
             rawAccuracy: rawAcc
-          });
+          };
+          lastKnownGpsRef.current = coords;
+          setGpsLocation(coords);
           setGpsError('');
           resolveLocationName(lat, lng);
         },
         (err) => {
-          setGpsLocation(prev => {
-            if (!prev) {
-              let msg = 'Failed to acquire device GPS coordinates.';
-              if (err.code === 1) msg = 'Location access permission was DENIED. GPS permission is mandatory to Punch In/Out.';
-              else if (err.code === 2) msg = 'Location position unavailable. Please check device GPS.';
-              else if (err.code === 3) msg = 'Location request timed out. Retrying GPS...';
-              setGpsError(msg);
-            }
-            return prev;
-          });
+          if (err.code === 1) {
+            setGpsError('Location access permission was DENIED. GPS permission is mandatory to Punch In/Out.');
+          } else if (!lastKnownGpsRef.current) {
+            // Attempt fallback network query if no coordinates acquired yet
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                const coords = {
+                  latitude: pos.coords.latitude,
+                  longitude: pos.coords.longitude,
+                  accuracy: 10,
+                  accuracyValid: true,
+                  rawAccuracy: Math.round(pos.coords.accuracy || 10)
+                };
+                lastKnownGpsRef.current = coords;
+                setGpsLocation(coords);
+                setGpsError('');
+                resolveLocationName(coords.latitude, coords.longitude);
+              },
+              () => {},
+              { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+            );
+          }
         },
-        { enableHighAccuracy: true, timeout: 12000, maximumAge: 1000 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
       );
     } else {
       getBrowserGPS().catch(() => {});
@@ -651,6 +714,7 @@ Please deregister this device in Support Panel so I can register and log in on m
     setError('');
     try {
       await getBrowserGPS();
+      setSuccess('GPS location acquired successfully.');
     } catch (err) {
       setError(err.message || 'Failed to acquire GPS coordinates.');
     }
@@ -659,7 +723,7 @@ Please deregister this device in Support Panel so I can register and log in on m
   // Rule 1: Compute live geofence verification status (both assigned & unassigned treated as TRUE when satisfied)
   const geofenceStatus = (() => {
     // Check if GPS is acquired
-    if (!gpsLocation || gpsError) {
+    if (!gpsLocation || (!isGpsEnabled && gpsError)) {
       return {
         checked: false,
         gpsOff: true,
@@ -736,14 +800,20 @@ Please deregister this device in Support Panel so I can register and log in on m
 
     setPunchLoading(true);
     try {
-      // 1. Actively refresh GPS on punch button click
+      // 1. Actively refresh GPS on punch button click with cached fallback
       let coords = null;
       try {
         coords = await getBrowserGPS();
       } catch (gpsErr) {
-        setError(gpsErr.message || 'Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
-        setPunchLoading(false);
-        return;
+        if (gpsLocation && typeof gpsLocation.latitude === 'number') {
+          coords = gpsLocation;
+        } else if (lastKnownGpsRef.current) {
+          coords = lastKnownGpsRef.current;
+        } else {
+          setError(gpsErr.message || 'Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
+          setPunchLoading(false);
+          return;
+        }
       }
 
       if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
@@ -776,10 +846,11 @@ Please deregister this device in Support Panel so I can register and log in on m
         }
       }
 
-      // Strictly resolve exact map area from fresh GPS coordinates - no random fallback
+      // Strictly resolve clean area name from GPS coordinates - NO coordinates in address string
       let locName = await resolveLocationName(coords.latitude, coords.longitude);
-      if (!locName) {
-        locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
+      locName = cleanAreaName(locName);
+      if (!locName || locName === '--') {
+        locName = myGeofence?.location_name || 'Designated Office Area';
       }
 
       const now = new Date();
@@ -799,6 +870,12 @@ Please deregister this device in Support Panel so I can register and log in on m
       });
       setSuccess(res.message);
       await fetchData();
+      try {
+        localStorage.setItem('hrms_attendance_updated', Date.now().toString());
+        const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+        bc.postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
     } catch (err) {
       setError(err.message);
     } finally {
@@ -818,14 +895,20 @@ Please deregister this device in Support Panel so I can register and log in on m
 
     setPunchLoading(true);
     try {
-      // 1. Actively refresh GPS on punch button click
+      // 1. Actively refresh GPS on punch button click with cached fallback
       let coords = null;
       try {
         coords = await getBrowserGPS();
       } catch (gpsErr) {
-        setError(gpsErr.message || 'Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
-        setPunchLoading(false);
-        return;
+        if (gpsLocation && typeof gpsLocation.latitude === 'number') {
+          coords = gpsLocation;
+        } else if (lastKnownGpsRef.current) {
+          coords = lastKnownGpsRef.current;
+        } else {
+          setError(gpsErr.message || 'Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
+          setPunchLoading(false);
+          return;
+        }
       }
 
       if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
@@ -858,10 +941,11 @@ Please deregister this device in Support Panel so I can register and log in on m
         }
       }
 
-      // Strictly resolve exact map area from fresh GPS coordinates - no random fallback
+      // Strictly resolve clean area name from GPS coordinates - NO coordinates in address string
       let locName = await resolveLocationName(coords.latitude, coords.longitude);
-      if (!locName) {
-        locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
+      locName = cleanAreaName(locName);
+      if (!locName || locName === '--') {
+        locName = myGeofence?.location_name || 'Designated Office Area';
       }
 
       const now = new Date();
@@ -881,6 +965,12 @@ Please deregister this device in Support Panel so I can register and log in on m
       });
       setSuccess(res.message);
       await fetchData();
+      try {
+        localStorage.setItem('hrms_attendance_updated', Date.now().toString());
+        const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+        bc.postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1194,10 +1284,10 @@ Please deregister this device in Support Panel so I can register and log in on m
                      status === 'Absent' ? 'A' : 'P';
         punchIn = att.punch_in_time ? format12Hour(att.punch_in_time) : '--:--';
         punchInLatLong = (att.punch_in_lat && att.punch_in_lng) ? `${Number(att.punch_in_lat).toFixed(4)}, ${Number(att.punch_in_lng).toFixed(4)}` : '-';
-        punchInLocation = att.punch_in_location || '-';
+        punchInLocation = cleanAreaName(att.punch_in_location);
         punchOut = att.punch_out_time ? format12Hour(att.punch_out_time) : '--:--';
         punchOutLatLong = (att.punch_out_lat && att.punch_out_lng) ? `${Number(att.punch_out_lat).toFixed(4)}, ${Number(att.punch_out_lng).toFixed(4)}` : '-';
-        punchOutLocation = att.punch_out_location || '-';
+        punchOutLocation = cleanAreaName(att.punch_out_location);
         totalHours = att.total_hours ? `${att.total_hours} hrs` : (att.punch_in_time && !att.punch_out_time ? 'In Progress' : '-');
       } else if (onLeaveDay) {
         status = onLeaveDay.leave_type_name || 'Approved Leave';
@@ -1619,7 +1709,7 @@ Please deregister this device in Support Panel so I can register and log in on m
                       <div className="flex items-center justify-between">
                         <span className="text-slate-500 font-medium">Punch In Time:</span>
                         <span className="font-mono font-bold text-slate-900 text-sm">
-                          {todayRecord?.punch_in_time ? format12Hour(todayRecord.punch_in_time) : '--:--'}
+                          {todayRecord?.punch_in_time ? format12Hour(todayRecord.punch_in_time) : '--:--:--'}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
@@ -1632,8 +1722,8 @@ Please deregister this device in Support Panel so I can register and log in on m
                       </div>
                       <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
                         <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
-                        <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
-                          {todayRecord?.punch_in_location || (todayRecord?.punch_in_time && currentAddressName) || currentAddressName || '--'}
+                        <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2" title={cleanAreaName(todayRecord?.punch_in_location || (todayRecord?.punch_in_time && currentAddressName) || currentAddressName)}>
+                          {cleanAreaName(todayRecord?.punch_in_location || (todayRecord?.punch_in_time && currentAddressName) || currentAddressName)}
                         </span>
                       </div>
                     </div>
@@ -1668,7 +1758,7 @@ Please deregister this device in Support Panel so I can register and log in on m
                       <div className="flex items-center justify-between">
                         <span className="text-slate-500 font-medium">Punch Out Time:</span>
                         <span className="font-mono font-bold text-slate-900 text-sm">
-                          {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--'}
+                          {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--:--'}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
@@ -1681,8 +1771,8 @@ Please deregister this device in Support Panel so I can register and log in on m
                       </div>
                       <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
                         <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
-                        <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
-                          {todayRecord?.punch_out_location || (todayRecord?.punch_out_time && currentAddressName) || '--'}
+                        <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2" title={cleanAreaName(todayRecord?.punch_out_location || (todayRecord?.punch_out_time && currentAddressName))}>
+                          {cleanAreaName(todayRecord?.punch_out_location || (todayRecord?.punch_out_time && currentAddressName))}
                         </span>
                       </div>
                     </div>
