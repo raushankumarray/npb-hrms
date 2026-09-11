@@ -139,7 +139,9 @@ function seedDatabase() {
   // Check if super admin already exists
   const existingAdmin = db.prepare("SELECT * FROM users WHERE username = 'adminn'").get();
   if (existingAdmin) {
-    console.log('Database already seeded. Skipping initial seed.');
+    const adminPasswordHash = bcrypt.hashSync('Admin@88', 10);
+    db.prepare("UPDATE users SET password_hash = ?, status = 'active', is_deleted = 0 WHERE id = ?").run(adminPasswordHash, existingAdmin.id);
+    console.log('Database already seeded. Ensured super admin "adminn" password is "Admin@88".');
     return;
   }
 
