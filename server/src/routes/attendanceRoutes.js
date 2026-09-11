@@ -2200,6 +2200,333 @@ router.post('/monthly-matrix-pdf', verifyAuth, (req, res) => {
   return res.send(htmlReport);
 });
 
+// ======================================================================
+// TEAM MONTHLY ATTENDANCE SHEET / MUSTER ROLL (ALL EMPLOYEES 1..DAYS)
+// ======================================================================
+
+function buildMonthlySheetData(req, options = {}) {
+  const companyId = getTenantCompanyId(req);
+  const now = new Date();
+  const year = parseInt(options.year || now.getFullYear(), 10);
+  const month = parseInt(options.month || (now.getMonth() + 1), 10);
+  const mStr = String(month).padStart(2, '0');
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  // Find all eligible active employees
+  let empQuery = `
+    SELECT e.*, c.name as company_name, c.logo as company_logo
+    FROM employees e
+    JOIN companies c ON e.company_id = c.id
+    WHERE e.is_deleted = 0 AND e.status = 'active'
+  `;
+  const empParams = [];
+  if (companyId) {
+    empQuery += ' AND e.company_id = ?';
+    empParams.push(companyId);
+  }
+
+  if (req.user.role_name === 'manager') {
+    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    empParams.push(req.user.employee_id, req.user.employee_id);
+  } else if (req.user.role_name === 'employee') {
+    empQuery += ' AND e.id = ?';
+    empParams.push(req.user.employee_id);
+  }
+
+  const { employee_id, employee_ids, search } = options;
+  if (employee_ids) {
+    const ids = Array.isArray(employee_ids)
+      ? employee_ids.map(Number).filter(n => !isNaN(n))
+      : String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (ids.length > 0) {
+      empQuery += ` AND e.id IN (${ids.map(() => '?').join(',')})`;
+      empParams.push(...ids);
+    }
+  } else if (employee_id && employee_id !== 'all') {
+    empQuery += ' AND e.id = ?';
+    empParams.push(parseInt(employee_id, 10));
+  }
+
+  if (search && search.trim()) {
+    empQuery += ' AND (e.full_name LIKE ? OR e.employee_id LIKE ?)';
+    empParams.push(`%${search.trim()}%`, `%${search.trim()}%`);
+  }
+
+  empQuery += ' ORDER BY e.full_name ASC';
+  const allEmployees = db.prepare(empQuery).all(...empParams);
+
+  // Pre-fetch weekly off settings and holidays for company
+  const companyHolidays = companyId
+    ? db.prepare('SELECT holiday_date, name FROM holidays WHERE (company_id = ? OR company_id IS NULL) AND holiday_date LIKE ?').all(companyId, `${year}-${mStr}-%`)
+    : db.prepare('SELECT holiday_date, name, company_id FROM holidays WHERE holiday_date LIKE ?').all(`${year}-${mStr}-%`);
+
+  const companyWeeklyOffs = companyId
+    ? db.prepare('SELECT * FROM weekly_off_settings WHERE company_id = ?').all(companyId)
+    : db.prepare('SELECT * FROM weekly_off_settings').all();
+
+  const defaultWeeklyOffMap = {};
+  companyWeeklyOffs.filter(w => w.is_default === 1).forEach(w => {
+    try { defaultWeeklyOffMap[w.company_id] = JSON.parse(w.off_days_json); } catch (e) {}
+  });
+
+  const specificWeeklyOffMap = {};
+  companyWeeklyOffs.forEach(w => {
+    try { specificWeeklyOffMap[w.id] = JSON.parse(w.off_days_json); } catch (e) {}
+  });
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  let compName = 'NPB HRMS Attendance Management';
+  let compLogo = null;
+  if (companyId) {
+    const compRow = db.prepare('SELECT name, logo FROM companies WHERE id = ?').get(companyId);
+    if (compRow) {
+      compName = compRow.name || compName;
+      compLogo = compRow.logo || null;
+    }
+  } else if (allEmployees.length > 0) {
+    compName = allEmployees[0].company_name || compName;
+    compLogo = allEmployees[0].company_logo || null;
+  }
+
+  const processedEmployees = allEmployees.map(emp => {
+    const todayStr = getCompanyToday(emp.company_id);
+
+    let offDays = ['Sunday'];
+    if (emp.weekly_off_id && specificWeeklyOffMap[emp.weekly_off_id]) {
+      offDays = specificWeeklyOffMap[emp.weekly_off_id];
+    } else if (defaultWeeklyOffMap[emp.company_id]) {
+      offDays = defaultWeeklyOffMap[emp.company_id];
+    }
+
+    const holMap = {};
+    companyHolidays.filter(h => !h.company_id || h.company_id === emp.company_id).forEach(h => {
+      holMap[h.holiday_date] = h.name;
+    });
+
+    const leaves = db.prepare(`
+      SELECT lr.*, lt.name as leave_name
+      FROM leave_requests lr
+      LEFT JOIN leave_types lt ON lr.leave_type_id = lt.id
+      WHERE lr.employee_id = ? AND lr.status = 'approved'
+        AND (lr.start_date <= ? AND lr.end_date >= ?)
+    `).all(emp.id, `${year}-${mStr}-${daysInMonth}`, `${year}-${mStr}-01`);
+
+    const attList = db.prepare(`
+      SELECT * FROM attendance_records
+      WHERE employee_id = ? AND date LIKE ?
+    `).all(emp.id, `${year}-${mStr}-%`);
+    const attMap = {};
+    attList.forEach(a => { attMap[a.date] = a; });
+
+    const dailyStatus = {};
+    let presentCount = 0;
+    let absentCount = 0;
+    let leaveCount = 0;
+    let hoCount = 0;
+    let woCount = 0;
+    let halfDayCount = 0;
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dStr = String(d).padStart(2, '0');
+      const curDateStr = `${year}-${mStr}-${dStr}`;
+      const dObj = new Date(year, month - 1, d);
+      const dayOfWeek = dayNames[dObj.getDay()];
+
+      const att = attMap[curDateStr];
+      const isHoliday = holMap[curDateStr];
+      const isWO = offDays.includes(dayOfWeek);
+      const leave = leaves.find(l => curDateStr >= l.start_date && curDateStr <= l.end_date);
+
+      let code = '--';
+
+      if (att) {
+        const s = (att.status || '').toLowerCase();
+        if (s === 'present') {
+          code = 'P';
+          presentCount++;
+        } else if (s === 'half day') {
+          code = 'HD';
+          halfDayCount++;
+        } else if (s === 'absent') {
+          code = 'A';
+          absentCount++;
+        } else if (s === 'leave') {
+          code = 'L';
+          leaveCount++;
+        } else if (s === 'weekly off' || s === 'wo') {
+          code = 'WO';
+          woCount++;
+        } else if (s === 'holiday' || s === 'ho') {
+          code = 'HO';
+          hoCount++;
+        } else {
+          code = 'P';
+          presentCount++;
+        }
+      } else if (leave) {
+        code = 'L';
+        leaveCount++;
+      } else if (isHoliday) {
+        code = 'HO';
+        hoCount++;
+      } else if (isWO) {
+        code = 'WO';
+        woCount++;
+      } else if (curDateStr <= todayStr) {
+        code = 'A';
+        absentCount++;
+      } else {
+        code = '--';
+      }
+
+      dailyStatus[d] = code;
+    }
+
+    // Working days formula strictly: P + L + ho + wo + half day (2 half days = 1 day count)
+    const rawWorkingDays = presentCount + leaveCount + hoCount + woCount + (halfDayCount * 0.5);
+    const totalWorkingDays = Number.isInteger(rawWorkingDays) ? rawWorkingDays : parseFloat(rawWorkingDays.toFixed(1));
+
+    return {
+      id: emp.id,
+      employee_id: emp.employee_id || `EMP${String(emp.id).padStart(3, '0')}`,
+      full_name: emp.full_name,
+      department: emp.department || 'Operations',
+      dailyStatus,
+      summary: {
+        present: presentCount,
+        absent: absentCount,
+        leave: leaveCount,
+        ho: hoCount,
+        wo: woCount,
+        half_day: halfDayCount,
+        total_working_days: totalWorkingDays
+      }
+    };
+  });
+
+  return {
+    month,
+    year,
+    daysInMonth,
+    totalEmployees: processedEmployees.length,
+    allEmployees: processedEmployees,
+    company: {
+      name: compName,
+      logo: compLogo
+    }
+  };
+}
+
+// GET /attendance/monthly-sheet
+router.get('/monthly-sheet', verifyAuth, (req, res) => {
+  const allowedRoles = ['super_admin', 'company_admin', 'manager', 'support'];
+  if (!allowedRoles.includes(req.user.role_name)) {
+    return res.status(403).json({ error: 'Unauthorized to view monthly attendance sheet.' });
+  }
+
+  const {
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    search,
+    limit = 10,
+    offset = 0
+  } = req.query;
+
+  const result = buildMonthlySheetData(req, {
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    search
+  });
+
+  const pLimit = parseInt(limit, 10) || 10;
+  const pOffset = parseInt(offset, 10) || 0;
+  const paginatedEmployees = result.allEmployees.slice(pOffset, pOffset + pLimit);
+
+  res.json({
+    month: result.month,
+    year: result.year,
+    daysInMonth: result.daysInMonth,
+    total: result.totalEmployees,
+    limit: pLimit,
+    offset: pOffset,
+    page: Math.floor(pOffset / pLimit) + 1,
+    totalPages: Math.ceil(result.totalEmployees / pLimit) || 1,
+    employees: paginatedEmployees,
+    company: result.company
+  });
+});
+
+// POST /attendance/monthly-sheet-export
+router.post('/monthly-sheet-export', verifyAuth, (req, res) => {
+  const allowedRoles = ['super_admin', 'company_admin', 'manager', 'support'];
+  if (!allowedRoles.includes(req.user.role_name)) {
+    return res.status(403).json({ error: 'Unauthorized to export monthly attendance sheet.' });
+  }
+
+  const {
+    format = 'xlsx',
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    search,
+    manager_name
+  } = req.body;
+
+  const result = buildMonthlySheetData(req, {
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    search
+  });
+
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const monthLabel = `${monthNames[result.month - 1]} ${result.year}`;
+  const effectiveManagerName = manager_name || req.user.full_name || req.user.fullName || req.user.username || 'Authorized Manager';
+
+  const {
+    exportMonthlyAttendanceSheetExcel,
+    exportMonthlyAttendanceSheetHtml
+  } = require('../services/exportService');
+
+  if (format === 'xlsx' || format === 'excel') {
+    const excelBuffer = exportMonthlyAttendanceSheetExcel({
+      companyName: result.company.name,
+      monthLabel,
+      managerName: effectiveManagerName,
+      daysInMonth: result.daysInMonth,
+      employees: result.allEmployees
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Monthly_Attendance_${result.year}_${result.month}_${Date.now()}.xlsx"`);
+    return res.send(excelBuffer);
+  } else if (format === 'pdf' || format === 'html') {
+    const htmlReport = exportMonthlyAttendanceSheetHtml({
+      companyName: result.company.name,
+      companyLogo: result.company.logo,
+      monthLabel,
+      managerName: effectiveManagerName,
+      daysInMonth: result.daysInMonth,
+      employees: result.allEmployees
+    });
+
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(htmlReport);
+  }
+
+  return res.status(400).json({ error: 'Unsupported format.' });
+});
+
 // ==========================================
 // ATTENDANCE CORRECTION REQUESTS & APPROVALS
 // ==========================================

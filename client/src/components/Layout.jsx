@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
-  Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw
+  Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -107,9 +107,9 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'dashboard', label: 'Dashboard', icon: Layers },
           { id: 'my-employees', label: 'My Employees', icon: Users },
           { id: 'attendance', label: 'Daily Attendance Reports', icon: Clock },
-          { id: 'corrections', label: 'Attendance Corrections', icon: Edit3 },
-          { id: 'calendar', label: 'Calendar', icon: Calendar },
+          { id: 'corrections', label: 'Attendance Approval', icon: CheckCircle2 },
           { id: 'approvals', label: 'Leave Approvals', icon: Calendar },
+          { id: 'calendar', label: 'Calendar', icon: Calendar },
           { id: 'live-map', label: 'Live Route & Map', icon: MapPin },
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
           { id: 'reports', label: 'Team Reports', icon: FileText }
@@ -139,9 +139,9 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
+    <div className="h-screen overflow-hidden bg-slate-100 flex flex-col font-sans">
       {/* Top Header */}
-      <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm shrink-0">
         <div className="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           {/* Mobile menu toggle & Brand Logo */}
           <div className="flex items-center gap-3">
@@ -241,7 +241,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
       {/* Main App Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Desktop Sidebar */}
-        <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-slate-200 p-4 space-y-1 overflow-y-auto">
+        <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-slate-200 p-4 space-y-1 overflow-y-auto shrink-0 h-full">
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-3 mb-2">
             Navigation Menu
           </div>

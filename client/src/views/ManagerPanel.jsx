@@ -14,6 +14,7 @@ import ExcelImportModal from '../components/ExcelImportModal';
 import EmployeeChangePasswordModal from '../components/EmployeeChangePasswordModal';
 import ManagerAttendanceReportsView from '../components/ManagerAttendanceReportsView';
 import AttendanceCorrectionReviewView from '../components/AttendanceCorrectionReviewView';
+import ManagerMonthlyAttendanceSheetView from '../components/ManagerMonthlyAttendanceSheetView';
 
 export default function ManagerPanel({ user, company, activeTab }) {
   // Employees state
@@ -318,6 +319,10 @@ export default function ManagerPanel({ user, company, activeTab }) {
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">
             {activeTab === 'dashboard'
               ? `Welcome, ${user.fullName || user.username} (Manager)`
+              : activeTab === 'corrections'
+              ? 'Attendance Approval'
+              : activeTab === 'reports'
+              ? 'Team Reports'
               : 'Manager Team Portal'}
           </h2>
           <p className="text-xs text-slate-500">{company?.name} • Assigned team oversight, attendance metrics, and approvals</p>
@@ -949,9 +954,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
         </div>
       )}
 
-      {/* TAB: ATTENDANCE CORRECTIONS */}
+      {/* TAB: ATTENDANCE APPROVAL */}
       {activeTab === 'corrections' && (
-        <AttendanceCorrectionReviewView role="manager" />
+        <AttendanceCorrectionReviewView role="manager" title="Attendance Approval" />
       )}
 
       {/* TAB: CALENDAR */}
@@ -1073,6 +1078,11 @@ export default function ManagerPanel({ user, company, activeTab }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* TAB: TEAM REPORTS - MONTHLY ATTENDANCE SHEET */}
+      {activeTab === 'reports' && (
+        <ManagerMonthlyAttendanceSheetView user={user} company={company} />
       )}
 
       {/* MODAL: SOLVE TICKET */}
