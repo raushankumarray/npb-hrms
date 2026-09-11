@@ -922,6 +922,7 @@ function generateFullMonthAttendanceRows(req, options = {}) {
     year,
     employee_id,
     employee_ids,
+    manager_id,
     status,
     search
   } = options;
@@ -951,6 +952,9 @@ function generateFullMonthAttendanceRows(req, options = {}) {
   } else if (req.user.role_name === 'employee') {
     empQuery += ' AND e.id = ?';
     empParams.push(req.user.employee_id);
+  } else if (manager_id && manager_id !== 'all') {
+    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    empParams.push(parseInt(manager_id, 10), parseInt(manager_id, 10));
   }
 
   if (employee_ids) {
@@ -1139,6 +1143,7 @@ router.get('/full-month-logs', verifyAuth, (req, res) => {
     year,
     employee_id,
     employee_ids,
+    manager_id,
     status,
     search,
     limit = 50,
@@ -1150,6 +1155,7 @@ router.get('/full-month-logs', verifyAuth, (req, res) => {
     year,
     employee_id,
     employee_ids,
+    manager_id,
     status,
     search
   });
@@ -1470,6 +1476,7 @@ router.post('/export', verifyAuth, (req, res) => {
       year,
       employee_id,
       employee_ids,
+      manager_id,
       status,
       search
     });

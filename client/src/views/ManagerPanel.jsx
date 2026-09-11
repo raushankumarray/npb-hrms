@@ -3,7 +3,8 @@ import {
   Users, Clock, Calendar, MapPin, CheckCircle, AlertTriangle,
   RefreshCw, Check, X, FileText, Navigation, Ticket, MessageSquare,
   Edit3, Trash2, Key, Ban, Filter, ChevronLeft, ChevronRight, SlidersHorizontal,
-  UserPlus, FileSpreadsheet, Compass, ShieldCheck, CheckCircle2, GitMerge, Search
+  UserPlus, FileSpreadsheet, Compass, ShieldCheck, CheckCircle2, GitMerge, Search,
+  Archive, Inbox
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import LiveTrackingMap from '../components/LiveTrackingMap';
@@ -59,6 +60,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
   const [complaintDescription, setComplaintDescription] = useState('');
   const [submittingComplaint, setSubmittingComplaint] = useState(false);
   const [complaintFilter, setComplaintFilter] = useState('all');
+  const [ticketSection, setTicketSection] = useState('pending'); // 'pending' | 'closed'
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -1000,9 +1002,15 @@ export default function ManagerPanel({ user, company, activeTab }) {
           t.employee_name === (user.fullName || user.username) ||
           t.created_by_username === user.username
         );
-        const myTicketsCount = tickets.filter(isMyTicket).length;
-        const teamTicketsCount = tickets.filter(t => !isMyTicket(t)).length;
-        const displayTickets = tickets.filter(t => {
+
+        const pendingTickets = tickets.filter(t => t.status !== 'resolved' && t.status !== 'closed');
+        const archivedTickets = tickets.filter(t => t.status === 'resolved' || t.status === 'closed');
+
+        const activePool = ticketSection === 'pending' ? pendingTickets : archivedTickets;
+        const myCount = activePool.filter(isMyTicket).length;
+        const teamCount = activePool.filter(t => !isMyTicket(t)).length;
+
+        const displayTickets = activePool.filter(t => {
           if (complaintFilter === 'mine') return isMyTicket(t);
           if (complaintFilter === 'team') return !isMyTicket(t);
           return true;
@@ -1033,43 +1041,91 @@ export default function ManagerPanel({ user, company, activeTab }) {
               </button>
             </div>
 
-            {/* Quick Filter Tabs */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setComplaintFilter('all')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
-                  complaintFilter === 'all'
-                    ? 'bg-slate-900 text-white border-slate-900'
-                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                All Tickets ({tickets.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setComplaintFilter('mine')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
-                  complaintFilter === 'mine'
-                    ? 'bg-indigo-600 text-white border-indigo-600'
-                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                My Raised Complaints ({myTicketsCount})
-              </button>
-              <button
-                type="button"
-                onClick={() => setComplaintFilter('team')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
-                  complaintFilter === 'team'
-                    ? 'bg-sky-600 text-white border-sky-600'
-                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                Team Member Tickets ({teamTicketsCount})
-              </button>
+            {/* Section Switcher: Pending vs Closed Archive */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-2 rounded-2xl border border-slate-200">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTicketSection('pending');
+                    setComplaintFilter('all');
+                  }}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+                    ticketSection === 'pending'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Pending & Active Tickets</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                    ticketSection === 'pending' ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {pendingTickets.length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTicketSection('closed');
+                    setComplaintFilter('all');
+                  }}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+                    ticketSection === 'closed'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  <Archive className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Closed & Resolved Archive</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                    ticketSection === 'closed' ? 'bg-slate-800 text-emerald-300' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {archivedTickets.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* Scope Sub-filters */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setComplaintFilter('all')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                    complaintFilter === 'all'
+                      ? 'bg-sky-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  All ({activePool.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setComplaintFilter('mine')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                    complaintFilter === 'mine'
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  My Complaints ({myCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setComplaintFilter('team')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                    complaintFilter === 'team'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  Team Tickets ({teamCount})
+                </button>
+              </div>
             </div>
 
+            {/* Tickets Table */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-xs text-left">
@@ -1082,6 +1138,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
                       <th className="p-3">Date</th>
                       <th className="p-3">Assigned To</th>
                       <th className="p-3">Status</th>
+                      {ticketSection === 'closed' && (
+                        <th className="p-3">Resolution Notes</th>
+                      )}
                       <th className="p-3 text-right">Action</th>
                     </tr>
                   </thead>
@@ -1120,14 +1179,19 @@ export default function ManagerPanel({ user, company, activeTab }) {
                           </td>
                           <td className="p-3">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                              t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' :
-                              t.status === 'in_progress' ? 'bg-amber-100 text-amber-700' :
-                              t.status === 'closed' ? 'bg-slate-100 text-slate-600' :
-                              'bg-rose-100 text-rose-700'
+                              t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' :
+                              t.status === 'closed' ? 'bg-slate-100 text-slate-700 border border-slate-200' :
+                              t.status === 'in_progress' ? 'bg-sky-100 text-sky-700 border border-sky-200' :
+                              'bg-amber-100 text-amber-700 border border-amber-200'
                             }`}>
                               {t.status}
                             </span>
                           </td>
+                          {ticketSection === 'closed' && (
+                            <td className="p-3 text-slate-600 max-w-xs truncate" title={t.resolution_notes || 'Resolved'}>
+                              {t.resolution_notes || 'Resolved & closed by support/manager.'}
+                            </td>
+                          )}
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1.5">
                               <button
@@ -1143,9 +1207,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                                 Chat
                               </button>
 
-
-
-                              {!mine && (
+                              {!mine && ticketSection === 'pending' && (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1165,12 +1227,18 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     })}
                     {displayTickets.length === 0 && (
                       <tr>
-                        <td colSpan="8" className="p-8 text-center text-slate-400">
-                          {complaintFilter === 'mine'
-                            ? 'You have not raised any complaints yet.'
-                            : complaintFilter === 'team'
-                            ? 'No team service tickets found.'
-                            : 'No tickets found.'}
+                        <td colSpan={ticketSection === 'closed' ? 9 : 8} className="p-8 text-center text-slate-400">
+                          {ticketSection === 'pending'
+                            ? (complaintFilter === 'mine'
+                                ? 'You have no pending complaints.'
+                                : complaintFilter === 'team'
+                                ? 'No team pending tickets found.'
+                                : 'No active or pending tickets found.')
+                            : (complaintFilter === 'mine'
+                                ? 'You have no archived complaints.'
+                                : complaintFilter === 'team'
+                                ? 'No team archived tickets found.'
+                                : 'No closed or resolved tickets archived yet.')}
                         </td>
                       </tr>
                     )}

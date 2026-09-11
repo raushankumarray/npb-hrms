@@ -5,7 +5,7 @@ import {
   Edit3, Trash2, ArrowRight, Upload, Download, Smartphone, Image,
   UserCheck, Shield, Check, Eye, MessageSquare, X, GitMerge, ShieldCheck, CheckCircle2,
   Key, Ban, Filter, Search, FileSpreadsheet, ChevronLeft, ChevronRight, SlidersHorizontal,
-  Building2, Globe, LocateFixed
+  Building2, Globe, LocateFixed, Archive, Inbox
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import LiveTrackingMap from '../components/LiveTrackingMap';
@@ -64,6 +64,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [chatTicketId, setChatTicketId] = useState(null);
   const [showChatModal, setShowChatModal] = useState(false);
   const [ticketStatusFilter, setTicketStatusFilter] = useState('all');
+  const [ticketSection, setTicketSection] = useState('pending'); // 'pending' | 'closed'
   const [showRaiseComplaintModal, setShowRaiseComplaintModal] = useState(false);
   const [complaintCategory, setComplaintCategory] = useState('other');
   const [complaintTitle, setComplaintTitle] = useState('');
@@ -1424,64 +1425,142 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       )}
 
       {/* HELPDESK & TICKETS TAB */}
-      {activeTab === 'tickets' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+      {activeTab === 'tickets' && (() => {
+        const pendingTickets = tickets.filter(t => t.status !== 'resolved' && t.status !== 'closed');
+        const archivedTickets = tickets.filter(t => t.status === 'resolved' || t.status === 'closed');
+
+        const activePool = ticketSection === 'pending' ? pendingTickets : archivedTickets;
+        const displayTickets = activePool.filter(t => {
+          if (ticketStatusFilter === 'all') return true;
+          return t.status === ticketStatusFilter;
+        });
+
+        return (
+          <div className="space-y-4">
+            {/* Top Bar with Raise Complaint Button */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">Helpdesk Service Requests & Missing Punches</h3>
                 <p className="text-[11px] text-slate-400">Review, resolve, and take action on employee tickets</p>
               </div>
 
+              <button
+                type="button"
+                onClick={() => {
+                  setComplaintCategory('other');
+                  setComplaintTitle('');
+                  setComplaintDescription('');
+                  setShowRaiseComplaintModal(true);
+                }}
+                className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+              >
+                <Ticket className="w-4 h-4" />
+                <span>+ Raise Complaint / Create Ticket</span>
+              </button>
+            </div>
+
+            {/* Section Switcher: Pending vs Closed Archive */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-2 rounded-2xl border border-slate-200">
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
-                    setComplaintCategory('other');
-                    setComplaintTitle('');
-                    setComplaintDescription('');
-                    setShowRaiseComplaintModal(true);
+                    setTicketSection('pending');
+                    setTicketStatusFilter('all');
                   }}
-                  className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+                    ticketSection === 'pending'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
                 >
-                  <Ticket className="w-4 h-4" />
-                  <span>+ Raise Complaint / Create Ticket</span>
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Pending & Active Tickets</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                    ticketSection === 'pending' ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {pendingTickets.length}
+                  </span>
                 </button>
 
-                {['all', 'pending', 'in_progress', 'resolved'].map(st => (
-                  <button
-                    key={st}
-                    onClick={() => setTicketStatusFilter(st)}
-                    className={`px-3 py-1 rounded-xl text-xs font-bold capitalize transition-colors ${
-                      ticketStatusFilter === st
-                        ? 'bg-sky-600 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    {st}
-                  </button>
-                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTicketSection('closed');
+                    setTicketStatusFilter('all');
+                  }}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+                    ticketSection === 'closed'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                  }`}
+                >
+                  <Archive className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Closed & Resolved Archive</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                    ticketSection === 'closed' ? 'bg-slate-800 text-emerald-300' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {archivedTickets.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* Status Filter buttons for current section */}
+              <div className="flex items-center gap-1.5">
+                {ticketSection === 'pending' ? (
+                  ['all', 'pending', 'in_progress'].map(st => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setTicketStatusFilter(st)}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold capitalize transition-colors ${
+                        ticketStatusFilter === st
+                          ? 'bg-sky-600 text-white'
+                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                    >
+                      {st === 'all' ? `All Active (${pendingTickets.length})` : st.replace('_', ' ')}
+                    </button>
+                  ))
+                ) : (
+                  ['all', 'resolved', 'closed'].map(st => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setTicketStatusFilter(st)}
+                      className={`px-3 py-1 rounded-xl text-xs font-bold capitalize transition-colors ${
+                        ticketStatusFilter === st
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                    >
+                      {st === 'all' ? `All Archived (${archivedTickets.length})` : st.replace('_', ' ')}
+                    </button>
+                  ))
+                )}
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                  <tr>
-                    <th className="p-3">Ticket ID</th>
-                    <th className="p-3">Employee</th>
-                    <th className="p-3">Type</th>
-                    <th className="p-3">Title & Details</th>
-                    <th className="p-3">Suggested Timing</th>
-                    <th className="p-3">Assigned To</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {tickets
-                    .filter(t => ticketStatusFilter === 'all' || t.status === ticketStatusFilter)
-                    .map(t => (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                    <tr>
+                      <th className="p-3">Ticket ID</th>
+                      <th className="p-3">Employee</th>
+                      <th className="p-3">Type</th>
+                      <th className="p-3">Title & Details</th>
+                      <th className="p-3">Suggested Timing</th>
+                      <th className="p-3">Assigned To</th>
+                      <th className="p-3">Status</th>
+                      {ticketSection === 'closed' && (
+                        <th className="p-3">Resolution Notes</th>
+                      )}
+                      <th className="p-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {displayTickets.map(t => (
                       <tr key={t.id} className="hover:bg-slate-50/50">
                         <td className="p-3 font-mono font-bold text-sky-600">#{t.id}</td>
                         <td className="p-3 font-semibold text-slate-900">
@@ -1514,14 +1593,19 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                         </td>
                         <td className="p-3">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                            t.status === 'resolved' ? 'bg-emerald-100 text-emerald-800' :
-                            t.status === 'in_progress' ? 'bg-sky-100 text-sky-800' :
-                            t.status === 'closed' ? 'bg-slate-100 text-slate-600' :
-                            'bg-amber-100 text-amber-800'
+                            t.status === 'resolved' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                            t.status === 'closed' ? 'bg-slate-100 text-slate-700 border border-slate-200' :
+                            t.status === 'in_progress' ? 'bg-sky-100 text-sky-800 border border-sky-200' :
+                            'bg-amber-100 text-amber-800 border border-amber-200'
                           }`}>
                             {t.status}
                           </span>
                         </td>
+                        {ticketSection === 'closed' && (
+                          <td className="p-3 text-slate-600 max-w-xs truncate" title={t.resolution_notes || 'Resolved'}>
+                            {t.resolution_notes || 'Resolved and closed.'}
+                          </td>
+                        )}
                         <td className="p-3 text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             <button
@@ -1536,35 +1620,38 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                               Chat
                             </button>
 
-
-
-                            <button
-                              onClick={() => {
-                                setSelectedTicket(t);
-                                setResolutionNotes(t.resolution_notes || '');
-                                setShowSolveTicketModal(true);
-                              }}
-                              className="px-3 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 font-bold rounded-lg text-xs"
-                            >
-                              Solve Ticket
-                            </button>
+                            {ticketSection === 'pending' && (
+                              <button
+                                onClick={() => {
+                                  setSelectedTicket(t);
+                                  setResolutionNotes(t.resolution_notes || '');
+                                  setShowSolveTicketModal(true);
+                                }}
+                                className="px-3 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 font-bold rounded-lg text-xs border border-sky-200"
+                              >
+                                Solve Ticket
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
                     ))}
-                  {tickets.length === 0 && (
-                    <tr>
-                      <td colSpan="7" className="p-8 text-center text-xs text-slate-400">
-                        No service requests found.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                    {displayTickets.length === 0 && (
+                      <tr>
+                        <td colSpan={ticketSection === 'closed' ? 9 : 8} className="p-8 text-center text-xs text-slate-400">
+                          {ticketSection === 'pending'
+                            ? 'No active or pending tickets found.'
+                            : 'No closed or resolved tickets archived yet.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* LEAVE MANAGEMENT & ACCRUAL TAB */}
       {activeTab === 'leave' && (

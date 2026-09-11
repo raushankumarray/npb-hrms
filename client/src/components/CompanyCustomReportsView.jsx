@@ -145,7 +145,7 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
           params.append('employee_ids', selectedEmployeeIds.join(','));
         }
 
-        const res = await apiRequest(`/reports/data?${params.toString()}`);
+        const res = await apiRequest(`/attendance/full-month-logs?${params.toString()}`);
         setDailyRecords(res.records || []);
         setDailyTotal(res.total || 0);
         setCurrentPage(pageToFetch);
@@ -231,18 +231,19 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
       return;
     }
     setExporting(true);
-    setError('');
     try {
       if (reportType === 'daily_logs') {
         const payload = {
           format: 'xlsx',
           month: selectedMonth,
           year: selectedYear,
+          is_full_month: true,
+          scope: 'full_month',
           selected_columns: [
             'Date', 'Employee ID', 'Employee Name',
             'Punch In Time', 'Punch In Lat/Long', 'Punch In Address',
             'Punch Out Time', 'Punch Out Lat/Long', 'Punch Out Address',
-            'Status', 'Working Hours'
+            'Status', 'Working Hours (HH:MM)'
           ]
         };
         if (selectedManager !== 'all') payload.manager_id = selectedManager;
@@ -250,7 +251,7 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
           payload.employee_ids = selectedEmployeeIds;
         }
 
-        const res = await apiRequest('/reports/export', {
+        const res = await apiRequest('/attendance/export', {
           method: 'POST',
           body: payload
         });
@@ -319,11 +320,13 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
           format: 'pdf',
           month: selectedMonth,
           year: selectedYear,
+          is_full_month: true,
+          scope: 'full_month',
           selected_columns: [
             'Date', 'Employee ID', 'Employee Name',
             'Punch In Time', 'Punch In Lat/Long', 'Punch In Address',
             'Punch Out Time', 'Punch Out Lat/Long', 'Punch Out Address',
-            'Status', 'Working Hours'
+            'Status', 'Working Hours (HH:MM)'
           ]
         };
         if (selectedManager !== 'all') payload.manager_id = selectedManager;
@@ -331,7 +334,7 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
           payload.employee_ids = selectedEmployeeIds;
         }
 
-        const res = await apiRequest('/reports/export', {
+        const res = await apiRequest('/attendance/export', {
           method: 'POST',
           body: payload
         });
@@ -397,22 +400,25 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
   // Helper status badge renderer
   const renderStatusBadge = (status) => {
     const s = (status || '').toLowerCase();
-    if (s.includes('present')) {
-      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">Present</span>;
+    if (s.includes('present') || s === 'p') {
+      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">Present (P)</span>;
     }
-    if (s.includes('half')) {
-      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300">Half Day</span>;
+    if (s.includes('half') || s === 'hd') {
+      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-amber-100 text-amber-800 border border-amber-300">Half Day (HD)</span>;
     }
-    if (s.includes('leave')) {
-      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-sky-100 text-sky-800 border border-sky-300">Leave</span>;
+    if (s.includes('leave') || s === 'l') {
+      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-sky-100 text-sky-800 border border-sky-300">Leave (L)</span>;
     }
-    if (s.includes('holiday')) {
-      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-purple-100 text-purple-800 border border-purple-300">Holiday</span>;
+    if (s.includes('holiday') || s === 'ho') {
+      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-purple-100 text-purple-800 border border-purple-300">Holiday (HO)</span>;
     }
     if (s.includes('week') || s === 'wo') {
-      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-slate-100 text-slate-800 border border-slate-300">Weekly Off</span>;
+      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-slate-100 text-slate-800 border border-slate-300">Weekly Off (WO)</span>;
     }
-    return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-300">Absent</span>;
+    if (s === 'upcoming' || s === '--') {
+      return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-slate-50 text-slate-400 border border-slate-200">Upcoming (--)</span>;
+    }
+    return <span className="px-2 py-0.5 rounded-none text-[10px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-300">Absent (A)</span>;
   };
 
   // Calculate pagination variables
@@ -771,76 +777,78 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
               /* ======================================================== */
               <div className="border border-slate-200 rounded-none overflow-x-auto">
                 <table className="w-full text-xs text-center border-collapse">
-                  <thead className="bg-slate-100 text-slate-700 uppercase font-bold border-b border-slate-200">
+                  <thead className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300">
                     <tr>
-                      <th className="p-2.5 text-left sticky left-0 bg-slate-100 z-10 border-r border-slate-200 min-w-[170px]">
+                      <th className="p-2.5 text-left sticky left-0 bg-slate-100 z-10 border-r border-slate-300 min-w-[170px]">
                         Employee Name
                       </th>
                       {Array.from({ length: monthlySheetData.daysInMonth || 30 }, (_, i) => i + 1).map(day => (
-                        <th key={day} className="p-1.5 border-r border-slate-200 min-w-[28px] text-[10px] font-mono">
+                        <th key={day} className="p-1 border-r border-slate-200 text-center min-w-[28px] text-[11px] font-mono">
                           {day}
                         </th>
                       ))}
-                      <th className="p-2 border-r border-slate-200 bg-emerald-50 text-emerald-800 font-bold whitespace-nowrap">
-                        P
+                      <th className="p-2 border-r border-slate-300 text-center min-w-[65px] bg-emerald-50 text-emerald-900 font-black">
+                        Total Present Day
                       </th>
-                      <th className="p-2 border-r border-slate-200 bg-rose-50 text-rose-800 font-bold whitespace-nowrap">
-                        A
+                      <th className="p-2 border-r border-slate-300 text-center min-w-[65px] bg-rose-50 text-rose-900 font-black">
+                        Absent Day
                       </th>
-                      <th className="p-2 border-r border-slate-200 bg-sky-50 text-sky-800 font-bold whitespace-nowrap">
-                        L
+                      <th className="p-2 border-r border-slate-300 text-center min-w-[55px] bg-purple-50 text-purple-900 font-black">
+                        Leave
                       </th>
-                      <th className="p-2 border-r border-slate-200 bg-purple-50 text-purple-800 font-bold whitespace-nowrap">
+                      <th className="p-2 border-r border-slate-300 text-center min-w-[45px] bg-orange-50 text-orange-900 font-black">
                         HO
                       </th>
-                      <th className="p-2 border-r border-slate-200 bg-slate-200 text-slate-800 font-bold whitespace-nowrap">
+                      <th className="p-2 border-r border-slate-300 text-center min-w-[45px] bg-slate-200 text-slate-900 font-black">
                         WO
                       </th>
-                      <th className="p-2 bg-indigo-50 text-indigo-900 font-bold whitespace-nowrap">
+                      <th className="p-2 text-center min-w-[85px] bg-emerald-100 text-emerald-950 font-black border-l-2 border-emerald-400">
                         Total Working Days
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {monthlySheetData.employees.map((emp) => (
-                      <tr key={emp.employee_id} className="hover:bg-slate-50/75 transition-colors">
-                        <td className="p-2.5 text-left font-bold text-slate-900 sticky left-0 bg-white z-10 border-r border-slate-200 whitespace-nowrap">
-                          {emp.employee_name}
+                  <tbody className="divide-y divide-slate-200 bg-white">
+                    {monthlySheetData.employees.map((emp, idx) => (
+                      <tr key={emp.id || emp.employee_id} className={idx % 2 === 0 ? 'bg-white hover:bg-sky-50/40' : 'bg-slate-50/50 hover:bg-sky-50/40'}>
+                        <td className="p-2.5 text-left font-bold text-slate-900 sticky left-0 bg-inherit z-10 border-r border-slate-300 whitespace-nowrap">
+                          <div>{emp.full_name || emp.employee_name}</div>
+                          <div className="text-[10px] text-slate-400 font-normal">{emp.department || 'Operations'}</div>
                         </td>
                         {Array.from({ length: monthlySheetData.daysInMonth || 30 }, (_, i) => i + 1).map(day => {
-                          const status = emp.attendance_by_day?.[day] || 'A';
-                          let badgeClass = 'bg-rose-50 text-rose-700 font-bold';
-                          if (status === 'P') badgeClass = 'bg-emerald-100 text-emerald-800 font-bold';
-                          else if (status === 'HD') badgeClass = 'bg-amber-100 text-amber-800 font-bold';
-                          else if (status === 'L') badgeClass = 'bg-sky-100 text-sky-800 font-bold';
-                          else if (status === 'HO') badgeClass = 'bg-purple-100 text-purple-800 font-bold';
-                          else if (status === 'WO') badgeClass = 'bg-slate-100 text-slate-600 font-semibold';
+                          const status = emp.dailyStatus ? emp.dailyStatus[day] : (emp.attendance_by_day?.[day] || '--');
+                          let badgeClass = 'bg-rose-100 text-rose-800 border border-rose-300';
+                          if (status === 'P') badgeClass = 'bg-emerald-100 text-emerald-800 border border-emerald-300';
+                          else if (status === 'HD') badgeClass = 'bg-amber-100 text-amber-800 border border-amber-300';
+                          else if (status === 'L') badgeClass = 'bg-purple-100 text-purple-800 border border-purple-300';
+                          else if (status === 'HO') badgeClass = 'bg-orange-100 text-orange-800 border border-orange-300';
+                          else if (status === 'WO') badgeClass = 'bg-slate-100 text-slate-700 border border-slate-300';
+                          else if (status === '--') badgeClass = 'bg-slate-50 text-slate-300 border border-transparent';
 
                           return (
-                            <td key={day} className="p-1 border-r border-slate-200 text-[10px]">
-                              <span className={`inline-block px-1 py-0.5 rounded-none text-[9px] ${badgeClass}`}>
+                            <td key={day} className="p-1 border-r border-slate-200 text-center text-[10px]">
+                              <span className={`inline-block w-6 h-6 leading-6 text-center text-[10px] font-black rounded ${badgeClass}`}>
                                 {status}
                               </span>
                             </td>
                           );
                         })}
-                        <td className="p-2 border-r border-slate-200 bg-emerald-50/50 font-bold text-emerald-800">
-                          {emp.total_present}
+                        <td className="p-2 border-r border-slate-300 text-center bg-emerald-50/60 font-black text-emerald-900">
+                          {emp.summary?.present ?? emp.total_present ?? 0}
                         </td>
-                        <td className="p-2 border-r border-slate-200 bg-rose-50/50 font-bold text-rose-800">
-                          {emp.total_absent}
+                        <td className="p-2 border-r border-slate-300 text-center bg-rose-50/60 font-black text-rose-900">
+                          {emp.summary?.absent ?? emp.total_absent ?? 0}
                         </td>
-                        <td className="p-2 border-r border-slate-200 bg-sky-50/50 font-bold text-sky-800">
-                          {emp.total_leave}
+                        <td className="p-2 border-r border-slate-300 text-center bg-purple-50/60 font-black text-purple-900">
+                          {emp.summary?.leave ?? emp.total_leave ?? 0}
                         </td>
-                        <td className="p-2 border-r border-slate-200 bg-purple-50/50 font-bold text-purple-800">
-                          {emp.total_holiday}
+                        <td className="p-2 border-r border-slate-300 text-center bg-orange-50/60 font-black text-orange-900">
+                          {emp.summary?.ho ?? emp.total_holiday ?? 0}
                         </td>
-                        <td className="p-2 border-r border-slate-200 bg-slate-100 font-bold text-slate-800">
-                          {emp.total_wo}
+                        <td className="p-2 border-r border-slate-300 text-center bg-slate-200/70 font-black text-slate-900">
+                          {emp.summary?.wo ?? emp.total_wo ?? 0}
                         </td>
-                        <td className="p-2 bg-indigo-50/60 font-black text-indigo-900">
-                          {emp.total_working_days}
+                        <td className="p-2 text-center bg-emerald-100 text-emerald-950 font-black border-l-2 border-emerald-400">
+                          {emp.summary?.total_working_days ?? emp.total_working_days ?? 0}
                         </td>
                       </tr>
                     ))}

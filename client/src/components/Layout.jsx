@@ -224,16 +224,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
               </div>
             </button>
 
-            {/* Logout Button (Hidden for employee and manager roles as per requirement; available in manager desktop sidebar footer, employee profile & mobile drawer) */}
-            {user.role !== 'employee' && user.role !== 'manager' && (
-              <button
-                onClick={onLogout}
-                className="p-2 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors ml-1"
-                title="Sign Out"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
-            )}
           </div>
         </div>
       </header>
@@ -266,20 +256,18 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
             })}
           </div>
 
-          {/* Desktop Sidebar Footer for Manager */}
-          {user.role === 'manager' && (
-            <div className="pt-3 mt-auto border-t border-slate-200">
-              <button
-                type="button"
-                onClick={onLogout}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-xl text-xs transition-colors shadow-xs"
-                title="Sign Out"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Log Out</span>
-              </button>
-            </div>
-          )}
+          {/* Desktop Sidebar Footer for All Panels */}
+          <div className="pt-3 mt-auto border-t border-slate-200">
+            <button
+              type="button"
+              onClick={onLogout}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-xl text-xs transition-colors shadow-xs"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Log Out</span>
+            </button>
+          </div>
         </aside>
 
         {/* Mobile Slide-out Drawer */}
