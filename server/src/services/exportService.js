@@ -2,10 +2,12 @@ const XLSX = require('xlsx');
 const db = require('../db');
 
 function formatTo12Hour(timeStr) {
-  if (!timeStr) return '-';
-  const parts = timeStr.split(':');
+  if (!timeStr || timeStr === '-' || timeStr === '--' || timeStr === '--:--:--' || timeStr === '--:--') return timeStr || '-';
+  if (typeof timeStr === 'string' && (timeStr.includes('AM') || timeStr.includes('PM'))) return timeStr;
+  const parts = String(timeStr).split(':');
   if (parts.length < 2) return timeStr;
   let hours = parseInt(parts[0], 10);
+  if (isNaN(hours)) return timeStr;
   const minutes = parts[1];
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12;
@@ -34,7 +36,7 @@ function exportCustomExcel({ data, selectedColumns, sheetName = 'Attendance Repo
     return selectedColumns.map(col => {
       let val = item[col];
       // Format punch times if detected
-      if ((col.includes('Punch In') || col.includes('Punch Out')) && typeof val === 'string' && val.includes(':')) {
+      if ((col === 'Punch In' || col === 'Punch Out' || col === 'Punch In Time' || col === 'Punch Out Time') && typeof val === 'string' && val.includes(':')) {
         val = formatTo12Hour(val);
       }
       return val !== undefined && val !== null ? val : '-';
@@ -69,7 +71,7 @@ function exportHtmlReport({ data, selectedColumns, title, companyName, dateRange
     const bg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
     const cells = selectedColumns.map(col => {
       let val = item[col];
-      if ((col.includes('Punch In') || col.includes('Punch Out')) && typeof val === 'string' && val.includes(':')) {
+      if ((col === 'Punch In' || col === 'Punch Out' || col === 'Punch In Time' || col === 'Punch Out Time') && typeof val === 'string' && val.includes(':')) {
         val = formatTo12Hour(val);
       }
       return `<td style="border: 1px solid #e2e8f0; padding: 6px 10px; font-size: 11px; color: #1e293b;">${val !== undefined && val !== null ? val : '-'}</td>`;

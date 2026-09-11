@@ -867,6 +867,325 @@ router.get('/list', verifyAuth, (req, res) => {
   });
 });
 
+// Helpers for clean display and formatting
+function cleanAreaName(raw) {
+  if (!raw || raw === '-' || raw === '--') return '--';
+  let cleaned = String(raw).replace(/\s*\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?/g, '').replace(/^Map Area\s*/i, '').trim();
+  cleaned = cleaned.replace(/^,\s*|,\s*$/g, '').trim();
+  return cleaned || 'Office / Designated Area';
+}
+
+function format12Hour(timeStr) {
+  if (!timeStr || timeStr === '-' || timeStr === '--' || timeStr === '--:--:--' || timeStr === '--:--') return '--:--:--';
+  if (typeof timeStr === 'string' && (timeStr.includes('AM') || timeStr.includes('PM'))) return timeStr;
+  const parts = String(timeStr).split(':');
+  if (parts.length < 2) return timeStr;
+  let hours = parseInt(parts[0], 10);
+  if (isNaN(hours)) return timeStr;
+  const minutes = parts[1];
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+  return `${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
+}
+
+function formatWorkingHoursHHMM(totalHours, inTime, outTime) {
+  if (totalHours !== null && totalHours !== undefined && !isNaN(Number(totalHours)) && Number(totalHours) > 0) {
+    const th = Number(totalHours);
+    let h = Math.floor(th);
+    let m = Math.round((th - h) * 60);
+    if (m >= 60) { h += 1; m = 0; }
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+  if (inTime && outTime && inTime !== '-' && inTime !== '--:--:--' && outTime !== '-' && outTime !== '--:--:--') {
+    const p1 = String(inTime).split(':').map(Number);
+    const p2 = String(outTime).split(':').map(Number);
+    if (!p1.some(isNaN) && !p2.some(isNaN)) {
+      const s1 = (p1[0] || 0) * 3600 + (p1[1] || 0) * 60 + (p1[2] || 0);
+      const s2 = (p2[0] || 0) * 3600 + (p2[1] || 0) * 60 + (p2[2] || 0);
+      const diffSec = s2 - s1;
+      if (diffSec > 0) {
+        const h = Math.floor(diffSec / 3600);
+        const m = Math.floor((diffSec % 3600) / 60);
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      }
+    }
+  }
+  return '00:00';
+}
+
+// Generate Full Month Attendance Rows For All Assigned Employees Without Skipping Any Date
+function generateFullMonthAttendanceRows(req, options = {}) {
+  const companyId = getTenantCompanyId(req);
+  const {
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    status,
+    search
+  } = options;
+
+  const yInt = parseInt(year, 10) || new Date().getFullYear();
+  const mInt = parseInt(month, 10) || (new Date().getMonth() + 1);
+  const mStr = String(mInt).padStart(2, '0');
+  const daysInMonth = new Date(yInt, mInt, 0).getDate();
+
+  // Find all eligible active employees
+  let empQuery = `
+    SELECT e.*, c.name as company_name, s.name as shift_name, s.start_time, s.end_time
+    FROM employees e
+    JOIN companies c ON e.company_id = c.id
+    LEFT JOIN shifts s ON e.shift_id = s.id
+    WHERE e.is_deleted = 0 AND e.status = 'active'
+  `;
+  const empParams = [];
+  if (companyId) {
+    empQuery += ' AND e.company_id = ?';
+    empParams.push(companyId);
+  }
+
+  if (req.user.role_name === 'manager') {
+    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    empParams.push(req.user.employee_id, req.user.employee_id);
+  } else if (req.user.role_name === 'employee') {
+    empQuery += ' AND e.id = ?';
+    empParams.push(req.user.employee_id);
+  }
+
+  if (employee_ids) {
+    const ids = Array.isArray(employee_ids)
+      ? employee_ids.map(Number).filter(n => !isNaN(n))
+      : String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (ids.length > 0) {
+      empQuery += ` AND e.id IN (${ids.map(() => '?').join(',')})`;
+      empParams.push(...ids);
+    }
+  } else if (employee_id && employee_id !== 'all') {
+    empQuery += ' AND e.id = ?';
+    empParams.push(parseInt(employee_id, 10));
+  }
+
+  if (search) {
+    empQuery += ' AND (e.full_name LIKE ? OR e.employee_id LIKE ?)';
+    empParams.push(`%${search}%`, `%${search}%`);
+  }
+
+  empQuery += ' ORDER BY e.full_name ASC';
+  const employees = db.prepare(empQuery).all(...empParams);
+
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const allRows = [];
+
+  // Pre-fetch weekly off settings and holidays for company
+  const companyHolidays = companyId
+    ? db.prepare('SELECT holiday_date, name FROM holidays WHERE company_id = ? AND holiday_date LIKE ?').all(companyId, `${yInt}-${mStr}-%`)
+    : db.prepare('SELECT holiday_date, name, company_id FROM holidays WHERE holiday_date LIKE ?').all(`${yInt}-${mStr}-%`);
+
+  const companyWeeklyOffs = companyId
+    ? db.prepare('SELECT * FROM weekly_off_settings WHERE company_id = ?').all(companyId)
+    : db.prepare('SELECT * FROM weekly_off_settings').all();
+
+  const defaultWeeklyOffMap = {};
+  companyWeeklyOffs.filter(w => w.is_default === 1).forEach(w => {
+    try { defaultWeeklyOffMap[w.company_id] = JSON.parse(w.off_days_json); } catch (e) {}
+  });
+
+  const specificWeeklyOffMap = {};
+  companyWeeklyOffs.forEach(w => {
+    try { specificWeeklyOffMap[w.id] = JSON.parse(w.off_days_json); } catch (e) {}
+  });
+
+  for (const emp of employees) {
+    const todayStr = getCompanyToday(emp.company_id);
+
+    // Determine weekly off days for this employee
+    let offDays = ['Sunday'];
+    if (emp.weekly_off_id && specificWeeklyOffMap[emp.weekly_off_id]) {
+      offDays = specificWeeklyOffMap[emp.weekly_off_id];
+    } else if (defaultWeeklyOffMap[emp.company_id]) {
+      offDays = defaultWeeklyOffMap[emp.company_id];
+    }
+
+    // Holidays map for this employee's company
+    const holMap = {};
+    companyHolidays.filter(h => !h.company_id || h.company_id === emp.company_id).forEach(h => {
+      holMap[h.holiday_date] = h.name;
+    });
+
+    // Approved leaves for this employee in this month
+    const leaves = db.prepare(`
+      SELECT lr.*, lt.name as leave_name
+      FROM leave_requests lr
+      LEFT JOIN leave_types lt ON lr.leave_type_id = lt.id
+      WHERE lr.employee_id = ? AND lr.status = 'approved'
+        AND (lr.start_date <= ? AND lr.end_date >= ?)
+    `).all(emp.id, `${yInt}-${mStr}-${daysInMonth}`, `${yInt}-${mStr}-01`);
+
+    // Attendance records for this employee in this month
+    const attList = db.prepare(`
+      SELECT * FROM attendance_records
+      WHERE employee_id = ? AND date LIKE ?
+    `).all(emp.id, `${yInt}-${mStr}-%`);
+    const attMap = {};
+    attList.forEach(a => { attMap[a.date] = a; });
+
+    // Loop through ALL days from 1 to daysInMonth without skipping any date!
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dStr = String(d).padStart(2, '0');
+      const curDateStr = `${yInt}-${mStr}-${dStr}`;
+      const dObj = new Date(yInt, mInt - 1, d);
+      const dayOfWeek = dayNames[dObj.getDay()];
+
+      const att = attMap[curDateStr];
+      const isHoliday = holMap[curDateStr];
+      const isWO = offDays.includes(dayOfWeek);
+      const leave = leaves.find(l => curDateStr >= l.start_date && curDateStr <= l.end_date);
+
+      let rowStatus = 'Upcoming';
+      let punchIn12 = '--:--:--';
+      let punchOut12 = '--:--:--';
+      let punchInLatLong = '--';
+      let punchOutLatLong = '--';
+      let punchInAddress = '--';
+      let punchOutAddress = '--';
+      let workingHoursHHMM = '00:00';
+      let remarks = '';
+
+      if (att) {
+        rowStatus = att.status || 'Present';
+        punchIn12 = att.punch_in_time ? format12Hour(att.punch_in_time) : '--:--:--';
+        punchOut12 = att.punch_out_time ? format12Hour(att.punch_out_time) : '--:--:--';
+        punchInLatLong = (att.punch_in_lat && att.punch_in_lng) ? `${Number(att.punch_in_lat).toFixed(4)}, ${Number(att.punch_in_lng).toFixed(4)}` : '--';
+        punchOutLatLong = (att.punch_out_lat && att.punch_out_lng) ? `${Number(att.punch_out_lat).toFixed(4)}, ${Number(att.punch_out_lng).toFixed(4)}` : '--';
+        punchInAddress = cleanAreaName(att.punch_in_location);
+        punchOutAddress = cleanAreaName(att.punch_out_location);
+        workingHoursHHMM = formatWorkingHoursHHMM(att.total_hours, att.punch_in_time, att.punch_out_time);
+        remarks = att.remarks || rowStatus;
+      } else if (leave) {
+        rowStatus = 'Leave';
+        remarks = `On Approved ${leave.leave_name || 'Leave'}`;
+      } else if (isHoliday) {
+        rowStatus = 'Holiday';
+        remarks = `Holiday: ${isHoliday}`;
+      } else if (isWO) {
+        rowStatus = 'Weekly Off';
+        remarks = `Scheduled Weekly Off (${dayOfWeek})`;
+      } else if (curDateStr <= todayStr) {
+        rowStatus = 'Absent';
+        remarks = 'Absent (No punch recorded)';
+      } else {
+        rowStatus = 'Upcoming';
+        remarks = 'Upcoming Date';
+      }
+
+      // Filter by status if provided
+      if (status && status !== 'all') {
+        if (status === 'WO' || status === 'Weekly Off') {
+          if (rowStatus !== 'Weekly Off' && rowStatus !== 'WO') continue;
+        } else if (status === 'HO' || status === 'Holiday') {
+          if (rowStatus !== 'Holiday' && rowStatus !== 'HO') continue;
+        } else if (status.toLowerCase() !== rowStatus.toLowerCase()) {
+          continue;
+        }
+      }
+
+      allRows.push({
+        id: att ? att.id : `${emp.id}_${curDateStr}`,
+        employee_db_id: emp.id,
+        "Employee ID": emp.employee_id || '-',
+        "Employee Name": emp.full_name,
+        "Employee": `${emp.full_name} (${emp.employee_id || 'EMP'})`,
+        "Date": `${curDateStr} (${dayOfWeek.substring(0, 3)})`,
+        date_raw: curDateStr,
+        day_of_week: dayOfWeek,
+        "Punch In Time": punchIn12,
+        "Punch In Lat/Long": punchInLatLong,
+        "Punch In Address": punchInAddress,
+        "Punch Out Time": punchOut12,
+        "Punch Out Lat/Long": punchOutLatLong,
+        "Punch Out Address": punchOutAddress,
+        "Status": rowStatus,
+        "Working Hours (HH:MM)": workingHoursHHMM,
+        // Compatibility aliases:
+        "Punch In": punchIn12,
+        "Punch Out": punchOut12,
+        "Hours": workingHoursHHMM,
+        "Working Hours": workingHoursHHMM,
+        "Location / Geofence": punchInAddress !== '--' ? punchInAddress : 'Office',
+        "GPS Lat/Long (Punch In)": punchInLatLong,
+        "Address (Punch In)": punchInAddress,
+        "GPS Lat/Long (Punch Out)": punchOutLatLong,
+        "Address (Punch Out)": punchOutAddress,
+        "Remarks": remarks,
+        "Department": emp.department || '',
+        "Shift": emp.shift_name || 'General'
+      });
+    }
+  }
+
+  return allRows;
+}
+
+// GET /attendance/full-month-logs: Generates and returns non-skipping monthly attendance logs for all employees
+router.get('/full-month-logs', verifyAuth, (req, res) => {
+  const allowedRoles = ['super_admin', 'company_admin', 'manager', 'support', 'employee'];
+  if (!allowedRoles.includes(req.user.role_name)) {
+    return res.status(403).json({ error: 'Unauthorized to view attendance logs.' });
+  }
+
+  const {
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    status,
+    search,
+    limit = 50,
+    offset = 0
+  } = req.query;
+
+  const allRows = generateFullMonthAttendanceRows(req, {
+    month,
+    year,
+    employee_id,
+    employee_ids,
+    status,
+    search
+  });
+
+  const total = allRows.length;
+  const pLimit = parseInt(limit, 10) || 50;
+  const pOffset = parseInt(offset, 10) || 0;
+  const records = allRows.slice(pOffset, pOffset + pLimit);
+
+  const summary = {
+    total,
+    present: 0,
+    absent: 0,
+    half_day: 0,
+    leave: 0,
+    wo: 0,
+    holiday: 0
+  };
+
+  allRows.forEach(r => {
+    const s = (r.Status || '').toLowerCase();
+    if (s === 'present') summary.present++;
+    else if (s === 'absent') summary.absent++;
+    else if (s === 'half day') summary.half_day++;
+    else if (s === 'leave') summary.leave++;
+    else if (s === 'weekly off' || s === 'wo') summary.wo++;
+    else if (s === 'holiday' || s === 'ho') summary.holiday++;
+  });
+
+  res.json({
+    records,
+    total,
+    summary
+  });
+});
+
 // Manual Attendance Correction (Super Admin, Support L2+, Company Admin, Manager)
 router.put('/correct/:id', verifyAuth, (req, res) => {
   const allowedRoles = ['super_admin', 'company_admin', 'manager', 'support'];
@@ -1127,11 +1446,13 @@ router.post('/export', verifyAuth, (req, res) => {
     format = 'xlsx',
     selected_columns,
     from_date, to_date, date, day, month, year,
-    employee_id, employee_ids, department, manager_id, status, search
+    employee_id, employee_ids, department, manager_id, status, search,
+    is_full_month, scope, target_scope
   } = req.body;
 
   const defaultCols = [
-    'Employee', 'Date', 'Punch In', 'Punch Out', 'Hours', 'Status', 'Location / Geofence', 'Remarks'
+    'Employee ID', 'Employee Name', 'Punch In Time', 'Punch In Lat/Long', 'Punch In Address',
+    'Punch Out Time', 'Punch Out Lat/Long', 'Punch Out Address', 'Status', 'Working Hours (HH:MM)'
   ];
   const activeCols = (selected_columns && selected_columns.length > 0) ? selected_columns : defaultCols;
 
@@ -1140,6 +1461,54 @@ router.post('/export', verifyAuth, (req, res) => {
   const company = companyId ? db.prepare('SELECT name FROM companies WHERE id = ?').get(companyId) : null;
   const companyName = company ? company.name : 'NPB HRMS Attendance Management';
   const { exportCustomExcel, exportHtmlReport } = require('../services/exportService');
+
+  // FULL MONTH ALL EMPLOYEES LOGS EXPORT (DO NOT SKIP ANY DATE)
+  const isFullMonth = is_full_month === true || scope === 'full_month' || target_scope === 'full_month' || (!effectiveDate && month && year && !from_date && !to_date);
+  if (isFullMonth) {
+    const allRows = generateFullMonthAttendanceRows(req, {
+      month,
+      year,
+      employee_id,
+      employee_ids,
+      status,
+      search
+    });
+
+    const mInt = parseInt(month, 10) || (new Date().getMonth() + 1);
+    const yInt = parseInt(year, 10) || new Date().getFullYear();
+    const dateRangeLabel = `Month: ${yInt}-${String(mInt).padStart(2, '0')} (Full Month Logs - All Team Staff)`;
+
+    if (format === 'xlsx' || format === 'excel') {
+      const excelBuffer = exportCustomExcel({
+        data: allRows,
+        selectedColumns: activeCols,
+        sheetName: `Full Month ${yInt}-${mInt}`,
+        companyName,
+        reportTitle: `All Employee Full Month Attendance Log File (${yInt}-${String(mInt).padStart(2, '0')})`,
+        dateRange: dateRangeLabel,
+        totalRecords: allRows.length
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="Full_Month_Attendance_${yInt}_${mInt}_${Date.now()}.xlsx"`);
+      return res.send(excelBuffer);
+    } else if (format === 'pdf' || format === 'html') {
+      const htmlReport = exportHtmlReport({
+        data: allRows,
+        selectedColumns: activeCols,
+        title: `All Employee Full Month Attendance Log File (${yInt}-${String(mInt).padStart(2, '0')})`,
+        companyName,
+        dateRange: dateRangeLabel,
+        totalRecords: allRows.length,
+        generatedBy: req.user.username
+      });
+
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(htmlReport);
+    }
+
+    return res.status(400).json({ error: 'Unsupported format.' });
+  }
 
   if (effectiveDate) {
     // SINGLE DATE MODE: Export ALL active employees (even if no punch row yet) with real-time resolved status
@@ -1227,6 +1596,7 @@ router.post('/export', verifyAuth, (req, res) => {
         COALESCE(a.date, ?) as "Date",
         COALESCE(a.punch_in_time, '-') as "Punch In",
         COALESCE(a.punch_out_time, '-') as "Punch Out",
+        a.total_hours as "raw_total_hours",
         CASE WHEN a.total_hours IS NOT NULL THEN (a.total_hours || ' hrs') ELSE '0 hrs' END as "Hours",
         CASE WHEN a.total_hours IS NOT NULL THEN (a.total_hours || ' hrs') ELSE '0 hrs' END as "Working Hours",
         (${statusExpr}) as "Status",
@@ -1268,17 +1638,47 @@ router.post('/export', verifyAuth, (req, res) => {
       ...singleParams
     );
 
+    const enhancedRows = rows.map(r => {
+      const punchIn12 = format12Hour(r["Punch In"]);
+      const punchOut12 = format12Hour(r["Punch Out"]);
+      const inLatLong = r["GPS Lat/Long (Punch In)"] || '--';
+      const outLatLong = r["GPS Lat/Long (Punch Out)"] || '--';
+      const inAddr = cleanAreaName(r["Address (Punch In)"]);
+      const outAddr = cleanAreaName(r["Address (Punch Out)"]);
+      const wh = formatWorkingHoursHHMM(r["raw_total_hours"], r["Punch In"], r["Punch Out"]);
+
+      return {
+        ...r,
+        "Employee ID": r["Employee ID"] || '-',
+        "Employee Name": r["Employee Name"] || '-',
+        "Punch In Time": punchIn12,
+        "Punch In Lat/Long": inLatLong,
+        "Punch In Address": inAddr,
+        "Punch Out Time": punchOut12,
+        "Punch Out Lat/Long": outLatLong,
+        "Punch Out Address": outAddr,
+        "Status": r["Status"] || '-',
+        "Working Hours (HH:MM)": wh,
+        "Punch In": punchIn12,
+        "Punch Out": punchOut12,
+        "Hours": wh,
+        "Working Hours": wh,
+        "Address (Punch In)": inAddr,
+        "Address (Punch Out)": outAddr
+      };
+    });
+
     const dateRangeLabel = `Date: ${effectiveDate} (Daily Master)`;
 
     if (format === 'xlsx' || format === 'excel') {
       const excelBuffer = exportCustomExcel({
-        data: rows,
+        data: enhancedRows,
         selectedColumns: activeCols,
         sheetName: 'Daily Attendance',
         companyName,
         reportTitle: `Daily Attendance Report - All Team Staff (${effectiveDate})`,
         dateRange: dateRangeLabel,
-        totalRecords: rows.length
+        totalRecords: enhancedRows.length
       });
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1286,12 +1686,12 @@ router.post('/export', verifyAuth, (req, res) => {
       return res.send(excelBuffer);
     } else if (format === 'pdf' || format === 'html') {
       const htmlReport = exportHtmlReport({
-        data: rows,
+        data: enhancedRows,
         selectedColumns: activeCols,
         title: `Daily Attendance Report - All Team Staff (${effectiveDate})`,
         companyName,
         dateRange: dateRangeLabel,
-        totalRecords: rows.length,
+        totalRecords: enhancedRows.length,
         generatedBy: req.user.username
       });
 
