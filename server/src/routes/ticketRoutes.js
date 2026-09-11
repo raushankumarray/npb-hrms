@@ -25,6 +25,20 @@ function autoArchiveExpiredRequests(companyId) {
   }
 }
 
+// Auto-migration: ensure assigned_role and assigned_to columns exist
+try {
+  const tableInfo = db.prepare('PRAGMA table_info(service_requests)').all();
+  const colNames = tableInfo.map(c => c.name);
+  if (!colNames.includes('assigned_role')) {
+    db.exec("ALTER TABLE service_requests ADD COLUMN assigned_role TEXT DEFAULT 'manager'");
+  }
+  if (!colNames.includes('assigned_to')) {
+    db.exec("ALTER TABLE service_requests ADD COLUMN assigned_to INTEGER");
+  }
+} catch (e) {
+  console.warn('Migration note for service_requests:', e.message);
+}
+
 // Create Service Request / Ticket (Employee)
 router.post('/service-request', verifyAuth, (req, res) => {
   const {
@@ -43,31 +57,58 @@ router.post('/service-request', verifyAuth, (req, res) => {
     return res.status(400).json({ error: 'Employee and company identification required.' });
   }
 
+  // Determine reporting assignment: route to Reporting Manager if mapped, else Company Admin
+  let assignedRole = 'admin';
+  let assignedTo = null;
+  const emp = db.prepare('SELECT full_name, manager_id FROM employees WHERE id = ?').get(employeeId);
+  if (emp && emp.manager_id) {
+    assignedRole = 'manager';
+    const mgr = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
+    if (mgr) assignedTo = mgr.user_id;
+  }
+
   const result = db.prepare(`
     INSERT INTO service_requests (
       company_id, employee_id, request_type, title, description,
-      punch_date, suggested_punch_in, suggested_punch_out, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+      punch_date, suggested_punch_in, suggested_punch_out, status,
+      assigned_role, assigned_to
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
   `).run(
     companyId, employeeId, request_type, title.trim(), description || null,
-    punch_date || null, suggested_punch_in || null, suggested_punch_out || null
+    punch_date || null, suggested_punch_in || null, suggested_punch_out || null,
+    assignedRole, assignedTo
   );
 
   const reqId = result.lastInsertRowid;
 
+  // Insert initial creation message into ticket conversation thread
+  try {
+    db.prepare(`
+      INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(reqId, req.user.id, emp?.full_name || req.user.username, req.user.role_name, `Ticket created: "${title.trim()}". Routing to ${assignedRole === 'manager' ? 'Reporting Manager' : 'Company Admin'}.`);
+  } catch (e) {}
+
   // Send notification to HR / Manager
-  const emp = db.prepare('SELECT full_name, manager_id FROM employees WHERE id = ?').get(employeeId);
-  if (emp && emp.manager_id) {
-    const mgr = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
-    if (mgr) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'New Service Ticket', ?, 'ticket', '/service-requests')
-      `).run(mgr.user_id, companyId, `${emp.full_name} submitted ticket: "${title.trim()}" (${request_type})`);
-    }
+  if (emp && emp.manager_id && assignedTo) {
+    db.prepare(`
+      INSERT INTO notifications (user_id, company_id, title, message, type, link)
+      VALUES (?, ?, 'New Service Ticket', ?, 'ticket', '/service-requests')
+    `).run(assignedTo, companyId, `${emp.full_name} submitted ticket: "${title.trim()}" (${request_type})`);
+  } else {
+    // Notify company admin
+    try {
+      const adminUser = db.prepare('SELECT id FROM users WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = "company_admin") LIMIT 1').get(companyId);
+      if (adminUser) {
+        db.prepare(`
+          INSERT INTO notifications (user_id, company_id, title, message, type, link)
+          VALUES (?, ?, 'New Service Ticket', ?, 'ticket', '/service-requests')
+        `).run(adminUser.id, companyId, `${emp?.full_name || 'Employee'} submitted ticket: "${title.trim()}" (${request_type})`);
+      }
+    } catch (e) {}
   }
 
-  res.status(201).json({ success: true, requestId: reqId, message: 'Service ticket submitted successfully.' });
+  res.status(201).json({ success: true, requestId: reqId, assigned_role: assignedRole, message: 'Service ticket submitted successfully.' });
 });
 
 // List Service Requests with automatic 1-day archival filter
@@ -111,9 +152,24 @@ router.get('/service-requests', verifyAuth, (req, res) => {
   if (req.query.scope === 'own') {
     query += ' AND sr.employee_id = ?';
     params.push(req.user.employee_id);
-  } else if (req.user.role_name === 'manager' && req.query.scope === 'team') {
-    query += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
-    params.push(req.user.employee_id, req.user.employee_id);
+  } else if (req.user.role_name === 'manager' || req.query.scope === 'team' || req.query.scope === 'reporting') {
+    if (req.user.role_name === 'manager') {
+      query += ` AND (
+        e.manager_id = ? 
+        OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?)
+        OR (sr.assigned_role = 'manager' AND (sr.assigned_to = ? OR sr.assigned_to IS NULL))
+      )`;
+      params.push(req.user.employee_id, req.user.employee_id, req.user.id);
+    }
+  } else if (req.user.role_name === 'support') {
+    if (req.query.scope === 'support' || !req.query.scope) {
+      query += " AND (sr.assigned_role = 'support' OR sr.assigned_role IS NULL)";
+    }
+  }
+
+  if (req.query.assigned_role) {
+    query += ' AND sr.assigned_role = ?';
+    params.push(req.query.assigned_role);
   }
 
   if (type) {
@@ -131,6 +187,98 @@ router.get('/service-requests', verifyAuth, (req, res) => {
 
   const requests = db.prepare(query).all(...params);
   res.json({ requests });
+});
+
+// Assign Service Request (Manager to Admin/Support, or Admin to Support/Manager)
+router.put('/service-requests/:id/assign', verifyAuth, (req, res) => {
+  const reqId = parseInt(req.params.id, 10);
+  const { target_role, target_user_id, notes } = req.body; // 'admin' | 'support' | 'manager'
+
+  if (!['admin', 'support', 'manager'].includes(target_role)) {
+    return res.status(400).json({ error: 'Target role must be admin, support, or manager.' });
+  }
+
+  const ticket = db.prepare(`
+    SELECT sr.*, e.full_name as employee_name, e.user_id as emp_user_id
+    FROM service_requests sr
+    JOIN employees e ON sr.employee_id = e.id
+    WHERE sr.id = ?
+  `).get(reqId);
+
+  if (!ticket) {
+    return res.status(404).json({ error: 'Ticket not found.' });
+  }
+
+  // Authorization check
+  if (req.user.role_name !== 'super_admin' && req.user.role_name !== 'support') {
+    if (ticket.company_id !== req.user.company_id) {
+      return res.status(403).json({ error: 'Access denied.' });
+    }
+  }
+
+  const senderName = getSenderDisplayName(req.user);
+  const targetLabel = target_role === 'admin' ? 'Company Admin' : target_role === 'support' ? 'Support Panel' : 'Reporting Manager';
+
+  const transaction = db.transaction(() => {
+    // 1. Update assignment in service_requests
+    db.prepare(`
+      UPDATE service_requests SET
+        assigned_role = ?,
+        assigned_to = ?,
+        status = CASE WHEN status = 'pending' THEN 'in_progress' ELSE status END,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(target_role, target_user_id || null, reqId);
+
+    // 2. Insert system transfer chat message
+    const sysMsg = `Ticket assigned to ${targetLabel} by ${senderName}${notes ? ' (Note: ' + notes + ')' : ''}.`;
+    db.prepare(`
+      INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(reqId, req.user.id, 'System', 'system', sysMsg);
+
+    // 3. Notifications
+    try {
+      if (target_role === 'admin') {
+        const adminUser = db.prepare('SELECT id FROM users WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = "company_admin") LIMIT 1').get(ticket.company_id);
+        if (adminUser) {
+          db.prepare(`
+            INSERT INTO notifications (user_id, company_id, title, message, type, link)
+            VALUES (?, ?, 'Ticket Assigned to Admin', ?, 'ticket', '/service-requests')
+          `).run(adminUser.id, ticket.company_id, `Ticket #${reqId} was escalated/assigned to Admin by ${senderName}.`);
+        }
+      } else if (target_role === 'support') {
+        const supUsers = db.prepare('SELECT user_id FROM support_users').all();
+        supUsers.forEach(su => {
+          db.prepare(`
+            INSERT INTO notifications (user_id, company_id, title, message, type, link)
+            VALUES (?, ?, 'New Support Ticket Assigned', ?, 'ticket', '/support-tickets')
+          `).run(su.user_id, ticket.company_id, `Ticket #${reqId} from company was assigned to Support.`);
+        });
+      }
+    } catch (e) {}
+
+    logAudit({
+      companyId: ticket.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Service Request Assignment',
+      action: 'SERVICE_REQUEST_ASSIGNED',
+      targetEntity: 'service_requests',
+      targetId: reqId,
+      newValues: { assigned_role: target_role, assigned_to: target_user_id },
+      reason: `Assigned to ${target_role} by ${senderName}`
+    });
+  });
+
+  transaction();
+
+  res.json({
+    success: true,
+    message: `Ticket #${reqId} successfully assigned to ${targetLabel}.`,
+    assigned_role: target_role
+  });
 });
 
 // Resolve / Close Service Request (Manager, HR, Admin, Support)

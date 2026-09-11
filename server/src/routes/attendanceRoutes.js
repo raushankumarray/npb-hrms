@@ -24,6 +24,27 @@ function calculateHours(punchIn, punchOut) {
   return Math.round((totalSeconds / 3600) * 100) / 100;
 }
 
+// Helper to derive attendance status from working hours and company settings
+function deriveStatusFromHours(totalHours, companyId, explicitStatus = null) {
+  if (['Leave', 'Holiday', 'Weekly Off', 'WO'].includes(explicitStatus)) {
+    return explicitStatus;
+  }
+  let halfDayMin = 4.0;
+  let fullDayMin = 8.0;
+  if (companyId) {
+    try {
+      const s = db.prepare('SELECT half_day_min_hours, full_day_min_hours FROM company_settings WHERE company_id = ?').get(companyId);
+      if (s) {
+        if (s.half_day_min_hours) halfDayMin = Number(s.half_day_min_hours);
+        if (s.full_day_min_hours) fullDayMin = Number(s.full_day_min_hours);
+      }
+    } catch (e) {}
+  }
+  if (totalHours >= fullDayMin) return 'Present';
+  if (totalHours >= halfDayMin) return 'Half Day';
+  return 'Absent';
+}
+
 // Helper to get company-local current date (YYYY-MM-DD), default to Asia/Kolkata
 function getCompanyToday(companyId) {
   let tz = 'Asia/Kolkata';
@@ -852,8 +873,12 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
 
   const newPunchIn = punch_in_time !== undefined ? punch_in_time : current.punch_in_time;
   const newPunchOut = punch_out_time !== undefined ? punch_out_time : current.punch_out_time;
-  const newHours = total_hours !== undefined ? parseFloat(total_hours) : calculateHours(newPunchIn, newPunchOut);
-  const newStatus = status || current.status;
+  const newHours = (punch_in_time !== undefined || punch_out_time !== undefined)
+    ? calculateHours(newPunchIn, newPunchOut)
+    : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : (current.total_hours || 0));
+  const newStatus = (!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
+    ? deriveStatusFromHours(newHours, current.company_id, status === 'auto' ? null : status)
+    : (status || current.status);
 
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
@@ -957,7 +982,12 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
     }
   }
 
-  const hours = total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : calculateHours(punch_in_time, punch_out_time);
+  const hours = (punch_in_time && punch_out_time)
+    ? calculateHours(punch_in_time, punch_out_time)
+    : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : 0);
+  const effectiveStatus = (!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
+    ? deriveStatusFromHours(hours, companyId, status === 'auto' ? null : status)
+    : status;
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
   const transaction = db.transaction(() => {
@@ -975,7 +1005,7 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
         remarks = COALESCE(excluded.remarks, attendance_records.remarks),
         is_edited = 1,
         updated_at = CURRENT_TIMESTAMP
-    `).run(companyId, emp.id, date, punch_in_time || null, punch_out_time || null, hours, status, remarks || 'Manual manager entry', emp.shift_id || null);
+    `).run(companyId, emp.id, date, punch_in_time || null, punch_out_time || null, hours, effectiveStatus, remarks || 'Manual manager entry', emp.shift_id || null);
 
     const record = db.prepare(`SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?`).get(companyId, emp.id, date);
 
@@ -1934,7 +1964,9 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
     if (status === 'approved') {
       // Calculate working hours
       const hours = calculateHours(request.requested_punch_in, request.requested_punch_out);
-      const targetStatus = request.requested_status || 'Present';
+      const targetStatus = (!request.requested_status || request.requested_status === 'Present' || request.requested_status === 'auto')
+        ? deriveStatusFromHours(hours, request.company_id, request.requested_status)
+        : request.requested_status;
 
       // 2. Upsert attendance record to Present (or requested status)
       db.prepare(`

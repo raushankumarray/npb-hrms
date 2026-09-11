@@ -295,6 +295,22 @@ export default function ManagerPanel({ user, company, activeTab }) {
       setError(err.message);
     }
   };
+
+  const handleAssignTicket = async (ticketId, targetRole) => {
+    try {
+      const res = await apiRequest(`/tickets/service-requests/${ticketId}/assign`, {
+        method: 'PUT',
+        body: { target_role: targetRole }
+      });
+      setSuccess(res.message || `Ticket #${ticketId} assigned to ${targetRole} successfully.`);
+      // Auto-open chat thread for the assigned ticket
+      setChatTicketId(ticketId);
+      setShowChatModal(true);
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to assign ticket.');
+    }
+  };
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -963,6 +979,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     <th className="p-3">Category</th>
                     <th className="p-3">Title & Request</th>
                     <th className="p-3">Date</th>
+                    <th className="p-3">Assigned To</th>
                     <th className="p-3">Status</th>
                     <th className="p-3 text-right">Action</th>
                   </tr>
@@ -978,6 +995,15 @@ export default function ManagerPanel({ user, company, activeTab }) {
                         {t.description && <p className="text-[11px] text-slate-500 truncate max-w-xs">{t.description}</p>}
                       </td>
                       <td className="p-3 text-slate-600">{new Date(t.created_at).toLocaleDateString()}</td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                          t.assigned_role === 'support' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
+                          t.assigned_role === 'admin' ? 'bg-purple-100 text-purple-800 border border-purple-200' :
+                          'bg-sky-100 text-sky-800 border border-sky-200'
+                        }`}>
+                          {t.assigned_role === 'support' ? 'Support Panel' : t.assigned_role === 'admin' ? 'Admin' : 'Manager'}
+                        </span>
+                      </td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                           t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' :
@@ -1001,6 +1027,26 @@ export default function ManagerPanel({ user, company, activeTab }) {
                             <MessageSquare className="w-3.5 h-3.5" />
                             Chat
                           </button>
+
+                          {/* Assign Dropdown Button: Admin or Support */}
+                          {t.status !== 'closed' && (
+                            <select
+                              defaultValue=""
+                              onChange={async (e) => {
+                                const target = e.target.value;
+                                if (!target) return;
+                                await handleAssignTicket(t.id, target);
+                                e.target.value = '';
+                              }}
+                              className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-semibold cursor-pointer focus:outline-none transition-colors"
+                              title="Assign ticket to Admin or Support"
+                            >
+                              <option value="" disabled>Assign ▾</option>
+                              <option value="admin">Assign to Admin</option>
+                              <option value="support">Assign to Support</option>
+                            </select>
+                          )}
+
                           <button
                             onClick={() => {
                               setSelectedTicket(t);

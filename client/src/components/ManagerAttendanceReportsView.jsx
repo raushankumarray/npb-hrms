@@ -57,6 +57,26 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
   const [summary, setSummary] = useState({ total: 0, present: 0, absent: 0, half_day: 0, leave: 0 });
 
   // Modals state
+  // Auto-calculate working hours and status helper
+  const calculateWorkingHoursAndStatus = (inTime, outTime, currentStatus) => {
+    if (!inTime || !outTime) return { hours: '', status: currentStatus };
+    const parts1 = inTime.split(':').map(Number);
+    const parts2 = outTime.split(':').map(Number);
+    if (parts1.some(isNaN) || parts2.some(isNaN)) return { hours: '', status: currentStatus };
+    const s1 = (parts1[0] || 0) * 3600 + (parts1[1] || 0) * 60 + (parts1[2] || 0);
+    const s2 = (parts2[0] || 0) * 3600 + (parts2[1] || 0) * 60 + (parts2[2] || 0);
+    const diffSec = s2 - s1;
+    if (diffSec <= 0) return { hours: '0.0', status: 'Absent' };
+    const hrs = Math.round((diffSec / 3600) * 100) / 100;
+    let status = currentStatus;
+    if (!status || ['Present', 'Half Day', 'Absent'].includes(status)) {
+      if (hrs >= 8.0) status = 'Present';
+      else if (hrs >= 4.0) status = 'Half Day';
+      else status = 'Absent';
+    }
+    return { hours: String(hrs), status };
+  };
+
   const [showManualModal, setShowManualModal] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null); // if editing an existing row
   const [manualForm, setManualForm] = useState({
@@ -70,6 +90,20 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
     reason: ''
   });
   const [manualSubmitting, setManualSubmitting] = useState(false);
+
+  const handleManualTimeChange = (field, val) => {
+    const inT = field === 'punch_in_time' ? val : manualForm.punch_in_time;
+    const outT = field === 'punch_out_time' ? val : manualForm.punch_out_time;
+    const updated = { ...manualForm, [field]: val };
+    if (inT && outT) {
+      const { hours, status } = calculateWorkingHoursAndStatus(inT, outT, manualForm.status);
+      if (hours) {
+        updated.total_hours = hours;
+        updated.status = status;
+      }
+    }
+    setManualForm(updated);
+  };
 
   // Excel Upload Modal
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -1032,7 +1066,16 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                       </span>
                     </td>
                     <td className="p-3 font-semibold text-slate-700 font-mono">
-                      {r.total_hours !== null && r.total_hours !== undefined ? `${r.total_hours} hrs` : '--'}
+                      {r.total_hours !== null && r.total_hours !== undefined ? (
+                        `${r.total_hours} hrs`
+                      ) : r.punch_in_time && !r.punch_out_time ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-600 font-bold text-[11px]">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          Active
+                        </span>
+                      ) : (
+                        '--'
+                      )}
                     </td>
                     <td className="p-3">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
@@ -1491,7 +1534,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                     type="time"
                     step="1"
                     value={manualForm.punch_in_time}
-                    onChange={(e) => setManualForm({ ...manualForm, punch_in_time: e.target.value })}
+                    onChange={(e) => handleManualTimeChange('punch_in_time', e.target.value)}
                     className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl font-mono"
                   />
                 </div>
@@ -1501,7 +1544,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                     type="time"
                     step="1"
                     value={manualForm.punch_out_time}
-                    onChange={(e) => setManualForm({ ...manualForm, punch_out_time: e.target.value })}
+                    onChange={(e) => handleManualTimeChange('punch_out_time', e.target.value)}
                     className="w-full py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl font-mono"
                   />
                 </div>
@@ -1509,7 +1552,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">Total Hours:</label>
                   <input
                     type="number"
-                    step="0.1"
+                    step="0.01"
                     value={manualForm.total_hours}
                     onChange={(e) => setManualForm({ ...manualForm, total_hours: e.target.value })}
                     placeholder="9.0"
@@ -1517,6 +1560,19 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                   />
                 </div>
               </div>
+
+              {/* Auto Calculated Live Hours & Status Banner */}
+              {manualForm.punch_in_time && manualForm.punch_out_time && (
+                <div className="p-2.5 bg-indigo-50/80 border border-indigo-200/80 rounded-xl text-xs text-indigo-900 flex items-center justify-between">
+                  <span className="font-semibold flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    Auto-Calculated Working Hours:
+                  </span>
+                  <span className="font-mono font-bold bg-indigo-200/70 px-2 py-0.5 rounded text-indigo-950">
+                    {manualForm.total_hours || '0'} hrs • {manualForm.status}
+                  </span>
+                </div>
+              )}
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">Remarks (Optional):</label>

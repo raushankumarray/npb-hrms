@@ -56,6 +56,26 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
   const [selectedColumns, setSelectedColumns] = useState(ALL_COLUMNS.map(c => c.id));
   const [showColumnPicker, setShowColumnPicker] = useState(false);
 
+  // Calculate working hours and status helper
+  const calculateWorkingHoursAndStatus = (inTime, outTime, currentStatus) => {
+    if (!inTime || !outTime) return { hours: '', status: currentStatus };
+    const parts1 = inTime.split(':').map(Number);
+    const parts2 = outTime.split(':').map(Number);
+    if (parts1.some(isNaN) || parts2.some(isNaN)) return { hours: '', status: currentStatus };
+    const s1 = (parts1[0] || 0) * 3600 + (parts1[1] || 0) * 60 + (parts1[2] || 0);
+    const s2 = (parts2[0] || 0) * 3600 + (parts2[1] || 0) * 60 + (parts2[2] || 0);
+    const diffSec = s2 - s1;
+    if (diffSec <= 0) return { hours: '0.0', status: 'Absent' };
+    const hrs = Math.round((diffSec / 3600) * 100) / 100;
+    let status = currentStatus;
+    if (!status || ['Present', 'Half Day', 'Absent'].includes(status)) {
+      if (hrs >= 8.0) status = 'Present';
+      else if (hrs >= 4.0) status = 'Half Day';
+      else status = 'Absent';
+    }
+    return { hours: String(hrs), status };
+  };
+
   // Manual Edit / Correction modal state
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
@@ -67,6 +87,20 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
     reason: ''
   });
   const [editSubmitting, setEditSubmitting] = useState(false);
+
+  const handleEditTimeChange = (field, val) => {
+    const inT = field === 'punch_in_time' ? val : editForm.punch_in_time;
+    const outT = field === 'punch_out_time' ? val : editForm.punch_out_time;
+    const updated = { ...editForm, [field]: val };
+    if (inT && outT) {
+      const { hours, status } = calculateWorkingHoursAndStatus(inT, outT, editForm.status);
+      if (hours) {
+        updated.total_hours = hours;
+        updated.status = status;
+      }
+    }
+    setEditForm(updated);
+  };
 
   // Excel Upload / Import Attendance modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -844,7 +878,16 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                       {/* Working Hours */}
                       {selectedColumns.includes('working_hours') && (
                         <td className="p-3 font-semibold text-slate-800 whitespace-nowrap">
-                          {rec.total_hours ? `${rec.total_hours} hrs` : '0.0 hrs'}
+                          {rec.total_hours ? (
+                            `${rec.total_hours} hrs`
+                          ) : rec.punch_in_time && !rec.punch_out_time ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-600 font-bold font-mono text-[11px]">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              Active (In Progress)
+                            </span>
+                          ) : (
+                            '0.0 hrs'
+                          )}
                         </td>
                       )}
 
@@ -977,7 +1020,7 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                   <input
                     type="text"
                     value={editForm.punch_in_time}
-                    onChange={(e) => setEditForm({ ...editForm, punch_in_time: e.target.value })}
+                    onChange={(e) => handleEditTimeChange('punch_in_time', e.target.value)}
                     placeholder="09:00:00"
                     className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
@@ -987,12 +1030,25 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                   <input
                     type="text"
                     value={editForm.punch_out_time}
-                    onChange={(e) => setEditForm({ ...editForm, punch_out_time: e.target.value })}
+                    onChange={(e) => handleEditTimeChange('punch_out_time', e.target.value)}
                     placeholder="18:00:00"
                     className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
                 </div>
               </div>
+
+              {/* Auto Calculated Live Hours & Status Banner */}
+              {editForm.punch_in_time && editForm.punch_out_time && (
+                <div className="p-2.5 bg-indigo-50/80 border border-indigo-200/80 rounded-xl text-xs text-indigo-900 flex items-center justify-between">
+                  <span className="font-semibold flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    Auto-Calculated Working Hours:
+                  </span>
+                  <span className="font-mono font-bold bg-indigo-200/70 px-2 py-0.5 rounded text-indigo-950">
+                    {editForm.total_hours || '0'} hrs • {editForm.status}
+                  </span>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -1012,7 +1068,7 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Total Hours:</label>
                   <input
                     type="number"
-                    step="0.1"
+                    step="0.01"
                     value={editForm.total_hours}
                     onChange={(e) => setEditForm({ ...editForm, total_hours: e.target.value })}
                     placeholder="8.0"

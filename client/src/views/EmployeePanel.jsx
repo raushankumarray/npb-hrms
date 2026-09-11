@@ -350,14 +350,6 @@ Please deregister this device in the Support Panel so I can register and log in 
   const isAccuracy90To100 = Boolean(isGpsEnabled && gpsAccuracyPercent >= 90 && gpsAccuracyPercent <= 100);
   const isGpsAccuracyValid = Boolean(isGpsEnabled && isAccuracy90To100);
 
-  // Check if assigned office geofence is currently outside boundary
-  const isOutsideGeofence = Boolean(
-    myGeofence &&
-    !allowedAnywhere &&
-    geofenceStatus.checked &&
-    !geofenceStatus.allowed
-  );
-
   const fetchData = async () => {
     setLoading(true);
     setError('');
@@ -718,6 +710,14 @@ Please deregister this device in the Support Panel so I can register and log in 
       };
     }
   })();
+
+  // Check if assigned office geofence is currently outside boundary
+  const isOutsideGeofence = Boolean(
+    myGeofence &&
+    !allowedAnywhere &&
+    geofenceStatus?.checked &&
+    !geofenceStatus?.allowed
+  );
 
   const handlePunchIn = async () => {
     setError('');

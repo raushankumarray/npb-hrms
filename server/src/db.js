@@ -23,4 +23,12 @@ try {
   db.prepare("ALTER TABLE employee_devices ADD COLUMN mac_address TEXT").run();
 } catch (e) {}
 
+try {
+  db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_role TEXT DEFAULT 'manager'").run();
+} catch (e) {}
+
+try {
+  db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_to INTEGER").run();
+} catch (e) {}
+
 module.exports = db;
