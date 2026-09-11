@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
-  Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2
+  Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
+  Radio
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -81,7 +82,8 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'device-support', label: 'Device Binding & Unlock', icon: Laptop },
           { id: 'calendar', label: 'Operations Calendar', icon: Calendar },
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
-          { id: 'audit-logs', label: 'Support Audit Logs', icon: FileSpreadsheet }
+          { id: 'audit-logs', label: 'Support Audit Logs', icon: FileSpreadsheet },
+          { id: 'remote-access', label: 'Remote Access', icon: Radio, badge: 'Level 4' }
         ];
 
       case 'company_admin':
@@ -243,14 +245,23 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
                 <button
                   key={item.id}
                   onClick={() => handleNavClick(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
                     isActive
                       ? 'bg-sky-50 text-sky-700 font-bold border border-sky-200/60 shadow-sm'
                       : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                   }`}
                 >
-                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
-                  <span className="truncate">{item.label}</span>
+                  <div className="flex items-center gap-3 truncate">
+                    <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                  {item.badge && (
+                    <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase shrink-0 ${
+                      isActive ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-700'
+                    }`}>
+                      {item.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -298,14 +309,23 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
                     <button
                       key={item.id}
                       onClick={() => handleNavClick(item.id)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold ${
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold ${
                         isActive
                           ? 'bg-sky-50 text-sky-700 font-bold'
                           : 'text-slate-600 hover:bg-slate-50'
                       }`}
                     >
-                      <Icon className={`w-4 h-4 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
-                      <span className="truncate">{item.label}</span>
+                      <div className="flex items-center gap-3 truncate">
+                        <Icon className={`w-4 h-4 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
+                        <span className="truncate">{item.label}</span>
+                      </div>
+                      {item.badge && (
+                        <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase shrink-0 ${
+                          isActive ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-700'
+                        }`}>
+                          {item.badge}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
