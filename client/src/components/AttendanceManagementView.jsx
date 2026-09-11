@@ -1052,17 +1052,32 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Status:</label>
-                  <select
-                    value={editForm.status}
-                    onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
-                    className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  >
-                    <option value="Present">Present</option>
-                    <option value="Absent">Absent</option>
-                    <option value="Half Day">Half Day</option>
-                    <option value="Leave">Leave</option>
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">Status:</label>
+                    {editForm.punch_in_time && editForm.punch_out_time && (
+                      <span className="text-[10px] text-indigo-700 font-bold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                        Auto-Calculated
+                      </span>
+                    )}
+                  </div>
+                  {editForm.punch_in_time && editForm.punch_out_time ? (
+                    <input
+                      type="text"
+                      readOnly
+                      value={editForm.status}
+                      className="w-full py-1.5 px-3 bg-indigo-50/60 border border-indigo-200 rounded-xl text-indigo-900 font-bold cursor-not-allowed"
+                      title="Status is auto-calculated based on punch hours (>=8h Present, >=4h Half Day, <4h Absent)"
+                    />
+                  ) : (
+                    <select
+                      value={editForm.status}
+                      onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                      className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="Absent">Absent</option>
+                      <option value="Leave">Leave</option>
+                    </select>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Total Hours:</label>

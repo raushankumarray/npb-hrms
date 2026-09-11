@@ -68,12 +68,10 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
     const diffSec = s2 - s1;
     if (diffSec <= 0) return { hours: '0.0', status: 'Absent' };
     const hrs = Math.round((diffSec / 3600) * 100) / 100;
-    let status = currentStatus;
-    if (!status || ['Present', 'Half Day', 'Absent'].includes(status)) {
-      if (hrs >= 8.0) status = 'Present';
-      else if (hrs >= 4.0) status = 'Half Day';
-      else status = 'Absent';
-    }
+    let status = 'Absent';
+    if (hrs >= 8.0) status = 'Present';
+    else if (hrs >= 4.0) status = 'Half Day';
+    else status = 'Absent';
     return { hours: String(hrs), status };
   };
 
@@ -1260,9 +1258,9 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                           </td>
                           <td className="p-2.5 font-mono text-slate-700">{c.date}</td>
                           <td className="p-2.5 font-mono">
-                            <span className="text-emerald-700 font-bold">{c.requested_punch_in || '--:--'}</span>
+                            <span className="text-emerald-700 font-bold">{c.requested_punch_in || '--:--:--'}</span>
                             {' → '}
-                            <span className="text-indigo-700 font-bold">{c.requested_punch_out || '--:--'}</span>
+                            <span className="text-indigo-700 font-bold">{c.requested_punch_out || '--:--:--'}</span>
                           </td>
                           <td className="p-2.5 text-slate-600">{c.reason}</td>
                           <td className="p-2.5 text-right">
@@ -1391,7 +1389,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                           <td className="p-2.5 font-bold text-slate-900">{c.employee_name} ({c.employee_code})</td>
                           <td className="p-2.5 font-mono">{c.date}</td>
                           <td className="p-2.5 font-mono text-[11px]">
-                            {c.requested_punch_in || '--:--'} to {c.requested_punch_out || '--:--'}
+                            {c.requested_punch_in || '--:--:--'} to {c.requested_punch_out || '--:--:--'}
                           </td>
                           <td className="p-2.5">
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
@@ -1511,19 +1509,34 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Status: *</label>
-                  <select
-                    value={manualForm.status}
-                    onChange={(e) => setManualForm({ ...manualForm, status: e.target.value })}
-                    className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl font-medium"
-                  >
-                    <option value="Present">Present</option>
-                    <option value="Absent">Absent</option>
-                    <option value="Half Day">Half Day</option>
-                    <option value="Leave">Leave</option>
-                    <option value="Weekly Off">Weekly Off (WO)</option>
-                    <option value="Holiday">Holiday (HO)</option>
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-bold text-slate-700">Status: *</label>
+                    {manualForm.punch_in_time && manualForm.punch_out_time && (
+                      <span className="text-[10px] text-indigo-700 font-bold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                        Auto-Calculated
+                      </span>
+                    )}
+                  </div>
+                  {manualForm.punch_in_time && manualForm.punch_out_time ? (
+                    <input
+                      type="text"
+                      readOnly
+                      value={manualForm.status}
+                      className="w-full py-1.5 px-3 bg-indigo-50/60 border border-indigo-200 rounded-xl font-bold text-indigo-900 cursor-not-allowed"
+                      title="Status is auto-calculated based on punch hours (>=8h Present, >=4h Half Day, <4h Absent)"
+                    />
+                  ) : (
+                    <select
+                      value={manualForm.status}
+                      onChange={(e) => setManualForm({ ...manualForm, status: e.target.value })}
+                      className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl font-medium"
+                    >
+                      <option value="Absent">Absent</option>
+                      <option value="Leave">Leave</option>
+                      <option value="Weekly Off">Weekly Off (WO)</option>
+                      <option value="Holiday">Holiday (HO)</option>
+                    </select>
+                  )}
                 </div>
               </div>
 

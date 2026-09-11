@@ -677,7 +677,7 @@ Please deregister this device in Support Panel so I can register and log in on m
         allowed: true,
         conditionTrue: true,
         isAnywhere: true,
-        text: 'Geofencing: Not Assigned (Anywhere Attendance Allowed) [Condition: TRUE ✓]'
+        text: 'Geofencing: Not Assigned'
       };
     }
 
@@ -699,7 +699,7 @@ Please deregister this device in Support Panel so I can register and log in on m
         distance: dist,
         radius: myGeofence.radius,
         name: myGeofence.location_name,
-        text: `Geofencing: Assigned (${myGeofence.location_name}) — Inside Zone (${dist}m / ${myGeofence.radius}m) [Condition: TRUE ✓]`
+        text: `Geofencing: Allowed (${myGeofence.location_name} • ${dist}m / ${myGeofence.radius}m)`
       };
     } else {
       return {
@@ -711,7 +711,7 @@ Please deregister this device in Support Panel so I can register and log in on m
         distance: dist,
         radius: myGeofence.radius,
         name: myGeofence.location_name,
-        text: `Geofencing: Assigned (${myGeofence.location_name}) — Outside Zone (${dist}m / ${myGeofence.radius}m) [Condition: FALSE ✗]`
+        text: `Geofencing: Outside Zone (${myGeofence.location_name} • ${dist}m / ${myGeofence.radius}m)`
       };
     }
   })();
@@ -1084,6 +1084,11 @@ Please deregister this device in Support Panel so I can register and log in on m
       setError('Please provide attendance date and reason for correction.');
       return;
     }
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (correctionForm.date > todayStr) {
+      setError('Future dates cannot be selected for attendance correction.');
+      return;
+    }
     if (correctionType === 'both' && (!correctionForm.requested_punch_in || !correctionForm.requested_punch_out)) {
       setError('Please specify both requested punch in and punch out times.');
       return;
@@ -1308,23 +1313,6 @@ Please deregister this device in Support Panel so I can register and log in on m
                 </p>
               </div>
 
-              <div className="flex sm:flex-col items-end justify-between sm:justify-center gap-2 border-t sm:border-t-0 sm:border-l border-slate-700/60 pt-3 sm:pt-0 sm:pl-6 shrink-0">
-                <div className="text-right">
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Status</span>
-                  <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 justify-end mt-0.5">
-                    {todayOnLeave ? (
-                      <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/40 text-[11px] font-bold">
-                        On Approved Leave
-                      </span>
-                    ) : (
-                      <>
-                        <span className={`w-2 h-2 rounded-full ${todayRecord?.punch_out_time ? 'bg-slate-400' : todayRecord?.punch_in_time ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                        <span>{todayRecord?.punch_out_time ? 'Shift Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -1375,19 +1363,17 @@ Please deregister this device in Support Panel so I can register and log in on m
                       </span>
                     )}
 
-                    {/* Rule 3: Accuracy 100% Right check */}
-                    {isGpsEnabled && (
-                      isAccuracy90To100 ? (
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
-                          <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
-                          GPS Accuracy (100% Right): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [TRUE ✓]</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
-                          <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
-                          GPS Accuracy (100% Right): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [FALSE ✗]</span>
-                        </span>
-                      )
+                    {/* Rule 3: GPS Accuracy (True or False only) */}
+                    {isAccuracy90To100 ? (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
+                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
+                        GPS Accuracy: <span className="text-emerald-400 font-bold">True</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
+                        <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
+                        GPS Accuracy: <span className="text-rose-400 font-bold">False</span>
+                      </span>
                     )}
                   </div>
                 </div>
@@ -2314,12 +2300,8 @@ Please deregister this device in Support Panel so I can register and log in on m
                       value={leaveForm.start_date}
                       onChange={(e) => {
                         const newStart = e.target.value;
-                        let newEnd = leaveForm.end_date;
-                        if (newEnd && new Date(newEnd) < new Date(newStart)) {
-                          newEnd = newStart;
-                        }
-                        const days = calculateWorkingDaysExcludingWO(newStart, newEnd, calendarData.offDays, calendarData.holidays);
-                        setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
+                        const days = calculateWorkingDaysExcludingWO(newStart, leaveForm.end_date, calendarData.offDays, calendarData.holidays);
+                        setLeaveForm(prev => ({ ...prev, start_date: newStart, total_days: days }));
                       }}
                       className="w-full p-2.5 border rounded-lg font-medium"
                     />
@@ -2332,12 +2314,8 @@ Please deregister this device in Support Panel so I can register and log in on m
                       value={leaveForm.end_date}
                       onChange={(e) => {
                         const newEnd = e.target.value;
-                        let newStart = leaveForm.start_date;
-                        if (newStart && new Date(newEnd) < new Date(newStart)) {
-                          newStart = newEnd;
-                        }
-                        const days = calculateWorkingDaysExcludingWO(newStart, newEnd, calendarData.offDays, calendarData.holidays);
-                        setLeaveForm({ ...leaveForm, start_date: newStart, end_date: newEnd, total_days: days });
+                        const days = calculateWorkingDaysExcludingWO(leaveForm.start_date, newEnd, calendarData.offDays, calendarData.holidays);
+                        setLeaveForm(prev => ({ ...prev, end_date: newEnd, total_days: days }));
                       }}
                       className="w-full p-2.5 border rounded-lg font-medium"
                     />
@@ -2511,38 +2489,21 @@ Please deregister this device in Support Panel so I can register and log in on m
                   <input
                     type="date"
                     required
+                    max={new Date().toISOString().split('T')[0]}
                     value={correctionForm.date}
                     onChange={(e) => {
                       const newDate = e.target.value;
+                      const todayStr = new Date().toISOString().split('T')[0];
+                      if (newDate > todayStr) {
+                        setError('Future dates cannot be selected for attendance correction.');
+                        return;
+                      }
+                      setError('');
                       setCorrectionForm(prev => ({ ...prev, date: newDate }));
                       autoFetchPunchTimesForDate(newDate);
                     }}
                     className="w-full p-2.5 border rounded-lg bg-white font-medium"
                   />
-                  {/* Auto-Fetched Existing Attendance Info */}
-                  {existingCorrectionRecord && (existingCorrectionRecord.punch_in_time || existingCorrectionRecord.punch_out_time) ? (
-                    <div className="mt-2 p-2.5 bg-emerald-50/80 rounded-xl border border-emerald-200 text-xs">
-                      <div className="flex items-center gap-1.5 font-bold text-emerald-900 mb-1">
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Recorded Attendance for {correctionForm.date} (Auto-Fetched):</span>
-                      </div>
-                      <div className="text-[11px] text-emerald-800 font-mono flex flex-wrap items-center gap-2">
-                        <span>In: <strong>{existingCorrectionRecord.punch_in_time ? format12Hour(existingCorrectionRecord.punch_in_time) : 'Missing'}</strong></span>
-                        <span className="opacity-40">•</span>
-                        <span>Out: <strong>{existingCorrectionRecord.punch_out_time ? format12Hour(existingCorrectionRecord.punch_out_time) : 'Missing'}</strong></span>
-                        <span className="opacity-40">•</span>
-                        <span>Status: <strong className="font-sans">{existingCorrectionRecord.status || 'Present'}</strong></span>
-                        <span className="ml-auto px-2 py-0.5 rounded-full text-[9px] font-sans font-bold bg-emerald-200 text-emerald-900">
-                          Auto-Populated ✓
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-2 p-2 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-500 flex items-center gap-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span>No prior punch recorded for {correctionForm.date}. Shift standard times pre-filled.</span>
-                    </div>
-                  )}
                 </div>
 
                 {/* Correction Type Selector */}
@@ -2592,11 +2553,13 @@ Please deregister this device in Support Panel so I can register and log in on m
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="font-semibold text-slate-700">Requested Punch In Time *</label>
-                      {existingCorrectionRecord?.punch_in_time && (
-                        <span className="text-[10px] text-emerald-700 font-mono font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                          Recorded: {format12Hour(existingCorrectionRecord.punch_in_time)}
-                        </span>
-                      )}
+                      <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border ${
+                        existingCorrectionRecord?.punch_in_time
+                          ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                          : 'text-slate-500 bg-slate-100 border-slate-200'
+                      }`}>
+                        Recorded: {existingCorrectionRecord?.punch_in_time ? format12Hour(existingCorrectionRecord.punch_in_time) : '--:--:--'}
+                      </span>
                     </div>
                     <input
                       type="time"
@@ -2613,11 +2576,13 @@ Please deregister this device in Support Panel so I can register and log in on m
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="font-semibold text-slate-700">Requested Punch Out Time *</label>
-                      {existingCorrectionRecord?.punch_out_time && (
-                        <span className="text-[10px] text-rose-700 font-mono font-semibold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
-                          Recorded: {format12Hour(existingCorrectionRecord.punch_out_time)}
-                        </span>
-                      )}
+                      <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border ${
+                        existingCorrectionRecord?.punch_out_time
+                          ? 'text-rose-700 bg-rose-50 border-rose-200'
+                          : 'text-slate-500 bg-slate-100 border-slate-200'
+                      }`}>
+                        Recorded: {existingCorrectionRecord?.punch_out_time ? format12Hour(existingCorrectionRecord.punch_out_time) : '--:--:--'}
+                      </span>
                     </div>
                     <input
                       type="time"
@@ -2733,12 +2698,12 @@ Please deregister this device in Support Panel so I can register and log in on m
                         <tr key={cr.id} className="hover:bg-slate-50/50">
                           <td className="p-3 font-semibold text-slate-900 font-mono">{cr.date}</td>
                           <td className="p-3 font-mono text-slate-500 text-[11px]">
-                            {cr.current_punch_in ? format12Hour(cr.current_punch_in) : '--:--'} &rarr; {cr.current_punch_out ? format12Hour(cr.current_punch_out) : '--:--'}
+                            {cr.current_punch_in ? format12Hour(cr.current_punch_in) : '--:--:--'} &rarr; {cr.current_punch_out ? format12Hour(cr.current_punch_out) : '--:--:--'}
                           </td>
                           <td className="p-3 font-mono text-slate-700">
-                            <span className="text-emerald-700 font-bold">{cr.requested_punch_in ? format12Hour(cr.requested_punch_in) : '--:--'}</span>
+                            <span className="text-emerald-700 font-bold">{cr.requested_punch_in ? format12Hour(cr.requested_punch_in) : '--:--:--'}</span>
                             <span className="mx-1 text-slate-400">&rarr;</span>
-                            <span className="text-rose-700 font-bold">{cr.requested_punch_out ? format12Hour(cr.requested_punch_out) : '--:--'}</span>
+                            <span className="text-rose-700 font-bold">{cr.requested_punch_out ? format12Hour(cr.requested_punch_out) : '--:--:--'}</span>
                           </td>
                           <td className="p-3 font-bold text-sky-700">{cr.requested_status}</td>
                           <td className="p-3 text-slate-600 max-w-xs">{cr.reason}</td>

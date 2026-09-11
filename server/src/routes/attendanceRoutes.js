@@ -887,9 +887,11 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
   const newHours = (punch_in_time !== undefined || punch_out_time !== undefined)
     ? calculateHours(newPunchIn, newPunchOut)
     : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : (current.total_hours || 0));
-  const newStatus = (!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
-    ? deriveStatusFromHours(newHours, current.company_id, status === 'auto' ? null : status)
-    : (status || current.status);
+  const newStatus = (newPunchIn && newPunchOut)
+    ? deriveStatusFromHours(newHours, current.company_id, null)
+    : ((!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
+      ? deriveStatusFromHours(newHours, current.company_id, null)
+      : (status || current.status));
 
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
@@ -996,9 +998,11 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
   const hours = (punch_in_time && punch_out_time)
     ? calculateHours(punch_in_time, punch_out_time)
     : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : 0);
-  const effectiveStatus = (!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
-    ? deriveStatusFromHours(hours, companyId, status === 'auto' ? null : status)
-    : status;
+  const effectiveStatus = (punch_in_time && punch_out_time)
+    ? deriveStatusFromHours(hours, companyId, null)
+    : ((!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
+      ? deriveStatusFromHours(hours, companyId, null)
+      : status);
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
   const transaction = db.transaction(() => {
@@ -1794,6 +1798,11 @@ router.post('/correction-request', verifyAuth, (req, res) => {
     return res.status(400).json({ error: 'Attendance date and correction remarks/reason are required.' });
   }
 
+  const todayStr = new Date().toISOString().split('T')[0];
+  if (date > todayStr) {
+    return res.status(400).json({ error: 'Future dates cannot be selected for attendance correction.' });
+  }
+
   if (correction_type === 'both' && (!requested_punch_in || !requested_punch_out)) {
     return res.status(400).json({ error: 'Both Punch In and Punch Out times are required for this correction type.' });
   }
@@ -2018,12 +2027,12 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
         hours = existing.total_hours;
       }
 
+      // Status strictly auto-calculated based on working hours:
+      // >= 8.0h => Present, >= 4.0h => Half Day, < 4.0h => Absent
       let targetStatus = 'Present';
-      if (request.requested_status && request.requested_status !== 'auto') {
-        targetStatus = request.requested_status;
-      } else if (finalPunchIn && finalPunchOut) {
-        targetStatus = deriveStatusFromHours(hours, request.company_id, 'Present');
-      } else if (existing) {
+      if (finalPunchIn && finalPunchOut) {
+        targetStatus = deriveStatusFromHours(hours, request.company_id);
+      } else if (existing && existing.status) {
         targetStatus = existing.status;
       }
 

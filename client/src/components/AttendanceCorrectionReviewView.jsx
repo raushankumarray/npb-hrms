@@ -242,10 +242,10 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
                   <td className="p-3">
                     <div className="space-y-0.5 font-mono text-[11px]">
                       <div className="text-emerald-700">
-                        <span className="font-semibold">In:</span> {r.requested_punch_in || 'N/A'}
+                        <span className="font-semibold">In:</span> {r.requested_punch_in || '--:--:--'}
                       </div>
                       <div className="text-amber-700">
-                        <span className="font-semibold">Out:</span> {r.requested_punch_out || 'N/A'}
+                        <span className="font-semibold">Out:</span> {r.requested_punch_out || '--:--:--'}
                       </div>
                     </div>
                   </td>
@@ -387,7 +387,7 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
                 Date: <span className="font-mono font-semibold text-sky-700">{reviewModal.request?.date}</span>
               </div>
               <div className="text-slate-600">
-                Requested Times: <span className="font-mono">{reviewModal.request?.requested_punch_in || 'N/A'} - {reviewModal.request?.requested_punch_out || 'N/A'}</span>
+                Requested Times: <span className="font-mono">{reviewModal.request?.requested_punch_in || '--:--:--'} - {reviewModal.request?.requested_punch_out || '--:--:--'}</span>
               </div>
               <div className="text-slate-600">
                 Employee Reason: <span className="italic text-slate-700">"{reviewModal.request?.reason}"</span>
@@ -414,7 +414,7 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
                 }}
               >
                 {reviewModal.action === 'approved' ? (
-                  <span>✓ Action: Attendance status for {reviewModal.request?.date} will be set to <strong>Present</strong> with calculated working hours.</span>
+                  <span>✓ Action: Attendance status for {reviewModal.request?.date} will be auto-calculated strictly based on working hours (&ge;8h Present, &ge;4h Half Day, &lt;4h Absent).</span>
                 ) : (
                   <span>✕ Action: Attendance status for {reviewModal.request?.date} will be set to <strong>Absent</strong>.</span>
                 )}

@@ -361,7 +361,13 @@ export default function SupportPanel({ user, activeTab }) {
                     <td className="p-3 font-medium text-slate-800">{t.employee_name || t.user_name || 'User'} ({t.employee_code || `ID:${t.user_id || t.employee_id}`})</td>
                     <td className="p-3">
                       <p className="font-semibold text-slate-900">{t.title}</p>
-                      <p className="text-[11px] text-slate-500 line-clamp-1">{t.description}</p>
+                      {t.request_type === 'device_change' ? (
+                        <div className="mt-1 p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-[11px] text-amber-900 font-mono whitespace-pre-line leading-relaxed max-w-sm">
+                          {t.description}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-500 line-clamp-1">{t.description}</p>
+                      )}
                     </td>
                     <td className="p-3 text-slate-600">
                       {t.punch_date ? `${t.punch_date} (${t.suggested_punch_in || '-'} to ${t.suggested_punch_out || '-'})` : '-'}
