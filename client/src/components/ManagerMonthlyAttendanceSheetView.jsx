@@ -154,7 +154,6 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
   const handleExportExcel = async () => {
     setExporting(true);
     try {
-      const token = localStorage.getItem('token');
       const managerName = user.fullName || user.username || 'Manager';
       const payload = {
         format: 'xlsx',
@@ -169,29 +168,21 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
         payload.employee_ids = selectedMultipleEmps;
       }
 
-      const response = await fetch('/api/attendance/monthly-sheet-export', {
+      const res = await apiRequest('/attendance/monthly-sheet-export', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(payload)
+        body: payload
       });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || 'Failed to export Excel.');
+      if (res.isBlob) {
+        const url = window.URL.createObjectURL(res.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Monthly_Attendance_${selectedYear}_${selectedMonth}_${Date.now()}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
       }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Monthly_Attendance_${selectedYear}_${selectedMonth}_${Date.now()}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
     } catch (err) {
       alert(err.message || 'Failed to download Excel report.');
     } finally {
@@ -203,7 +194,6 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
   const handleExportPdf = async () => {
     setExporting(true);
     try {
-      const token = localStorage.getItem('token');
       const managerName = user.fullName || user.username || 'Manager';
       const payload = {
         format: 'pdf',
@@ -218,27 +208,37 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
         payload.employee_ids = selectedMultipleEmps;
       }
 
-      const response = await fetch('/api/attendance/monthly-sheet-export', {
+      const res = await apiRequest('/attendance/monthly-sheet-export', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(payload)
+        body: payload
       });
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || 'Failed to export PDF.');
-      }
-
-      const html = await response.text();
-      const win = window.open('', '_blank');
-      if (win) {
-        win.document.write(html);
-        win.document.close();
-      } else {
-        alert('Pop-up blocked. Please allow pop-ups to view/print the attendance sheet.');
+      if (res.isHtmlReport) {
+        const win = window.open('', '_blank');
+        if (win) {
+          win.document.open();
+          win.document.write(res.htmlText);
+          win.document.close();
+        } else {
+          const blob = new Blob([res.htmlText], { type: 'text/html' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Monthly_Attendance_${selectedYear}_${selectedMonth}_${Date.now()}.html`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        }
+      } else if (res.isBlob) {
+        const url = window.URL.createObjectURL(res.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Monthly_Attendance_${selectedYear}_${selectedMonth}_${Date.now()}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
       }
     } catch (err) {
       alert(err.message || 'Failed to download PDF report.');
@@ -603,9 +603,6 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
               <th className="p-2.5 border-r border-slate-300 min-w-[150px] sticky left-0 bg-slate-100 z-10">
                 Employee Name
               </th>
-              <th className="p-2.5 border-r border-slate-300 text-center min-w-[90px]">
-                Emp ID
-              </th>
 
               {/* Day Columns 1..daysInMonth */}
               {daysList.map(d => (
@@ -643,7 +640,7 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
             {loading ? (
               <tr>
                 <td
-                  colSpan={daysList.length + 8}
+                  colSpan={daysList.length + 7}
                   className="p-8 text-center text-slate-500 font-medium"
                 >
                   <RefreshCw className="w-5 h-5 animate-spin mx-auto text-sky-600 mb-2" />
@@ -653,7 +650,7 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
             ) : sheetData.employees.length === 0 ? (
               <tr>
                 <td
-                  colSpan={daysList.length + 8}
+                  colSpan={daysList.length + 7}
                   className="p-8 text-center text-slate-400 font-medium"
                 >
                   No team employee attendance logs found for {displayMonthYear}.
@@ -669,11 +666,6 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
                   <td className="p-2.5 font-bold text-slate-900 border-r border-slate-300 sticky left-0 bg-inherit z-10 whitespace-nowrap">
                     <div>{emp.full_name}</div>
                     <div className="text-[10px] text-slate-400 font-normal">{emp.department}</div>
-                  </td>
-
-                  {/* Emp ID */}
-                  <td className="p-2 font-mono text-center text-slate-700 border-r border-slate-300">
-                    {emp.employee_id}
                   </td>
 
                   {/* Daily Badges 1..daysInMonth */}

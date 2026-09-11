@@ -314,7 +314,6 @@ function exportMonthlyAttendanceSheetExcel({ companyName, monthLabel, managerNam
 
   const tableHeaders = [
     'Employee Name',
-    'Emp ID',
     ...dayCols,
     'Total Present Day',
     'Absent Day',
@@ -339,7 +338,6 @@ function exportMonthlyAttendanceSheetExcel({ companyName, monthLabel, managerNam
     }
     return [
       emp.full_name,
-      emp.employee_id,
       ...dayCells,
       emp.summary.present,
       emp.summary.absent,
@@ -357,7 +355,6 @@ function exportMonthlyAttendanceSheetExcel({ companyName, monthLabel, managerNam
   // Set column widths
   const colWidths = [
     { wch: 24 }, // Employee Name
-    { wch: 14 }, // Emp ID
     ...dayCols.map(() => ({ wch: 4.5 })), // Days 1..31
     { wch: 18 }, // Total Present Day
     { wch: 12 }, // Absent Day
@@ -439,7 +436,6 @@ function exportMonthlyAttendanceSheetHtml({ companyName, companyLogo, monthLabel
     return `
       <tr style="background: ${bg};">
         <td style="border: 1px solid #e2e8f0; padding: 5px 8px; font-size: 10px; font-weight: 700; color: #0f172a; white-space: nowrap;">${emp.full_name}</td>
-        <td style="border: 1px solid #e2e8f0; padding: 5px 6px; font-size: 9px; font-family: monospace; color: #475569; text-align: center;">${emp.employee_id}</td>
         ${dayCells.join('')}
         <td style="border: 1px solid #e2e8f0; padding: 4px; text-align: center; font-size: 10px; font-weight: 800; color: #15803d; background: #f0fdf4;">${emp.summary.present}</td>
         <td style="border: 1px solid #e2e8f0; padding: 4px; text-align: center; font-size: 10px; font-weight: 800; color: #b91c1c; background: #fef2f2;">${emp.summary.absent}</td>
@@ -501,7 +497,6 @@ function exportMonthlyAttendanceSheetHtml({ companyName, companyLogo, monthLabel
       <thead>
         <tr>
           <th style="border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 10px; font-weight: 800; text-align: left; background: #f1f5f9; color: #1e293b; min-width: 140px;">Employee Name</th>
-          <th style="border: 1px solid #cbd5e1; padding: 6px 6px; font-size: 10px; font-weight: 800; text-align: center; background: #f1f5f9; color: #1e293b; min-width: 70px;">Emp ID</th>
           ${dayHeaders.join('')}
           <th style="border: 1px solid #cbd5e1; padding: 6px 4px; font-size: 9px; font-weight: 800; text-align: center; background: #dcfce7; color: #15803d; min-width: 44px;">Present</th>
           <th style="border: 1px solid #cbd5e1; padding: 6px 4px; font-size: 9px; font-weight: 800; text-align: center; background: #fee2e2; color: #b91c1c; min-width: 44px;">Absent</th>
@@ -512,7 +507,7 @@ function exportMonthlyAttendanceSheetHtml({ companyName, companyLogo, monthLabel
         </tr>
       </thead>
       <tbody>
-        ${rowsHtml.length ? rowsHtml : '<tr><td colspan="' + (daysInMonth + 8) + '" style="text-align:center; padding: 24px; color:#94a3b8;">No employee records found.</td></tr>'}
+        ${rowsHtml.length ? rowsHtml : '<tr><td colspan="' + (daysInMonth + 7) + '" style="text-align:center; padding: 24px; color:#94a3b8;">No employee records found.</td></tr>'}
       </tbody>
     </table>
 

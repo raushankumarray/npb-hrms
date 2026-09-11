@@ -28,6 +28,12 @@ const STANDARD_REPORT_HEADERS = [
   { key: 'Working Hours (HH:MM)', label: 'Working Hours (HH:MM)', description: 'Total shift duration strictly in HH:MM' }
 ];
 
+// Section 2 headers with Date strictly as 1st column
+const SECTION_2_REPORT_HEADERS = [
+  { key: 'Date', label: 'Date (Day)', description: 'Calendar date and weekday without skipping any date' },
+  ...STANDARD_REPORT_HEADERS
+];
+
 export default function ManagerAttendanceReportsView({ user, company = {}, onStatsUpdate }) {
   const todayStr = new Date().toISOString().split('T')[0];
   const currentYear = new Date().getFullYear();
@@ -79,8 +85,9 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
   const [sec2ShowMultiDropdown, setSec2ShowMultiDropdown] = useState(false);
   const [sec2MultiEmpSearch, setSec2MultiEmpSearch] = useState('');
 
-  const [sec2PageSizeOption, setSec2PageSizeOption] = useState('25'); // '10' | '25' | '50' | 'custom'
-  const [sec2PageSize, setSec2PageSize] = useState(25);
+  // Default 10 rows per page for Section 2 per user requirement
+  const [sec2PageSizeOption, setSec2PageSizeOption] = useState('10'); // '10' | '25' | '50' | 'custom'
+  const [sec2PageSize, setSec2PageSize] = useState(10);
   const [sec2CustomPageSizeInput, setSec2CustomPageSizeInput] = useState('');
   const [sec2Page, setSec2Page] = useState(1);
   const [sec2StatusFilter, setSec2StatusFilter] = useState('all');
@@ -91,8 +98,8 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
   const [sec2Summary, setSec2Summary] = useState({ total: 0, present: 0, absent: 0, half_day: 0, leave: 0, wo: 0, holiday: 0 });
   const [sec2Loading, setSec2Loading] = useState(false);
 
-  // Pre-Download Column Customizer for Section 2
-  const [sec2SelectedCols, setSec2SelectedCols] = useState(STANDARD_REPORT_HEADERS.map(h => h.key));
+  // Pre-Download Column Customizer for Section 2 (Date strictly 1st column)
+  const [sec2SelectedCols, setSec2SelectedCols] = useState(SECTION_2_REPORT_HEADERS.map(h => h.key));
   const [showSec2ColModal, setShowSec2ColModal] = useState(false);
   const [sec2Exporting, setSec2Exporting] = useState(false);
 
@@ -391,6 +398,11 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
     setSec2Exporting(true);
     setError('');
     try {
+      const rawCols = sec2SelectedCols.length > 0 ? sec2SelectedCols : SECTION_2_REPORT_HEADERS.map(h => h.key);
+      const finalSelectedCols = rawCols.includes('Date')
+        ? ['Date', ...rawCols.filter(c => c !== 'Date')]
+        : ['Date', ...rawCols];
+
       const exportBody = {
         format,
         is_full_month: true,
@@ -400,7 +412,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
         year: sec2Year,
         status: sec2StatusFilter,
         search: sec2Search,
-        selected_columns: sec2SelectedCols.length > 0 ? sec2SelectedCols : STANDARD_REPORT_HEADERS.map(h => h.key)
+        selected_columns: finalSelectedCols
       };
 
       if (sec2EmpMode === 'individual' && sec2SelectedIndividualEmp) {
@@ -1246,8 +1258,8 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                 }}
                 className="w-full py-1.5 px-2.5 bg-white border-2 border-slate-300 text-slate-900 font-bold focus:outline-none focus:border-emerald-600"
               >
-                <option value="10">10 Rows</option>
-                <option value="25">25 Rows (Default)</option>
+                <option value="10">10 Rows (Default)</option>
+                <option value="25">25 Rows</option>
                 <option value="50">50 Rows</option>
                 <option value="100">100 Rows</option>
                 <option value="custom">Custom Enter...</option>
@@ -1975,7 +1987,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setSec2SelectedCols(STANDARD_REPORT_HEADERS.map(h => h.key))}
+                    onClick={() => setSec2SelectedCols(SECTION_2_REPORT_HEADERS.map(h => h.key))}
                     className="text-[11px] text-emerald-700 font-bold hover:underline"
                   >
                     Select All
@@ -1992,7 +2004,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-64 overflow-y-auto">
-                {STANDARD_REPORT_HEADERS.map(hdr => {
+                {SECTION_2_REPORT_HEADERS.map(hdr => {
                   const isChecked = sec2SelectedCols.includes(hdr.key);
                   return (
                     <label
@@ -2029,7 +2041,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
                   <span className="text-rose-600 font-bold">Please select at least 1 header to export.</span>
                 ) : (
                   <span>
-                    <strong>{sec2SelectedCols.length} of 10 headers selected</strong>. Full month log file will include all calendar days without skipping any date.
+                    <strong>{sec2SelectedCols.length} of {SECTION_2_REPORT_HEADERS.length} headers selected</strong>. Full month log file will include all calendar days with Date as 1st column without skipping any date.
                   </span>
                 )}
               </div>

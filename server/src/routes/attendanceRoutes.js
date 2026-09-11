@@ -1478,10 +1478,15 @@ router.post('/export', verifyAuth, (req, res) => {
     const yInt = parseInt(year, 10) || new Date().getFullYear();
     const dateRangeLabel = `Month: ${yInt}-${String(mInt).padStart(2, '0')} (Full Month Logs - All Team Staff)`;
 
+    // Enforce Date as the 1st column for monthly reports export in PDF and Excel
+    const fullMonthCols = activeCols.includes('Date')
+      ? ['Date', ...activeCols.filter(c => c !== 'Date')]
+      : ['Date', ...activeCols];
+
     if (format === 'xlsx' || format === 'excel') {
       const excelBuffer = exportCustomExcel({
         data: allRows,
-        selectedColumns: activeCols,
+        selectedColumns: fullMonthCols,
         sheetName: `Full Month ${yInt}-${mInt}`,
         companyName,
         reportTitle: `All Employee Full Month Attendance Log File (${yInt}-${String(mInt).padStart(2, '0')})`,
@@ -1495,7 +1500,7 @@ router.post('/export', verifyAuth, (req, res) => {
     } else if (format === 'pdf' || format === 'html') {
       const htmlReport = exportHtmlReport({
         data: allRows,
-        selectedColumns: activeCols,
+        selectedColumns: fullMonthCols,
         title: `All Employee Full Month Attendance Log File (${yInt}-${String(mInt).padStart(2, '0')})`,
         companyName,
         dateRange: dateRangeLabel,
