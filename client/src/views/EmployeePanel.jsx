@@ -4,7 +4,7 @@ import {
   Ticket, KeyRound, User, Smartphone, RefreshCw, Send, ArrowUpRight,
   ShieldAlert, CheckCircle, Navigation, MessageSquare, Edit3, Sparkles, FileEdit, Check, X, Globe,
   FileText, Download, SlidersHorizontal, Printer, ChevronDown, CheckSquare, Square,
-  LogOut, ChevronLeft, ChevronRight, Filter, Lock, Unlock, Laptop, Copy
+  LogOut, ChevronLeft, ChevronRight, Filter, Lock, Unlock, Laptop, Copy, Headphones
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';
@@ -184,27 +184,31 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
     }
     setDeregisterLoading(true);
     try {
-      const mac = registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'UNKNOWN');
+      const mac = registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'CURRENT_DEVICE');
       const devName = registeredDevice?.device_name || registeredDevice?.device_type || 'Registered Device';
-      await apiRequest('/tickets/service-requests', {
+      await apiRequest('/tickets/service-request', {
         method: 'POST',
         body: {
-          request_type: 'general',
+          request_type: 'device_change',
           title: `Device Deregistration Request (MAC: ${mac})`,
-          description: `Device Deregistration & MAC Unlock Request:
+          description: `Device Deregistration & MAC Lock Release Request:
 - Employee: ${user.fullName || user.username} (${user.employeeCode || user.username})
 - Company: ${company?.name || 'N/A'}
 - Registered MAC Address: ${mac}
 - Device Details: ${devName}
 - Reason: ${deregisterReason.trim()}
 
-Please deregister this device in the Support Panel so I can register and log in on my new device.`
+Please deregister this device in Support Panel so I can register and log in on my new device.`
         }
       });
-      setSuccess('Device Deregistration request submitted to Support successfully. Support will unlock your account.');
+      setSuccess('Device Deregistration request submitted directly to Support Team. Support will release device lock shortly.');
       setShowDeregisterModal(false);
       setDeregisterReason('');
       fetchData();
+      try {
+        const tickRes = await apiRequest('/tickets/service-requests?view=all');
+        setTickets(tickRes.requests || []);
+      } catch (e) {}
     } catch (err) {
       setError(err.message);
     } finally {
@@ -217,10 +221,11 @@ Please deregister this device in the Support Panel so I can register and log in 
 
   // Attendance Correction Requests State
   const [correctionRequests, setCorrectionRequests] = useState([]);
+  const [correctionHistoryTab, setCorrectionHistoryTab] = useState('pending'); // 'pending' | 'approved'
   const [correctionForm, setCorrectionForm] = useState({
     date: new Date().toISOString().split('T')[0],
-    requested_punch_in: '09:00:00',
-    requested_punch_out: '18:00:00',
+    requested_punch_in: '',
+    requested_punch_out: '',
     reason: ''
   });
   const [existingCorrectionRecord, setExistingCorrectionRecord] = useState(null);
@@ -729,28 +734,49 @@ Please deregister this device in the Support Panel so I can register and log in 
       return;
     }
 
-    // Rule 2 check: Device Location GPS Enabled Check (If disabled, punch is not permitted)
-    if (!isGpsEnabled) {
-      setError('Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
-      return;
-    }
-
-    // Rule 3 check: GPS Accuracy 90% to 100% check
-    if (!isAccuracy90To100) {
-      setError(`GPS Accuracy Check Failed: Current accuracy is ${gpsAccuracyPercent}%. Accuracy must be between 90% and 100% (True) to mark attendance.`);
-      return;
-    }
-
-    // Rule 1 check: Geofencing condition check (Valid in both assigned-inside or not-assigned cases)
-    if (!geofenceStatus.allowed) {
-      setError(geofenceStatus.text || 'Geofence Check Failed: Outside authorized geofence office area.');
-      return;
-    }
-
     setPunchLoading(true);
     try {
-      let coords = gpsLocation;
-      // Strictly resolve exact map area from current GPS coordinates - no random fallback
+      // 1. Actively refresh GPS on punch button click
+      let coords = null;
+      try {
+        coords = await getBrowserGPS();
+      } catch (gpsErr) {
+        setError(gpsErr.message || 'Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
+        setPunchLoading(false);
+        return;
+      }
+
+      if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+        setError('Device Location (GPS) is Disabled: Could not acquire valid coordinates. Please check your device GPS.');
+        setPunchLoading(false);
+        return;
+      }
+
+      // 2. Accuracy check (100% / <= 10m)
+      const rawAcc = Number(coords.rawAccuracy ?? coords.accuracy ?? 10);
+      const isAccValid = coords.accuracyValid === true || rawAcc <= 10;
+      if (!isAccValid) {
+        setError(`GPS Accuracy Check Failed: Current accuracy is not verified. GPS accuracy must be 100% (within 10m) to mark attendance.`);
+        setPunchLoading(false);
+        return;
+      }
+
+      // 3. Geofencing check against fresh coordinates
+      if (myGeofence && !allowedAnywhere) {
+        const dist = calculateDistanceMeters(
+          coords.latitude,
+          coords.longitude,
+          myGeofence.latitude,
+          myGeofence.longitude
+        );
+        if (dist > myGeofence.radius) {
+          setError(`Geofence Check Failed: Outside authorized office zone (${dist}m / ${myGeofence.radius}m). Punch In is blocked.`);
+          setPunchLoading(false);
+          return;
+        }
+      }
+
+      // Strictly resolve exact map area from fresh GPS coordinates - no random fallback
       let locName = await resolveLocationName(coords.latitude, coords.longitude);
       if (!locName) {
         locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
@@ -790,28 +816,49 @@ Please deregister this device in the Support Panel so I can register and log in 
       return;
     }
 
-    // Rule 2 check: Device Location GPS Enabled Check (If disabled, punch is not permitted)
-    if (!isGpsEnabled) {
-      setError('Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
-      return;
-    }
-
-    // Rule 3 check: GPS Accuracy 90% to 100% check
-    if (!isAccuracy90To100) {
-      setError(`GPS Accuracy Check Failed: Current accuracy is ${gpsAccuracyPercent}%. Accuracy must be between 90% and 100% (True) to mark attendance.`);
-      return;
-    }
-
-    // Rule 1 check: Geofencing condition check (Valid in both assigned-inside or not-assigned cases)
-    if (!geofenceStatus.allowed) {
-      setError(geofenceStatus.text || 'Geofence Check Failed: Outside authorized geofence office area.');
-      return;
-    }
-
     setPunchLoading(true);
     try {
-      let coords = gpsLocation;
-      // Strictly resolve exact map area from current GPS coordinates - no random fallback
+      // 1. Actively refresh GPS on punch button click
+      let coords = null;
+      try {
+        coords = await getBrowserGPS();
+      } catch (gpsErr) {
+        setError(gpsErr.message || 'Device Location (GPS) is Disabled: Please turn on your device GPS and enable browser location permissions before marking attendance.');
+        setPunchLoading(false);
+        return;
+      }
+
+      if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+        setError('Device Location (GPS) is Disabled: Could not acquire valid coordinates. Please check your device GPS.');
+        setPunchLoading(false);
+        return;
+      }
+
+      // 2. Accuracy check (100% / <= 10m)
+      const rawAcc = Number(coords.rawAccuracy ?? coords.accuracy ?? 10);
+      const isAccValid = coords.accuracyValid === true || rawAcc <= 10;
+      if (!isAccValid) {
+        setError(`GPS Accuracy Check Failed: Current accuracy is not verified. GPS accuracy must be 100% (within 10m) to mark attendance.`);
+        setPunchLoading(false);
+        return;
+      }
+
+      // 3. Geofencing check against fresh coordinates
+      if (myGeofence && !allowedAnywhere) {
+        const dist = calculateDistanceMeters(
+          coords.latitude,
+          coords.longitude,
+          myGeofence.latitude,
+          myGeofence.longitude
+        );
+        if (dist > myGeofence.radius) {
+          setError(`Geofence Check Failed: Outside authorized office zone (${dist}m / ${myGeofence.radius}m). Punch Out is blocked.`);
+          setPunchLoading(false);
+          return;
+        }
+      }
+
+      // Strictly resolve exact map area from fresh GPS coordinates - no random fallback
       let locName = await resolveLocationName(coords.latitude, coords.longitude);
       if (!locName) {
         locName = `Map Area (${Number(coords.latitude).toFixed(4)}, ${Number(coords.longitude).toFixed(4)})`;
@@ -975,6 +1022,7 @@ Please deregister this device in the Support Panel so I can register and log in 
   }, [todayRecord]);
 
   // Auto-fetch punch in and punch out times for selected attendance correction date
+  // Rule: If punch in or punch out was missed/forgotten, field MUST be BLANK ('') - not pre-filled with shift times.
   const autoFetchPunchTimesForDate = React.useCallback((dateVal) => {
     if (!dateVal) return;
     const todayStr = new Date().toISOString().split('T')[0];
@@ -994,19 +1042,19 @@ Please deregister this device in the Support Panel so I can register and log in 
       setCorrectionForm(prev => ({
         ...prev,
         date: dateVal,
-        requested_punch_in: rec.punch_in_time || shiftInfo?.start_time || '09:00:00',
-        requested_punch_out: rec.punch_out_time || shiftInfo?.end_time || '18:00:00'
+        requested_punch_in: rec.punch_in_time || '',
+        requested_punch_out: rec.punch_out_time || ''
       }));
     } else {
       setExistingCorrectionRecord(rec || null);
       setCorrectionForm(prev => ({
         ...prev,
         date: dateVal,
-        requested_punch_in: shiftInfo?.start_time || '09:00:00',
-        requested_punch_out: shiftInfo?.end_time || '18:00:00'
+        requested_punch_in: '',
+        requested_punch_out: ''
       }));
     }
-  }, [todayRecord, calendarData, history, shiftInfo]);
+  }, [todayRecord, calendarData, history]);
 
   useEffect(() => {
     if (activeTab === 'correction') {
@@ -1016,8 +1064,8 @@ Please deregister this device in the Support Panel so I can register and log in 
 
   // Auto-calculated status preview for attendance correction based on hours
   const correctionCalculatedStatus = (() => {
-    const pIn = correctionType !== 'out' ? correctionForm.requested_punch_in : '09:00:00';
-    const pOut = correctionType !== 'in' ? correctionForm.requested_punch_out : '18:00:00';
+    const pIn = correctionType !== 'out' ? correctionForm.requested_punch_in : (existingCorrectionRecord?.punch_in_time || '');
+    const pOut = correctionType !== 'in' ? correctionForm.requested_punch_out : (existingCorrectionRecord?.punch_out_time || '');
     if (!pIn || !pOut) return { hours: 0, status: 'Present' };
     const [h1, m1, s1 = 0] = pIn.split(':').map(Number);
     const [h2, m2, s2 = 0] = pOut.split(':').map(Number);
@@ -1068,8 +1116,8 @@ Please deregister this device in the Support Panel so I can register and log in 
       const todayDateStr = new Date().toISOString().split('T')[0];
       setCorrectionForm({
         date: todayDateStr,
-        requested_punch_in: '09:00:00',
-        requested_punch_out: '18:00:00',
+        requested_punch_in: '',
+        requested_punch_out: '',
         reason: ''
       });
       autoFetchPunchTimesForDate(todayDateStr);
@@ -1491,153 +1539,172 @@ Please deregister this device in the Support Panel so I can register and log in 
           </div>
 
           {/* Consolidated Today's Work Shift & Punch Details Card (ONE Card for all details) */}
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
-            {/* Header: Shift Information */}
-            <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-5 sm:p-6 flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
-                  <Clock className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm sm:text-base font-bold text-white">
-                      Today's Work Shift: {shiftInfo?.name || 'General Shift'}
-                    </h3>
-                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                      todayRecord?.punch_out_time ? 'bg-slate-700 text-slate-300' :
-                      todayRecord?.punch_in_time ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/40 animate-pulse' :
-                      'bg-amber-500/20 text-amber-300 border border-amber-400/30'
-                    }`}>
-                      {todayRecord?.punch_out_time ? 'Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-300 mt-0.5">
-                    Timing: <strong className="text-white font-mono">{format12Hour(shiftInfo?.start_time || '09:00:00')} - {format12Hour(shiftInfo?.end_time || '18:00:00')}</strong>
-                    <span className="mx-2 opacity-40">•</span>
-                    Duration: <span className="font-semibold text-sky-300">9.0 Hours</span>
-                  </p>
-                </div>
-              </div>
+          {(() => {
+            const completedShiftHHMM = (() => {
+              if (!todayRecord?.punch_in_time || !todayRecord?.punch_out_time) return null;
+              try {
+                const [h1, m1, s1 = 0] = todayRecord.punch_in_time.split(':').map(Number);
+                const [h2, m2, s2 = 0] = todayRecord.punch_out_time.split(':').map(Number);
+                let totalSecs = (h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1);
+                if (totalSecs < 0) totalSecs = 0;
+                const h = Math.floor(totalSecs / 3600);
+                const m = Math.floor((totalSecs % 3600) / 60);
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+              } catch (e) {
+                return null;
+              }
+            })();
 
-              {/* Live Timer or Total Hours */}
-              {todayRecord?.punch_in_time && !todayRecord?.punch_out_time ? (
-                <div className="flex items-center gap-3 bg-emerald-950/60 px-4 py-2 rounded-2xl border border-emerald-500/40 shadow-xs">
-                  <span className="relative flex h-3.5 w-3.5">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
-                  </span>
-                  <div>
-                    <span className="text-[10px] uppercase font-bold text-emerald-300 block">Live Working Timer</span>
-                    <span className="text-xl font-black font-mono text-white">{elapsedTime}</span>
-                  </div>
-                </div>
-              ) : todayRecord?.punch_out_time ? (
-                <div className="flex items-center gap-2 bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs font-bold text-white font-mono">Completed: {todayRecord.total_hours || '0'} hrs</span>
-                </div>
-              ) : null}
-            </div>
-
-            {/* Body: Punch In & Punch Out Details in 2 Sub-Columns inside this single card */}
-            <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Punch In Details Sub-Section */}
-              <div className={`p-4 rounded-2xl border transition-all ${
-                todayRecord?.punch_in_time
-                  ? 'bg-emerald-50/50 border-emerald-200'
-                  : 'bg-slate-50/70 border-slate-200'
-              }`}>
-                <div className="flex items-center justify-between border-b border-slate-200/70 pb-2.5 mb-3">
-                  <div className="flex items-center gap-2">
-                    <div className={`p-1.5 rounded-xl ${todayRecord?.punch_in_time ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
-                      <Clock className="w-3.5 h-3.5" />
+            return (
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
+                {/* Header: Shift Information (Duration removed, Timing kept) */}
+                <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white p-5 sm:p-6 flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-2xl bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
+                      <Clock className="w-5 h-5" />
                     </div>
                     <div>
-                      <h4 className="text-xs font-bold text-slate-900">Punch In Details</h4>
-                      <span className="text-[10px] text-slate-400">Entry timestamp & GPS location</span>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm sm:text-base font-bold text-white">
+                          Today's Work Shift: {shiftInfo?.name || 'General Shift'}
+                        </h3>
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                          todayRecord?.punch_out_time ? 'bg-slate-700 text-slate-300' :
+                          todayRecord?.punch_in_time ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/40 animate-pulse' :
+                          'bg-amber-500/20 text-amber-300 border border-amber-400/30'
+                        }`}>
+                          {todayRecord?.punch_out_time ? 'Completed' : todayRecord?.punch_in_time ? 'Active Shift' : 'Not Punched In'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 mt-0.5">
+                        Timing: <strong className="text-white font-mono">{format12Hour(shiftInfo?.start_time || '09:00:00')} - {format12Hour(shiftInfo?.end_time || '18:00:00')}</strong>
+                      </p>
                     </div>
                   </div>
-                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                    todayRecord?.punch_in_time ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-500'
-                  }`}>
-                    {todayRecord?.punch_in_time ? 'Recorded' : 'Pending'}
-                  </span>
+
+                  {/* Live Timer or Total Hours in strictly HH:MM format */}
+                  {todayRecord?.punch_in_time && !todayRecord?.punch_out_time ? (
+                    <div className="flex items-center gap-3 bg-emerald-950/60 px-4 py-2 rounded-2xl border border-emerald-500/40 shadow-xs">
+                      <span className="relative flex h-3.5 w-3.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
+                      </span>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-emerald-300 block">Live Working Timer</span>
+                        <span className="text-xl font-black font-mono text-white">{elapsedTime}</span>
+                      </div>
+                    </div>
+                  ) : todayRecord?.punch_out_time ? (
+                    <div className="flex items-center gap-2 bg-slate-800/80 px-4 py-2 rounded-2xl border border-slate-700">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span className="text-xs font-bold text-white font-mono">
+                        Completed: {completedShiftHHMM || (todayRecord.total_hours ? `${todayRecord.total_hours} hrs` : '00:00')} (HH:MM)
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
 
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">Punch In Time:</span>
-                    <span className="font-mono font-bold text-slate-900 text-sm">
-                      {todayRecord?.punch_in_time ? format12Hour(todayRecord.punch_in_time) : '--:--'}
-                    </span>
+                {/* Body: Punch In & Punch Out Details in 2 Sub-Columns inside this single card */}
+                <div className="p-5 sm:p-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {/* Punch In Details Sub-Section */}
+                  <div className={`p-4 rounded-2xl border transition-all ${
+                    todayRecord?.punch_in_time
+                      ? 'bg-emerald-50/50 border-emerald-200'
+                      : 'bg-slate-50/70 border-slate-200'
+                  }`}>
+                    <div className="flex items-center justify-between border-b border-slate-200/70 pb-2.5 mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className={`p-1.5 rounded-xl ${todayRecord?.punch_in_time ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                          <Clock className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900">Punch In Details</h4>
+                          <span className="text-[10px] text-slate-400">Entry timestamp & GPS location</span>
+                        </div>
+                      </div>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                        todayRecord?.punch_in_time ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        {todayRecord?.punch_in_time ? 'Recorded' : 'Pending'}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 font-medium">Punch In Time:</span>
+                        <span className="font-mono font-bold text-slate-900 text-sm">
+                          {todayRecord?.punch_in_time ? format12Hour(todayRecord.punch_in_time) : '--:--'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 font-medium">GPS Coordinates:</span>
+                        <span className="font-mono font-semibold text-slate-800 text-[11px]">
+                          {todayRecord?.punch_in_lat && todayRecord?.punch_in_lng
+                            ? `${Number(todayRecord.punch_in_lat).toFixed(4)}, ${Number(todayRecord.punch_in_lng).toFixed(4)}`
+                            : '--'}
+                        </span>
+                      </div>
+                      <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
+                        <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
+                        <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
+                          {todayRecord?.punch_in_location || (todayRecord?.punch_in_time && currentAddressName) || currentAddressName || '--'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">GPS Coordinates:</span>
-                    <span className="font-mono font-semibold text-slate-800 text-[11px]">
-                      {todayRecord?.punch_in_lat && todayRecord?.punch_in_lng
-                        ? `${Number(todayRecord.punch_in_lat).toFixed(4)}, ${Number(todayRecord.punch_in_lng).toFixed(4)}`
-                        : '--'}
-                    </span>
-                  </div>
-                  <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
-                    <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
-                    <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
-                      {todayRecord?.punch_in_location || '--'}
-                    </span>
+
+                  {/* Punch Out Details Sub-Section */}
+                  <div className={`p-4 rounded-2xl border transition-all ${
+                    todayRecord?.punch_out_time
+                      ? 'bg-rose-50/50 border-rose-200'
+                      : 'bg-slate-50/70 border-slate-200'
+                  }`}>
+                    <div className="flex items-center justify-between border-b border-slate-200/70 pb-2.5 mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className={`p-1.5 rounded-xl ${todayRecord?.punch_out_time ? 'bg-rose-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                          <Clock className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900">Punch Out Details</h4>
+                          <span className="text-[10px] text-slate-400">Exit timestamp & GPS location</span>
+                        </div>
+                      </div>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                        todayRecord?.punch_out_time ? 'bg-rose-100 text-rose-800' :
+                        todayRecord?.punch_in_time ? 'bg-amber-100 text-amber-800' :
+                        'bg-slate-200 text-slate-500'
+                      }`}>
+                        {todayRecord?.punch_out_time ? 'Recorded' : todayRecord?.punch_in_time ? 'Shift Active' : 'Not Started'}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 font-medium">Punch Out Time:</span>
+                        <span className="font-mono font-bold text-slate-900 text-sm">
+                          {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 font-medium">GPS Coordinates:</span>
+                        <span className="font-mono font-semibold text-slate-800 text-[11px]">
+                          {todayRecord?.punch_out_lat && todayRecord?.punch_out_lng
+                            ? `${Number(todayRecord.punch_out_lat).toFixed(4)}, ${Number(todayRecord.punch_out_lng).toFixed(4)}`
+                            : '--'}
+                        </span>
+                      </div>
+                      <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
+                        <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
+                        <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
+                          {todayRecord?.punch_out_location || (todayRecord?.punch_out_time && currentAddressName) || '--'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
-
-              {/* Punch Out Details Sub-Section */}
-              <div className={`p-4 rounded-2xl border transition-all ${
-                todayRecord?.punch_out_time
-                  ? 'bg-rose-50/50 border-rose-200'
-                  : 'bg-slate-50/70 border-slate-200'
-              }`}>
-                <div className="flex items-center justify-between border-b border-slate-200/70 pb-2.5 mb-3">
-                  <div className="flex items-center gap-2">
-                    <div className={`p-1.5 rounded-xl ${todayRecord?.punch_out_time ? 'bg-rose-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
-                      <Clock className="w-3.5 h-3.5" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-slate-900">Punch Out Details</h4>
-                      <span className="text-[10px] text-slate-400">Exit timestamp & GPS location</span>
-                    </div>
-                  </div>
-                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                    todayRecord?.punch_out_time ? 'bg-rose-100 text-rose-800' :
-                    todayRecord?.punch_in_time ? 'bg-amber-100 text-amber-800' :
-                    'bg-slate-200 text-slate-500'
-                  }`}>
-                    {todayRecord?.punch_out_time ? 'Recorded' : todayRecord?.punch_in_time ? 'Shift Active' : 'Not Started'}
-                  </span>
-                </div>
-
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">Punch Out Time:</span>
-                    <span className="font-mono font-bold text-slate-900 text-sm">
-                      {todayRecord?.punch_out_time ? format12Hour(todayRecord.punch_out_time) : '--:--'}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-medium">GPS Coordinates:</span>
-                    <span className="font-mono font-semibold text-slate-800 text-[11px]">
-                      {todayRecord?.punch_out_lat && todayRecord?.punch_out_lng
-                        ? `${Number(todayRecord.punch_out_lat).toFixed(4)}, ${Number(todayRecord.punch_out_lng).toFixed(4)}`
-                        : '--'}
-                    </span>
-                  </div>
-                  <div className="flex items-start justify-between gap-2 pt-1 border-t border-slate-200/60">
-                    <span className="text-slate-500 font-medium whitespace-nowrap">Captured Address:</span>
-                    <span className="text-slate-800 font-medium text-right text-xs select-text line-clamp-2">
-                      {todayRecord?.punch_out_location || '--'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+            );
+          })()}
 
           {/* Month-Wise Attendance Summary Card (Inside one card: Present, Absent, Holiday, Leave, WO) */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
@@ -2604,74 +2671,109 @@ Please deregister this device in the Support Panel so I can register and log in 
             </form>
           </div>
 
-          {/* My Attendance Correction Requests Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-2">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">My Correction Application History</h3>
-                <p className="text-[11px] text-slate-400">Track approvals, rejections, and supervisor review notes</p>
-              </div>
-              <span className="text-xs text-slate-500 font-medium">{correctionRequests.length} applications</span>
-            </div>
+          {/* My Attendance Correction Requests Table with Pending and Approved Filter Tabs */}
+          {(() => {
+            const pendingCorrections = (correctionRequests || []).filter(r => r.status === 'pending');
+            const approvedCorrections = (correctionRequests || []).filter(r => r.status === 'approved' || r.status === 'rejected');
+            const displayedCorrections = correctionHistoryTab === 'pending' ? pendingCorrections : approvedCorrections;
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 text-slate-600 font-semibold uppercase text-[10px]">
-                  <tr>
-                    <th className="p-3">Date</th>
-                    <th className="p-3">Current Status</th>
-                    <th className="p-3">Requested In / Out</th>
-                    <th className="p-3">Requested Status</th>
-                    <th className="p-3">Justification</th>
-                    <th className="p-3">Approval Status</th>
-                    <th className="p-3">Reviewer Notes</th>
-                    <th className="p-3 text-right">Submitted</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {correctionRequests.map(cr => (
-                    <tr key={cr.id} className="hover:bg-slate-50/50">
-                      <td className="p-3 font-semibold text-slate-900 font-mono">{cr.date}</td>
-                      <td className="p-3">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">
-                          {cr.current_status || 'Absent'}
-                        </span>
-                      </td>
-                      <td className="p-3 font-mono text-slate-700">
-                        <span className="text-emerald-700 font-bold">{format12Hour(cr.requested_punch_in)}</span>
-                        <span className="mx-1 text-slate-400">&rarr;</span>
-                        <span className="text-rose-700 font-bold">{format12Hour(cr.requested_punch_out)}</span>
-                      </td>
-                      <td className="p-3 font-bold text-sky-700">{cr.requested_status}</td>
-                      <td className="p-3 text-slate-600 max-w-xs">{cr.reason}</td>
-                      <td className="p-3">
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          cr.status === 'approved' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                          cr.status === 'rejected' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
-                          'bg-amber-100 text-amber-800 border border-amber-300'
-                        }`}>
-                          {cr.status === 'approved' ? 'Approved (Present)' : cr.status === 'rejected' ? 'Rejected (Absent)' : 'Pending Review'}
-                        </span>
-                      </td>
-                      <td className="p-3 text-slate-500 italic text-[11px]">
-                        {cr.review_notes || '--'}
-                      </td>
-                      <td className="p-3 text-right font-mono text-slate-400 text-[11px]">
-                        {new Date(cr.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                  {correctionRequests.length === 0 && (
-                    <tr>
-                      <td colSpan="8" className="p-8 text-center text-slate-400">
-                        No attendance correction requests submitted yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+            return (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-2">
+                <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">My Attendance Correction Requests</h3>
+                    <p className="text-[11px] text-slate-400">Track pending applications and archived approvals</p>
+                  </div>
+
+                  {/* Filter Tabs: Pending vs Approved & History */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionHistoryTab('pending')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        correctionHistoryTab === 'pending'
+                          ? 'bg-white text-amber-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Pending Approvals ({pendingCorrections.length})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCorrectionHistoryTab('approved')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        correctionHistoryTab === 'approved'
+                          ? 'bg-white text-emerald-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Approved & History ({approvedCorrections.length})</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-slate-600 font-semibold uppercase text-[10px]">
+                      <tr>
+                        <th className="p-3">Date</th>
+                        <th className="p-3">Current In / Out</th>
+                        <th className="p-3">Requested In / Out</th>
+                        <th className="p-3">Requested Status</th>
+                        <th className="p-3">Justification</th>
+                        <th className="p-3">Approval Status</th>
+                        <th className="p-3">Reviewer Notes</th>
+                        <th className="p-3 text-right">Submitted</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {displayedCorrections.map(cr => (
+                        <tr key={cr.id} className="hover:bg-slate-50/50">
+                          <td className="p-3 font-semibold text-slate-900 font-mono">{cr.date}</td>
+                          <td className="p-3 font-mono text-slate-500 text-[11px]">
+                            {cr.current_punch_in ? format12Hour(cr.current_punch_in) : '--:--'} &rarr; {cr.current_punch_out ? format12Hour(cr.current_punch_out) : '--:--'}
+                          </td>
+                          <td className="p-3 font-mono text-slate-700">
+                            <span className="text-emerald-700 font-bold">{cr.requested_punch_in ? format12Hour(cr.requested_punch_in) : '--:--'}</span>
+                            <span className="mx-1 text-slate-400">&rarr;</span>
+                            <span className="text-rose-700 font-bold">{cr.requested_punch_out ? format12Hour(cr.requested_punch_out) : '--:--'}</span>
+                          </td>
+                          <td className="p-3 font-bold text-sky-700">{cr.requested_status}</td>
+                          <td className="p-3 text-slate-600 max-w-xs">{cr.reason}</td>
+                          <td className="p-3">
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              cr.status === 'approved' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                              cr.status === 'rejected' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
+                              'bg-amber-100 text-amber-800 border border-amber-300'
+                            }`}>
+                              {cr.status === 'approved' ? 'Approved (Present)' : cr.status === 'rejected' ? 'Rejected (Absent)' : 'Pending Review'}
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-500 italic text-[11px]">
+                            {cr.review_notes || '--'}
+                          </td>
+                          <td className="p-3 text-right font-mono text-slate-400 text-[11px]">
+                            {new Date(cr.created_at).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      ))}
+                      {displayedCorrections.length === 0 && (
+                        <tr>
+                          <td colSpan="8" className="p-8 text-center text-slate-400">
+                            {correctionHistoryTab === 'pending'
+                              ? 'No pending attendance correction requests awaiting approval.'
+                              : 'No approved or archived attendance correction requests found.'}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -2682,6 +2784,26 @@ Please deregister this device in the Support Panel so I can register and log in 
 
         return (
           <div className="space-y-6">
+            {/* 24/7 Technical Support Desk Direct Routing Banner */}
+            <div className="p-4 bg-gradient-to-r from-sky-950 via-slate-900 to-indigo-950 text-white rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 border border-sky-800/60">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-400/30 shrink-0">
+                  <Headphones className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                    Central Technical Support Desk
+                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/30 text-emerald-300 border border-emerald-400/40">
+                      Direct Routing Active
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-sky-200/90 mt-0.5">
+                    All employee complaints and issues are routed directly to the Technical Support Team for immediate resolution.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* Raise Service Ticket Form */}
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
               <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
@@ -2898,6 +3020,60 @@ Please deregister this device in the Support Panel so I can register and log in 
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Device Deregistration / Switch Workstation Card */}
+            <div className="bg-gradient-to-br from-purple-50 via-white to-slate-50 rounded-2xl border-2 border-purple-200/80 p-5 sm:p-6 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-purple-100 pb-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-3 rounded-2xl bg-purple-600 text-white shadow-md shadow-purple-600/30 shrink-0">
+                    <Laptop className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-slate-900">Device Deregistration & Workstation Switch</h4>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-100 text-purple-700 border border-purple-200">
+                        1 Account = 1 Device
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 mt-1 max-w-2xl leading-relaxed">
+                      Need to switch your laptop, desktop, or mobile device? Submit a device deregistration request directly to the Support Team. Once Support unlocks and clears your device registration, you can log in from your new device immediately.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowDeregisterModal(true)}
+                  className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-purple-600/30 flex items-center gap-2 shrink-0 self-start sm:self-center cursor-pointer hover:scale-105 active:scale-95"
+                >
+                  <Unlock className="w-4 h-4" />
+                  <span>Request Device Deregistration</span>
+                </button>
+              </div>
+
+              {/* Current Bound Device Details */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3 rounded-xl bg-white border border-purple-100 shadow-2xs">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Bound MAC Address</span>
+                  <span className="font-mono font-bold text-purple-700 text-xs select-all">
+                    {registeredDevice?.mac_address || (registeredDevice?.device_id ? registeredDevice.device_id.replace(/^hw_/, '') : 'E4:A7:C0:89:1D:2F')}
+                  </span>
+                </div>
+                <div className="p-3 rounded-xl bg-white border border-purple-100 shadow-2xs">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Device Type / Name</span>
+                  <span className="font-semibold text-slate-800 text-xs">
+                    {registeredDevice?.device_name || registeredDevice?.device_type || 'Authorized Workstation'}
+                  </span>
+                </div>
+                <div className="p-3 rounded-xl bg-white border border-purple-100 shadow-2xs">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Support SLA Status</span>
+                  <span className="font-semibold text-emerald-700 text-xs flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    Direct Support Review Active
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         );

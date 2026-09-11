@@ -31,4 +31,8 @@ try {
   db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_to INTEGER").run();
 } catch (e) {}
 
+try {
+  db.prepare("ALTER TABLE attendance_correction_requests ADD COLUMN correction_type TEXT DEFAULT 'both'").run();
+} catch (e) {}
+
 module.exports = db;

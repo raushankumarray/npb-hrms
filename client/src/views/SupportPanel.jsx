@@ -137,6 +137,24 @@ export default function SupportPanel({ user, activeTab }) {
     }
   };
 
+  const handleDeregisterAndCloseTicket = async (ticket) => {
+    if (!ticket) return;
+    try {
+      await apiRequest(`/tickets/service-requests/${ticket.id}/resolve`, {
+        method: 'PUT',
+        body: {
+          status: 'resolved',
+          unbind_device: true,
+          resolution_notes: 'Device deregistered by Support Team. Employee can now log in and bind new device.'
+        }
+      });
+      setSuccess(`Device deregistered and Ticket #${ticket.id} closed successfully.`);
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to deregister device and close ticket.');
+    }
+  };
+
   const handleSaveAttendanceCorrection = async (e) => {
     e.preventDefault();
     if (!attEditForm.reason.trim()) {
@@ -380,6 +398,16 @@ export default function SupportPanel({ user, activeTab }) {
                             title="Quick Process"
                           >
                             Process
+                          </button>
+                        )}
+                        {t.request_type === 'device_change' && t.status !== 'resolved' && t.status !== 'closed' && (
+                          <button
+                            onClick={() => handleDeregisterAndCloseTicket(t)}
+                            className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow-xs transition-all"
+                            title="1-Click Deregister Device and Close Ticket"
+                          >
+                            <Unlock className="w-3.5 h-3.5" />
+                            Deregister & Close
                           </button>
                         )}
                       </div>

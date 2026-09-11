@@ -4,6 +4,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { unbindUserDevice } = require('../services/deviceBinding');
 
 // Helper to auto-archive resolved/old tickets based on company retention setting (default 1 day)
 function autoArchiveExpiredRequests(companyId) {
@@ -57,15 +58,11 @@ router.post('/service-request', verifyAuth, (req, res) => {
     return res.status(400).json({ error: 'Employee and company identification required.' });
   }
 
-  // Determine reporting assignment: route to Reporting Manager if mapped, else Company Admin
-  let assignedRole = 'admin';
-  let assignedTo = null;
+  // User Rule: All employee helpdesk complaints/issues are routed DIRECTLY to the Support Team.
+  // Do NOT assign to Manager or Company Admin.
+  const assignedRole = 'support';
+  const assignedTo = null;
   const emp = db.prepare('SELECT full_name, manager_id FROM employees WHERE id = ?').get(employeeId);
-  if (emp && emp.manager_id) {
-    assignedRole = 'manager';
-    const mgr = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
-    if (mgr) assignedTo = mgr.user_id;
-  }
 
   const result = db.prepare(`
     INSERT INTO service_requests (
@@ -86,29 +83,25 @@ router.post('/service-request', verifyAuth, (req, res) => {
     db.prepare(`
       INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
       VALUES (?, ?, ?, ?, ?)
-    `).run(reqId, req.user.id, emp?.full_name || req.user.username, req.user.role_name, `Ticket created: "${title.trim()}". Routing to ${assignedRole === 'manager' ? 'Reporting Manager' : 'Company Admin'}.`);
+    `).run(reqId, req.user.id, emp?.full_name || req.user.username, req.user.role_name, `Ticket created: "${title.trim()}". Directly routed to Technical Support Team for resolution.`);
   } catch (e) {}
 
-  // Send notification to HR / Manager
-  if (emp && emp.manager_id && assignedTo) {
-    db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, link)
-      VALUES (?, ?, 'New Service Ticket', ?, 'ticket', '/service-requests')
-    `).run(assignedTo, companyId, `${emp.full_name} submitted ticket: "${title.trim()}" (${request_type})`);
-  } else {
-    // Notify company admin
-    try {
-      const adminUser = db.prepare('SELECT id FROM users WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = "company_admin") LIMIT 1').get(companyId);
-      if (adminUser) {
-        db.prepare(`
-          INSERT INTO notifications (user_id, company_id, title, message, type, link)
-          VALUES (?, ?, 'New Service Ticket', ?, 'ticket', '/service-requests')
-        `).run(adminUser.id, companyId, `${emp?.full_name || 'Employee'} submitted ticket: "${title.trim()}" (${request_type})`);
-      }
-    } catch (e) {}
-  }
+  // Send notification directly to Technical Support Team and Super Admins
+  try {
+    const supportUsers = db.prepare(`
+      SELECT u.id FROM users u
+      JOIN roles r ON u.role_id = r.id
+      WHERE r.name IN ('support', 'super_admin')
+    `).all();
+    for (const su of supportUsers) {
+      db.prepare(`
+        INSERT INTO notifications (user_id, company_id, title, message, type, link)
+        VALUES (?, ?, 'New Support Ticket', ?, 'ticket', '/support')
+      `).run(su.id, companyId, `${emp?.full_name || 'Employee'} submitted support ticket #${reqId}: "${title.trim()}" (${request_type})`);
+    }
+  } catch (e) {}
 
-  res.status(201).json({ success: true, requestId: reqId, assigned_role: assignedRole, message: 'Service ticket submitted successfully.' });
+  res.status(201).json({ success: true, requestId: reqId, assigned_role: assignedRole, message: 'Service ticket submitted directly to Technical Support Team.' });
 });
 
 // List Service Requests with automatic 1-day archival filter
@@ -344,6 +337,43 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
       `Your ticket "${current.title}" has been marked as ${status}.${resolution_notes ? ' Notes: ' + resolution_notes : ''}`
     );
 
+    // If resolving a device deregistration / device_change request or unbind_device flag is provided, deregister device lock
+    let unbindMessage = null;
+    if ((status === 'resolved' || status === 'closed') && (current.request_type === 'device_change' || req.body.unbind_device)) {
+      if (current.user_id) {
+        try {
+          const ipAddress = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1';
+          const unbindResult = unbindUserDevice({
+            userId: current.user_id,
+            authorizedUserId: req.user.id,
+            authorizerName: req.user.username,
+            authorizerRole: req.user.role_name,
+            reason: resolution_notes || 'Device deregistration request resolved by Support Team',
+            ipAddress
+          });
+          if (unbindResult && unbindResult.message) {
+            unbindMessage = unbindResult.message;
+          }
+        } catch (e) {
+          console.error('Failed to unbind device on ticket resolution:', e.message);
+        }
+      }
+    }
+
+    // Insert resolution chat message
+    try {
+      db.prepare(`
+        INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        reqId,
+        req.user.id,
+        req.user.username,
+        req.user.role_name,
+        `Ticket marked as ${status}.${resolution_notes ? ' Notes: ' + resolution_notes : ''}${unbindMessage ? ' [' + unbindMessage + ']' : ''}`
+      );
+    } catch(e) {}
+
     logAudit({
       companyId: current.company_id,
       userId: req.user.id,
@@ -353,7 +383,7 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
       action: 'SERVICE_REQUEST_RESOLVED',
       targetEntity: 'service_requests',
       targetId: reqId,
-      newValues: { status, resolution_notes },
+      newValues: { status, resolution_notes, device_deregistered: Boolean(unbindMessage) },
       reason: `Ticket resolved by ${req.user.username}`
     });
   });

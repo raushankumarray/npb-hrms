@@ -45,6 +45,17 @@ function deriveStatusFromHours(totalHours, companyId, explicitStatus = null) {
   return 'Absent';
 }
 
+// Auto-migration: ensure correction_type column exists on attendance_correction_requests
+try {
+  const crTableInfo = db.prepare('PRAGMA table_info(attendance_correction_requests)').all();
+  const crCols = crTableInfo.map(c => c.name);
+  if (!crCols.includes('correction_type')) {
+    db.exec("ALTER TABLE attendance_correction_requests ADD COLUMN correction_type TEXT DEFAULT 'both'");
+  }
+} catch (e) {
+  console.warn('Migration note for attendance_correction_requests:', e.message);
+}
+
 // Helper to get company-local current date (YYYY-MM-DD), default to Asia/Kolkata
 function getCompanyToday(companyId) {
   let tz = 'Asia/Kolkata';
@@ -1802,14 +1813,27 @@ router.post('/correction-request', verifyAuth, (req, res) => {
   const currentPunchIn = existing ? existing.punch_in_time : null;
   const currentPunchOut = existing ? existing.punch_out_time : null;
 
-  // Resolve final in and out times
-  const finalIn = requested_punch_in ? requested_punch_in.trim() : currentPunchIn;
-  const finalOut = requested_punch_out ? requested_punch_out.trim() : currentPunchOut;
+  // Resolve final requested values based on correction_type
+  let reqInVal = '';
+  let reqOutVal = '';
+
+  if (correction_type === 'in') {
+    reqInVal = (requested_punch_in || '').trim();
+    reqOutVal = (currentPunchOut || '').trim();
+  } else if (correction_type === 'out') {
+    reqInVal = (currentPunchIn || '').trim();
+    reqOutVal = (requested_punch_out || '').trim();
+  } else {
+    reqInVal = (requested_punch_in || '').trim();
+    reqOutVal = (requested_punch_out || '').trim();
+  }
 
   // Auto-calculate requested attendance status based on hours
   let autoCalculatedStatus = 'Present';
-  if (finalIn && finalOut) {
-    const totalHours = calculateHours(finalIn, finalOut);
+  const effIn = reqInVal || currentPunchIn;
+  const effOut = reqOutVal || currentPunchOut;
+  if (effIn && effOut) {
+    const totalHours = calculateHours(effIn, effOut);
     if (totalHours >= 8.0) {
       autoCalculatedStatus = 'Present';
     } else if (totalHours >= 4.0) {
@@ -1829,13 +1853,13 @@ router.post('/correction-request', verifyAuth, (req, res) => {
       company_id, employee_id, date,
       current_status, current_punch_in, current_punch_out,
       requested_punch_in, requested_punch_out, requested_status,
-      reason, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+      reason, status, correction_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `).run(
     companyId, employeeId, date,
     currentStatus, currentPunchIn, currentPunchOut,
-    finalIn || '09:00:00', finalOut || '18:00:00', finalRequestedStatus,
-    reason.trim()
+    reqInVal, reqOutVal, finalRequestedStatus,
+    reason.trim(), correction_type
   );
 
   // Notify assigned reporting manager or Admin
@@ -1962,13 +1986,48 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
     `).run(status, req.user.id, review_notes || null, requestId);
 
     if (status === 'approved') {
-      // Calculate working hours
-      const hours = calculateHours(request.requested_punch_in, request.requested_punch_out);
-      const targetStatus = (!request.requested_status || request.requested_status === 'Present' || request.requested_status === 'auto')
-        ? deriveStatusFromHours(hours, request.company_id, request.requested_status)
-        : request.requested_status;
+      // 1. Fetch existing attendance record
+      const existing = db.prepare(`
+        SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?
+      `).get(request.company_id, request.employee_id, request.date);
 
-      // 2. Upsert attendance record to Present (or requested status)
+      let finalPunchIn = existing ? existing.punch_in_time : null;
+      let finalPunchOut = existing ? existing.punch_out_time : null;
+
+      const corrType = request.correction_type ||
+        (request.requested_punch_in && !request.requested_punch_out ? 'in' :
+         !request.requested_punch_in && request.requested_punch_out ? 'out' : 'both');
+
+      if (corrType === 'in') {
+        finalPunchIn = request.requested_punch_in || finalPunchIn;
+        // Punch Out is NOT touched! Preserves existing punch out
+      } else if (corrType === 'out') {
+        // Punch In is NOT touched! Preserves existing punch in
+        finalPunchOut = request.requested_punch_out || finalPunchOut;
+      } else {
+        // Both updated
+        if (request.requested_punch_in) finalPunchIn = request.requested_punch_in;
+        if (request.requested_punch_out) finalPunchOut = request.requested_punch_out;
+      }
+
+      // Calculate working hours
+      let hours = 0;
+      if (finalPunchIn && finalPunchOut) {
+        hours = calculateHours(finalPunchIn, finalPunchOut);
+      } else if (existing && existing.total_hours) {
+        hours = existing.total_hours;
+      }
+
+      let targetStatus = 'Present';
+      if (request.requested_status && request.requested_status !== 'auto') {
+        targetStatus = request.requested_status;
+      } else if (finalPunchIn && finalPunchOut) {
+        targetStatus = deriveStatusFromHours(hours, request.company_id, 'Present');
+      } else if (existing) {
+        targetStatus = existing.status;
+      }
+
+      // 2. Upsert attendance record preserving non-targeted punch time
       db.prepare(`
         INSERT INTO attendance_records (
           company_id, employee_id, date,
@@ -1987,11 +2046,11 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
         request.company_id,
         request.employee_id,
         request.date,
-        request.requested_punch_in,
-        request.requested_punch_out,
+        finalPunchIn,
+        finalPunchOut,
         hours,
         targetStatus,
-        `Approved Correction: ${request.reason}`
+        `Approved Correction (${corrType.toUpperCase()}): ${request.reason}`
       );
 
       // 3. Log into attendance_edit_logs for complete audit trail
@@ -2009,9 +2068,9 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
       `).run(
         request.company_id, request.employee_id, request.date,
         request.employee_id, req.user.id, req.user.role_name,
-        `Correction Request #${requestId} Approved: ${request.reason}`,
+        `Correction Request #${requestId} Approved (${corrType.toUpperCase()}): ${request.reason}`,
         request.current_punch_in, request.current_punch_out, request.current_status,
-        request.requested_punch_in, request.requested_punch_out, targetStatus
+        finalPunchIn, finalPunchOut, targetStatus
       );
 
       // 4. Notify employee
