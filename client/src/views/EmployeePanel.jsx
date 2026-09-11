@@ -1113,7 +1113,11 @@ Please deregister this device in Support Panel so I can register and log in on m
 
   // Auto-fetch punch in and punch out times for selected attendance correction date
   // Rule: If punch in or punch out was missed/forgotten, field MUST be BLANK ('') - not pre-filled with shift times.
-  const autoFetchPunchTimesForDate = React.useCallback((dateVal) => {
+  // Rule: When manually edited by the employee, the time fields must NOT auto-change or be overwritten before submit.
+  const lastFetchedDateRef = React.useRef('');
+  const manualEditsRef = React.useRef({ in: false, out: false, date: '' });
+
+  const autoFetchPunchTimesForDate = React.useCallback(async (dateVal, force = false) => {
     if (!dateVal) return;
     const todayStr = new Date().toISOString().split('T')[0];
     let rec = null;
@@ -1126,31 +1130,38 @@ Please deregister this device in Support Panel so I can register and log in on m
     if (!rec && history) {
       rec = history.find(r => r.date === dateVal);
     }
+    if (!rec) {
+      try {
+        const [y, m] = dateVal.split('-');
+        const calRes = await apiRequest(`/attendance/calendar?month=${parseInt(m, 10)}&year=${parseInt(y, 10)}`);
+        if (calRes && calRes.records) {
+          rec = calRes.records.find(r => r.date === dateVal);
+        }
+      } catch (e) {}
+    }
 
-    if (rec && (rec.punch_in_time || rec.punch_out_time)) {
-      setExistingCorrectionRecord(rec);
+    setExistingCorrectionRecord(rec || null);
+
+    const isNewDate = lastFetchedDateRef.current !== dateVal;
+    if (isNewDate || force) {
+      lastFetchedDateRef.current = dateVal;
+      manualEditsRef.current = { in: false, out: false, date: dateVal };
       setCorrectionForm(prev => ({
         ...prev,
         date: dateVal,
-        requested_punch_in: rec.punch_in_time || '',
-        requested_punch_out: rec.punch_out_time || ''
-      }));
-    } else {
-      setExistingCorrectionRecord(rec || null);
-      setCorrectionForm(prev => ({
-        ...prev,
-        date: dateVal,
-        requested_punch_in: '',
-        requested_punch_out: ''
+        requested_punch_in: rec?.punch_in_time || '',
+        requested_punch_out: rec?.punch_out_time || ''
       }));
     }
   }, [todayRecord, calendarData, history]);
 
   useEffect(() => {
     if (activeTab === 'correction') {
-      autoFetchPunchTimesForDate(correctionForm.date);
+      if (lastFetchedDateRef.current !== correctionForm.date) {
+        autoFetchPunchTimesForDate(correctionForm.date);
+      }
     }
-  }, [activeTab, autoFetchPunchTimesForDate]);
+  }, [activeTab, correctionForm.date, autoFetchPunchTimesForDate]);
 
   // Auto-calculated status preview for attendance correction based on hours
   const correctionCalculatedStatus = (() => {
@@ -1215,7 +1226,9 @@ Please deregister this device in Support Panel so I can register and log in on m
         requested_punch_out: '',
         reason: ''
       });
-      autoFetchPunchTimesForDate(todayDateStr);
+      lastFetchedDateRef.current = '';
+      manualEditsRef.current = { in: false, out: false, date: '' };
+      autoFetchPunchTimesForDate(todayDateStr, true);
       const corrRes = await apiRequest('/attendance/correction-requests');
       setCorrectionRequests(corrRes.requests || []);
     } catch (err) {
@@ -2590,7 +2603,7 @@ Please deregister this device in Support Panel so I can register and log in on m
                       }
                       setError('');
                       setCorrectionForm(prev => ({ ...prev, date: newDate }));
-                      autoFetchPunchTimesForDate(newDate);
+                      autoFetchPunchTimesForDate(newDate, true);
                     }}
                     className="w-full p-2.5 border rounded-lg bg-white font-medium"
                   />
@@ -2656,7 +2669,11 @@ Please deregister this device in Support Panel so I can register and log in on m
                       step="1"
                       required
                       value={correctionForm.requested_punch_in}
-                      onChange={(e) => setCorrectionForm({ ...correctionForm, requested_punch_in: e.target.value })}
+                      onChange={(e) => {
+                        manualEditsRef.current.in = true;
+                        manualEditsRef.current.date = correctionForm.date;
+                        setCorrectionForm(prev => ({ ...prev, requested_punch_in: e.target.value }));
+                      }}
                       className="w-full p-2.5 border rounded-lg font-mono"
                     />
                   </div>
@@ -2679,7 +2696,11 @@ Please deregister this device in Support Panel so I can register and log in on m
                       step="1"
                       required
                       value={correctionForm.requested_punch_out}
-                      onChange={(e) => setCorrectionForm({ ...correctionForm, requested_punch_out: e.target.value })}
+                      onChange={(e) => {
+                        manualEditsRef.current.out = true;
+                        manualEditsRef.current.date = correctionForm.date;
+                        setCorrectionForm(prev => ({ ...prev, requested_punch_out: e.target.value }));
+                      }}
                       className="w-full p-2.5 border rounded-lg font-mono"
                     />
                   </div>
