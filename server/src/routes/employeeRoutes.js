@@ -49,6 +49,7 @@ router.get('/', verifyAuth, (req, res) => {
     LEFT JOIN geofences g ON e.geofence_id = g.id
     LEFT JOIN employees m ON e.manager_id = m.id
     WHERE e.is_deleted = 0
+      AND r.name NOT IN ('super_admin', 'company_admin')
   `;
   const params = [];
 
@@ -58,16 +59,15 @@ router.get('/', verifyAuth, (req, res) => {
     params.push(companyId);
   }
 
-  // Filter by user role if requested (e.g. 'manager', 'employee')
-  if (role && role !== 'all') {
+  // If role is Manager, strictly only show assigned subordinates (employees only)!
+  // Manager's own personal login credentials and account creation details must NOT be shown!
+  if (req.user.role_name === 'manager') {
+    baseQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))
+                   AND r.name = 'employee' AND e.user_id != ? AND e.id != ?`;
+    params.push(req.user.employee_id, req.user.employee_id, req.user.id, req.user.employee_id || 0);
+  } else if (role && role !== 'all') {
     baseQuery += ' AND r.name = ?';
     params.push(role);
-  }
-
-  // If role is Manager, strictly only show assigned employees!
-  if (req.user.role_name === 'manager') {
-    baseQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
-    params.push(req.user.employee_id, req.user.employee_id);
   }
 
   if (department) {
@@ -220,15 +220,17 @@ router.get('/manager-dashboard-stats', verifyAuth, (req, res) => {
   const today = new Date().toISOString().split('T')[0];
 
   try {
-    // 1. Total Assigned Team Members (excluding deleted)
+    // 1. Total Assigned Team Members (excluding deleted, admins, and manager self)
     let assignedQuery = `
-      SELECT id FROM employees e
-      WHERE e.company_id = ? AND e.is_deleted = 0
+      SELECT e.id FROM employees e
+      JOIN users u ON e.user_id = u.id
+      JOIN roles r ON u.role_id = r.id
+      WHERE e.company_id = ? AND e.is_deleted = 0 AND r.name = 'employee'
     `;
     const assignedParams = [companyId];
     if (req.user.role_name === 'manager') {
-      assignedQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))`;
-      assignedParams.push(managerEmpId, managerEmpId);
+      assignedQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?)) AND e.user_id != ? AND e.id != ?`;
+      assignedParams.push(managerEmpId, managerEmpId, req.user.id, managerEmpId || 0);
     }
     const teamMembers = db.prepare(assignedQuery).all(...assignedParams);
     const teamMemberIds = teamMembers.map(m => m.id);
@@ -379,6 +381,11 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
     return res.status(400).json({ error: `Username "${username}" already taken.` });
   }
 
+  // Security: Company Administrator and Super Admin accounts can NEVER be created via employee endpoints!
+  if (role === 'company_admin' || role === 'super_admin') {
+    return res.status(403).json({ error: 'Company Administrator accounts cannot be created here. They are created and managed exclusively in Super Admin panel.' });
+  }
+
   const isManagerCreator = req.user.role_name === 'manager';
   // Managers can ONLY create 'employee' accounts (never HR or Manager)
   const finalRole = isManagerCreator ? 'employee' : (role || 'employee');
@@ -490,9 +497,27 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
     reports_to_admin, status, password
   } = req.body;
 
-  const currentEmp = db.prepare('SELECT * FROM employees WHERE id = ?').get(empId);
+  const currentEmp = db.prepare(`
+    SELECT e.*, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.id = ?
+  `).get(empId);
   if (!currentEmp) {
     return res.status(404).json({ error: 'Employee not found.' });
+  }
+
+  // Security: Company Administrator and Super Admin accounts cannot be modified via employee endpoints
+  if (currentEmp.role_name === 'company_admin' || currentEmp.role_name === 'super_admin') {
+    return res.status(403).json({ error: 'Company Administrator accounts cannot be modified here. Manage them in Super Admin panel.' });
+  }
+
+  // Security: Managers can only modify subordinate employees, never managers or themselves!
+  if (req.user.role_name === 'manager') {
+    if (currentEmp.role_name !== 'employee' || currentEmp.user_id === req.user.id || currentEmp.id === req.user.employee_id) {
+      return res.status(403).json({ error: 'Managers can only modify subordinate employee accounts.' });
+    }
   }
 
   // Username update permission check:
@@ -630,9 +655,27 @@ router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'man
   const empId = parseInt(req.params.id, 10);
   const { status } = req.body;
 
-  const emp = db.prepare('SELECT e.*, u.id as user_id FROM employees e JOIN users u ON e.user_id = u.id WHERE e.id = ?').get(empId);
+  const emp = db.prepare(`
+    SELECT e.*, u.id as user_id, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.id = ?
+  `).get(empId);
   if (!emp) {
     return res.status(404).json({ error: 'Employee not found.' });
+  }
+
+  // Security: Company Administrator and Super Admin accounts cannot be suspended/activated here
+  if (emp.role_name === 'company_admin' || emp.role_name === 'super_admin') {
+    return res.status(403).json({ error: 'Company Administrator accounts cannot be modified here. Manage them in Super Admin panel.' });
+  }
+
+  // Security: Managers can only toggle subordinate employee accounts
+  if (req.user.role_name === 'manager') {
+    if (emp.role_name !== 'employee' || emp.user_id === req.user.id || emp.id === req.user.employee_id) {
+      return res.status(403).json({ error: 'Managers can only modify subordinate employee accounts.' });
+    }
   }
 
   const targetStatus = status || (emp.status === 'active' ? 'suspended' : 'active');
@@ -670,9 +713,27 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'm
     return res.status(400).json({ error: 'New password must be at least 4 characters long.' });
   }
 
-  const emp = db.prepare('SELECT e.*, u.id as user_id FROM employees e JOIN users u ON e.user_id = u.id WHERE e.id = ?').get(empId);
+  const emp = db.prepare(`
+    SELECT e.*, u.id as user_id, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.id = ?
+  `).get(empId);
   if (!emp) {
     return res.status(404).json({ error: 'Employee not found.' });
+  }
+
+  // Security: Company Administrator and Super Admin passwords cannot be changed here
+  if (emp.role_name === 'company_admin' || emp.role_name === 'super_admin') {
+    return res.status(403).json({ error: 'Company Administrator passwords cannot be changed here. Reset them in Super Admin panel.' });
+  }
+
+  // Security: Managers can only change passwords for subordinate employee accounts
+  if (req.user.role_name === 'manager') {
+    if (emp.role_name !== 'employee' || emp.user_id === req.user.id || emp.id === req.user.employee_id) {
+      return res.status(403).json({ error: 'Managers can only change passwords for subordinate employee accounts.' });
+    }
   }
 
   const passHash = bcrypt.hashSync(targetPassword.trim(), 10);
@@ -696,10 +757,28 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'm
 // Permanent Delete Employee (Cannot be backed up / permanently deleted from database)
 router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
   const empId = parseInt(req.params.id, 10);
-  const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(empId);
+  const emp = db.prepare(`
+    SELECT e.*, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.id = ?
+  `).get(empId);
 
   if (!emp) {
     return res.status(404).json({ error: 'Employee not found.' });
+  }
+
+  // Security: Company Administrator and Super Admin accounts cannot be deleted as employees
+  if (emp.role_name === 'company_admin' || emp.role_name === 'super_admin') {
+    return res.status(403).json({ error: 'Company Administrator accounts cannot be deleted as employees. Manage companies in Super Admin panel.' });
+  }
+
+  // Security: Managers can only delete subordinate employees, never managers or themselves!
+  if (req.user.role_name === 'manager') {
+    if (emp.role_name !== 'employee' || emp.user_id === req.user.id || emp.id === req.user.employee_id) {
+      return res.status(403).json({ error: 'Managers can only delete subordinate employee accounts.' });
+    }
   }
 
   const transaction = db.transaction(() => {

@@ -223,9 +223,12 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
           queryParams.append('limit', '100');
         }
         const empRes = await apiRequest(`/employees?${queryParams.toString()}`);
-        setEmployees(empRes.employees || []);
+        const personnel = (empRes.employees || []).filter(e =>
+          e.role_name !== 'company_admin' && e.role_name !== 'super_admin'
+        );
+        setEmployees(personnel);
         if (activeTab === 'employees') {
-          setTotalEmployees(empRes.total !== undefined ? empRes.total : (empRes.employees || []).length);
+          setTotalEmployees(empRes.total !== undefined ? empRes.total : personnel.length);
           if (empRes.cities) setAvailableCities(empRes.cities);
         }
       }
@@ -1196,7 +1199,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {employees.map(e => (
+                  {employees.filter(e => e.role_name !== 'company_admin' && e.role_name !== 'super_admin').map(e => (
                     <tr key={e.id} className="hover:bg-slate-50/50">
                       <td className="p-3">
                         <p className="font-bold text-slate-900">{e.full_name}</p>

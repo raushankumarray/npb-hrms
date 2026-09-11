@@ -156,6 +156,8 @@ router.get('/live', verifyAuth, (req, res) => {
            g.location_name as assigned_geofence_name, g.latitude as assigned_geofence_lat,
            g.longitude as assigned_geofence_lng, g.radius as assigned_geofence_radius
     FROM employees e
+    LEFT JOIN users u ON e.user_id = u.id
+    LEFT JOIN roles r ON u.role_id = r.id
     LEFT JOIN (
       SELECT employee_id, latitude, longitude, accuracy, location_name, captured_at,
              ROW_NUMBER() OVER (PARTITION BY employee_id ORDER BY captured_at DESC) as rn
@@ -164,13 +166,15 @@ router.get('/live', verifyAuth, (req, res) => {
     LEFT JOIN attendance_records ar ON e.id = ar.employee_id AND ar.date = ?
     LEFT JOIN geofences g ON e.geofence_id = g.id
     WHERE e.company_id = ? AND e.is_deleted = 0 AND e.status = 'active'
+      AND (r.name IS NULL OR r.name NOT IN ('super_admin', 'company_admin'))
   `;
   const params = [today, companyId];
 
-  // Manager isolation
+  // Manager isolation: only assigned employees, never manager self or admins
   if (req.user.role_name === 'manager') {
-    query += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
-    params.push(req.user.employee_id, req.user.employee_id);
+    query += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))
+               AND (r.name IS NULL OR r.name = 'employee') AND e.id != ? AND e.user_id != ?`;
+    params.push(req.user.employee_id, req.user.employee_id, req.user.employee_id || 0, req.user.id);
   }
 
   if (department) {

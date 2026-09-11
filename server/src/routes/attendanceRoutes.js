@@ -932,13 +932,16 @@ function generateFullMonthAttendanceRows(req, options = {}) {
   const mStr = String(mInt).padStart(2, '0');
   const daysInMonth = new Date(yInt, mInt, 0).getDate();
 
-  // Find all eligible active employees
+  // Find all eligible active employees (excluding company admins and super admins)
   let empQuery = `
     SELECT e.*, c.name as company_name, s.name as shift_name, s.start_time, s.end_time
     FROM employees e
     JOIN companies c ON e.company_id = c.id
     LEFT JOIN shifts s ON e.shift_id = s.id
+    LEFT JOIN users u ON e.user_id = u.id
+    LEFT JOIN roles r ON u.role_id = r.id
     WHERE e.is_deleted = 0 AND e.status = 'active'
+      AND (r.name IS NULL OR r.name NOT IN ('super_admin', 'company_admin'))
   `;
   const empParams = [];
   if (companyId) {
@@ -947,13 +950,15 @@ function generateFullMonthAttendanceRows(req, options = {}) {
   }
 
   if (req.user.role_name === 'manager') {
-    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
-    empParams.push(req.user.employee_id, req.user.employee_id);
+    empQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))
+                   AND (r.name IS NULL OR r.name = 'employee') AND e.id != ? AND e.user_id != ?`;
+    empParams.push(req.user.employee_id, req.user.employee_id, req.user.employee_id || 0, req.user.id);
   } else if (req.user.role_name === 'employee') {
     empQuery += ' AND e.id = ?';
     empParams.push(req.user.employee_id);
   } else if (manager_id && manager_id !== 'all') {
-    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    empQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))
+                   AND (r.name IS NULL OR r.name = 'employee')`;
     empParams.push(parseInt(manager_id, 10), parseInt(manager_id, 10));
   }
 
@@ -2224,12 +2229,15 @@ function buildMonthlySheetData(req, options = {}) {
   const mStr = String(month).padStart(2, '0');
   const daysInMonth = new Date(year, month, 0).getDate();
 
-  // Find all eligible active employees
+  // Find all eligible active employees (excluding company admins and super admins)
   let empQuery = `
     SELECT e.*, c.name as company_name, c.logo as company_logo
     FROM employees e
     JOIN companies c ON e.company_id = c.id
+    LEFT JOIN users u ON e.user_id = u.id
+    LEFT JOIN roles r ON u.role_id = r.id
     WHERE e.is_deleted = 0 AND e.status = 'active'
+      AND (r.name IS NULL OR r.name NOT IN ('super_admin', 'company_admin'))
   `;
   const empParams = [];
   if (companyId) {
@@ -2238,8 +2246,9 @@ function buildMonthlySheetData(req, options = {}) {
   }
 
   if (req.user.role_name === 'manager') {
-    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
-    empParams.push(req.user.employee_id, req.user.employee_id);
+    empQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))
+                   AND (r.name IS NULL OR r.name = 'employee') AND e.id != ? AND e.user_id != ?`;
+    empParams.push(req.user.employee_id, req.user.employee_id, req.user.employee_id || 0, req.user.id);
   } else if (req.user.role_name === 'employee') {
     empQuery += ' AND e.id = ?';
     empParams.push(req.user.employee_id);
@@ -2248,7 +2257,8 @@ function buildMonthlySheetData(req, options = {}) {
   const { employee_id, employee_ids, search, manager_id } = options;
 
   if (manager_id && manager_id !== 'all') {
-    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    empQuery += ` AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))
+                   AND (r.name IS NULL OR r.name = 'employee')`;
     empParams.push(parseInt(manager_id, 10), parseInt(manager_id, 10));
   }
 
