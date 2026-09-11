@@ -682,9 +682,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   };
 
   const deleteCompany = async (id, name) => {
-    if (!window.confirm(`Are you sure you want to soft-delete company "${name}"? Historical audit records will be preserved.`)) return;
+    if (!window.confirm(`Are you sure you want to permanently delete company "${name}"? All company details, accounts, employees, and records will be permanently removed from the database.`)) return;
     try {
-      await apiRequest(`/companies/${id}`, { method: 'DELETE' });
+      await apiRequest(`/companies/${id}?permanent=true`, { method: 'DELETE' });
+      setSuccess(`Company "${name}" and all associated data permanently deleted from database.`);
       fetchData();
     } catch (err) {
       setError(err.message);
