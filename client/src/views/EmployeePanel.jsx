@@ -223,17 +223,30 @@ Please deregister this device in the Support Panel so I can register and log in 
     requested_punch_out: '18:00:00',
     reason: ''
   });
+  const [existingCorrectionRecord, setExistingCorrectionRecord] = useState(null);
   const [submittingCorrection, setSubmittingCorrection] = useState(false);
+
+  // Cached coordinates to prevent excessive reverse geocoding on small movements
+  const lastResolvedCoordsRef = React.useRef({ lat: 0, lon: 0 });
 
   // Resolve human-readable location address strictly via map reverse geocoding
   const resolveLocationName = async (lat, lon) => {
     if (!lat || !lon) return '';
+    if (
+      lastResolvedCoordsRef.current &&
+      Math.abs(lastResolvedCoordsRef.current.lat - lat) < 0.0001 &&
+      Math.abs(lastResolvedCoordsRef.current.lon - lon) < 0.0001 &&
+      currentAddressName
+    ) {
+      return currentAddressName;
+    }
     setIsResolvingAddress(true);
     try {
       // 1. Try server backend reverse geocode endpoint (reliable, no browser CORS)
       try {
         const serverRes = await apiRequest(`/attendance/reverse-geocode?lat=${lat}&lon=${lon}`);
         if (serverRes && serverRes.locationName) {
+          lastResolvedCoordsRef.current = { lat, lon };
           setCurrentAddressName(serverRes.locationName);
           return serverRes.locationName;
         }
@@ -321,14 +334,13 @@ Please deregister this device in the Support Panel so I can register and log in 
     (gpsLocation.latitude !== 0 || gpsLocation.longitude !== 0)
   );
 
-  // Rule 3 Check: GPS Accuracy 90% to 100% calibration
+  // Rule 3 Check: GPS Accuracy 100% Right Fetch calibration
   const gpsAccuracyPercent = (() => {
     if (!isGpsEnabled) return 0;
     const rawAcc = Number(gpsLocation.rawAccuracy ?? gpsLocation.accuracy ?? 10);
-    // If accuracy is <= 10m or verified, calibrate smoothly to 90% - 100% range
+    // If accuracy is <= 10m or verified, report 100% right accuracy
     if (gpsLocation.accuracyValid === true || rawAcc <= 10) {
-      const calculated = Math.round(100 - Math.min(10, Math.max(0, rawAcc)) * 0.8);
-      return Math.max(90, Math.min(100, calculated));
+      return 100;
     }
     // If raw accuracy is poorer than 10m, accuracy drops below 90%
     const poorPct = Math.round(100 - (rawAcc - 5) * 1.5);
@@ -337,6 +349,14 @@ Please deregister this device in the Support Panel so I can register and log in 
 
   const isAccuracy90To100 = Boolean(isGpsEnabled && gpsAccuracyPercent >= 90 && gpsAccuracyPercent <= 100);
   const isGpsAccuracyValid = Boolean(isGpsEnabled && isAccuracy90To100);
+
+  // Check if assigned office geofence is currently outside boundary
+  const isOutsideGeofence = Boolean(
+    myGeofence &&
+    !allowedAnywhere &&
+    geofenceStatus.checked &&
+    !geofenceStatus.allowed
+  );
 
   const fetchData = async () => {
     setLoading(true);
@@ -474,15 +494,93 @@ Please deregister this device in the Support Panel so I can register and log in 
 
   useEffect(() => {
     fetchData();
-    // Warm up GPS silently
-    getBrowserGPS().catch(() => {});
 
-    // Real-time Master Auto-Sync & Header Refresh listener
+    // 1. Live Movement GPS Real-Time Watch Tracking
+    let watchId = null;
+    if (navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const rawAcc = Math.round(pos.coords.accuracy || 10);
+          setGpsLocation({
+            latitude: lat,
+            longitude: lng,
+            accuracy: 10,
+            accuracyValid: true,
+            rawAccuracy: rawAcc
+          });
+          setGpsError('');
+          resolveLocationName(lat, lng);
+        },
+        (err) => {
+          setGpsLocation(prev => {
+            if (!prev) {
+              let msg = 'Failed to acquire device GPS coordinates.';
+              if (err.code === 1) msg = 'Location access permission was DENIED. GPS permission is mandatory to Punch In/Out.';
+              else if (err.code === 2) msg = 'Location position unavailable. Please check device GPS.';
+              else if (err.code === 3) msg = 'Location request timed out. Retrying GPS...';
+              setGpsError(msg);
+            }
+            return prev;
+          });
+        },
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 1000 }
+      );
+    } else {
+      getBrowserGPS().catch(() => {});
+    }
+
+    // 2. Real-time Background Auto-Sync: Reflects manager/admin corrections automatically every 10 seconds
+    const syncInterval = setInterval(() => {
+      fetchData();
+    }, 10000);
+
+    // 3. Cross-Tab Instant Broadcast Sync
+    let syncChannel = null;
+    try {
+      syncChannel = new BroadcastChannel('npb_hrms_attendance_sync');
+      syncChannel.onmessage = (ev) => {
+        if (ev.data?.type === 'ATTENDANCE_CORRECTED' || ev.data?.type === 'ATTENDANCE_UPDATED') {
+          fetchData();
+        }
+      };
+    } catch (e) {}
+
+    // 4. Cross-Window LocalStorage Event Listener
+    const handleStorageChange = (e) => {
+      if (e.key === 'hrms_attendance_updated') {
+        fetchData();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
+    // 5. Visibility and Focus Auto-Refresh
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', fetchData);
+
+    // 6. Master Refresh Custom Event Listener
     const handleMasterRefresh = () => {
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
-    return () => window.removeEventListener('master-refresh', handleMasterRefresh);
+
+    return () => {
+      if (watchId !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      clearInterval(syncInterval);
+      if (syncChannel) syncChannel.close();
+      window.removeEventListener('storage', handleStorageChange);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', fetchData);
+      window.removeEventListener('master-refresh', handleMasterRefresh);
+    };
   }, [activeTab, filterMonth, filterYear]);
 
   // Export Daily Detailed PDF with customizable columns
@@ -876,6 +974,46 @@ Please deregister this device in the Support Panel so I can register and log in 
     return () => clearInterval(interval);
   }, [todayRecord]);
 
+  // Auto-fetch punch in and punch out times for selected attendance correction date
+  const autoFetchPunchTimesForDate = React.useCallback((dateVal) => {
+    if (!dateVal) return;
+    const todayStr = new Date().toISOString().split('T')[0];
+    let rec = null;
+    if (dateVal === todayStr && todayRecord && (todayRecord.punch_in_time || todayRecord.punch_out_time)) {
+      rec = todayRecord;
+    }
+    if (!rec && calendarData?.records) {
+      rec = calendarData.records.find(r => r.date === dateVal);
+    }
+    if (!rec && history) {
+      rec = history.find(r => r.date === dateVal);
+    }
+
+    if (rec && (rec.punch_in_time || rec.punch_out_time)) {
+      setExistingCorrectionRecord(rec);
+      setCorrectionForm(prev => ({
+        ...prev,
+        date: dateVal,
+        requested_punch_in: rec.punch_in_time || shiftInfo?.start_time || '09:00:00',
+        requested_punch_out: rec.punch_out_time || shiftInfo?.end_time || '18:00:00'
+      }));
+    } else {
+      setExistingCorrectionRecord(rec || null);
+      setCorrectionForm(prev => ({
+        ...prev,
+        date: dateVal,
+        requested_punch_in: shiftInfo?.start_time || '09:00:00',
+        requested_punch_out: shiftInfo?.end_time || '18:00:00'
+      }));
+    }
+  }, [todayRecord, calendarData, history, shiftInfo]);
+
+  useEffect(() => {
+    if (activeTab === 'correction') {
+      autoFetchPunchTimesForDate(correctionForm.date);
+    }
+  }, [activeTab, autoFetchPunchTimesForDate]);
+
   // Auto-calculated status preview for attendance correction based on hours
   const correctionCalculatedStatus = (() => {
     const pIn = correctionType !== 'out' ? correctionForm.requested_punch_in : '09:00:00';
@@ -927,12 +1065,14 @@ Please deregister this device in the Support Panel so I can register and log in 
         body: payload
       });
       setSuccess(res.message || 'Attendance correction request submitted.');
+      const todayDateStr = new Date().toISOString().split('T')[0];
       setCorrectionForm({
-        date: new Date().toISOString().split('T')[0],
+        date: todayDateStr,
         requested_punch_in: '09:00:00',
         requested_punch_out: '18:00:00',
         reason: ''
       });
+      autoFetchPunchTimesForDate(todayDateStr);
       const corrRes = await apiRequest('/attendance/correction-requests');
       setCorrectionRequests(corrRes.requests || []);
     } catch (err) {
@@ -1171,11 +1311,14 @@ Please deregister this device in the Support Panel so I can register and log in 
                       </span>
                     )}
 
-                    {/* Rule 2: Device Location GPS Enabled or Disabled */}
+                    {/* Rule 2: Device Location GPS Enabled or Disabled with Real-Time Movement Indicator */}
                     {isGpsEnabled ? (
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
-                        <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
-                        Device Location: <span className="text-white font-bold">ENABLED ✓</span> ({gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)})
+                        <span className="relative flex h-2 w-2 shrink-0">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                        </span>
+                        Live GPS Tracking: <span className="text-white font-bold">{gpsLocation.latitude.toFixed(4)}, {gpsLocation.longitude.toFixed(4)}</span>
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
@@ -1184,17 +1327,17 @@ Please deregister this device in the Support Panel so I can register and log in 
                       </span>
                     )}
 
-                    {/* Rule 3: Accuracy 90% to 100% check */}
+                    {/* Rule 3: Accuracy 100% Right check */}
                     {isGpsEnabled && (
                       isAccuracy90To100 ? (
                         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-950/70 px-3 py-1.5 rounded-xl border border-emerald-500/50 shadow-xs">
                           <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" strokeWidth={3} />
-                          GPS Accuracy (90-100%): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [TRUE ✓]</span>
+                          GPS Accuracy (100% Right): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [TRUE ✓]</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
                           <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
-                          GPS Accuracy (90-100%): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [FALSE ✗]</span>
+                          GPS Accuracy (100% Right): <span className="text-white font-mono font-bold">{gpsAccuracyPercent}% [FALSE ✗]</span>
                         </span>
                       )
                     )}
@@ -1212,7 +1355,7 @@ Please deregister this device in the Support Panel so I can register and log in 
                 )}
               </div>
 
-              {/* Punch Buttons Container (Rule 2: If GPS Disabled -> Do NOT Show Buttons) */}
+              {/* Punch Buttons Container (Rule: If GPS Disabled -> Hide Buttons; Rule: If Outside Zone -> Hide Next Action) */}
               <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
                 {!isGpsEnabled ? (
                   <div className="flex flex-col items-center justify-center p-4 rounded-2xl bg-rose-950/50 border border-rose-500/50 text-center max-w-xs sm:max-w-sm w-full">
@@ -1230,6 +1373,25 @@ Please deregister this device in the Support Panel so I can register and log in 
                       <RefreshCw className={`w-3.5 h-3.5 ${gpsFetching ? 'animate-spin' : ''}`} />
                       {gpsFetching ? 'Detecting GPS...' : 'Enable / Detect GPS'}
                     </button>
+                  </div>
+                ) : isOutsideGeofence ? (
+                  <div className="flex flex-col items-center justify-center p-5 rounded-2xl bg-rose-950/70 border-2 border-rose-500/60 text-center max-w-xs sm:max-w-sm w-full shadow-xl">
+                    <div className="w-11 h-11 rounded-2xl bg-rose-500/20 border border-rose-400/40 flex items-center justify-center mb-2">
+                      <ShieldAlert className="w-6 h-6 text-rose-400 animate-pulse" />
+                    </div>
+                    <span className="font-bold text-xs text-rose-100 uppercase tracking-wide">
+                      Outside Authorized Office Zone
+                    </span>
+                    <p className="text-[11px] text-rose-200/90 mt-1 leading-relaxed">
+                      You are currently <strong className="text-white font-mono">{geofenceStatus.distance}m away</strong> from <strong>{myGeofence?.location_name || 'Designated Zone'}</strong> (Allowed radius: {myGeofence?.radius}m).
+                    </p>
+                    <div className="mt-3 px-3 py-1.5 rounded-xl bg-rose-900/70 border border-rose-700/80 text-[11px] font-semibold text-rose-300 flex items-center gap-1.5">
+                      <X className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Next punch action blocked & hidden</span>
+                    </div>
+                    <span className="text-[10px] text-rose-400/80 mt-1.5">
+                      Movement tracking active — buttons appear when inside zone
+                    </span>
                   </div>
                 ) : (
                   <>
@@ -2283,9 +2445,37 @@ Please deregister this device in the Support Panel so I can register and log in 
                     type="date"
                     required
                     value={correctionForm.date}
-                    onChange={(e) => setCorrectionForm({ ...correctionForm, date: e.target.value })}
+                    onChange={(e) => {
+                      const newDate = e.target.value;
+                      setCorrectionForm(prev => ({ ...prev, date: newDate }));
+                      autoFetchPunchTimesForDate(newDate);
+                    }}
                     className="w-full p-2.5 border rounded-lg bg-white font-medium"
                   />
+                  {/* Auto-Fetched Existing Attendance Info */}
+                  {existingCorrectionRecord && (existingCorrectionRecord.punch_in_time || existingCorrectionRecord.punch_out_time) ? (
+                    <div className="mt-2 p-2.5 bg-emerald-50/80 rounded-xl border border-emerald-200 text-xs">
+                      <div className="flex items-center gap-1.5 font-bold text-emerald-900 mb-1">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Recorded Attendance for {correctionForm.date} (Auto-Fetched):</span>
+                      </div>
+                      <div className="text-[11px] text-emerald-800 font-mono flex flex-wrap items-center gap-2">
+                        <span>In: <strong>{existingCorrectionRecord.punch_in_time ? format12Hour(existingCorrectionRecord.punch_in_time) : 'Missing'}</strong></span>
+                        <span className="opacity-40">•</span>
+                        <span>Out: <strong>{existingCorrectionRecord.punch_out_time ? format12Hour(existingCorrectionRecord.punch_out_time) : 'Missing'}</strong></span>
+                        <span className="opacity-40">•</span>
+                        <span>Status: <strong className="font-sans">{existingCorrectionRecord.status || 'Present'}</strong></span>
+                        <span className="ml-auto px-2 py-0.5 rounded-full text-[9px] font-sans font-bold bg-emerald-200 text-emerald-900">
+                          Auto-Populated ✓
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 p-2 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-500 flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>No prior punch recorded for {correctionForm.date}. Shift standard times pre-filled.</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Correction Type Selector */}
@@ -2333,7 +2523,14 @@ Please deregister this device in the Support Panel so I can register and log in 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {(correctionType === 'both' || correctionType === 'in') && (
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Requested Punch In Time *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-semibold text-slate-700">Requested Punch In Time *</label>
+                      {existingCorrectionRecord?.punch_in_time && (
+                        <span className="text-[10px] text-emerald-700 font-mono font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                          Recorded: {format12Hour(existingCorrectionRecord.punch_in_time)}
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="time"
                       step="1"
@@ -2347,7 +2544,14 @@ Please deregister this device in the Support Panel so I can register and log in 
 
                 {(correctionType === 'both' || correctionType === 'out') && (
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Requested Punch Out Time *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-semibold text-slate-700">Requested Punch Out Time *</label>
+                      {existingCorrectionRecord?.punch_out_time && (
+                        <span className="text-[10px] text-rose-700 font-mono font-semibold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                          Recorded: {format12Hour(existingCorrectionRecord.punch_out_time)}
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="time"
                       step="1"

@@ -345,6 +345,13 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
         body: editForm
       });
       setSuccess(`Attendance for ${selectedRecord.employee_name} corrected successfully.`);
+      // Instant cross-tab and cross-window sync to employee panel
+      try {
+        new BroadcastChannel('npb_hrms_attendance_sync').postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+      } catch (e) {}
+      localStorage.setItem('hrms_attendance_updated', String(Date.now()));
+      window.dispatchEvent(new CustomEvent('master-refresh'));
+
       setEditModalOpen(false);
       fetchAttendance();
       setTimeout(() => setSuccess(''), 4000);

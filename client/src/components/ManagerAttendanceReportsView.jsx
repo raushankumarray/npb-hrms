@@ -207,6 +207,13 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
       });
       setSuccess(`Attendance correction request #${corrId} ${status} successfully.`);
       setDecisionNotes('');
+      // Instant cross-tab and cross-window sync to employee panel
+      try {
+        new BroadcastChannel('npb_hrms_attendance_sync').postMessage({ type: 'ATTENDANCE_CORRECTED', timestamp: Date.now() });
+      } catch (e) {}
+      localStorage.setItem('hrms_attendance_updated', String(Date.now()));
+      window.dispatchEvent(new CustomEvent('master-refresh'));
+
       fetchApprovals();
       fetchAttendance();
       if (onStatsUpdate) onStatsUpdate();
@@ -426,6 +433,13 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
         });
         setSuccess('Manual attendance entry saved successfully.');
       }
+      // Instant cross-tab and cross-window sync to employee panel
+      try {
+        new BroadcastChannel('npb_hrms_attendance_sync').postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+      } catch (e) {}
+      localStorage.setItem('hrms_attendance_updated', String(Date.now()));
+      window.dispatchEvent(new CustomEvent('master-refresh'));
+
       setShowManualModal(false);
       fetchAttendance();
       if (onStatsUpdate) onStatsUpdate();

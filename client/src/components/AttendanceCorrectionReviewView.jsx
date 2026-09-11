@@ -76,6 +76,13 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
           : `Request for ${reviewModal.request.employee_name} rejected. Attendance marked as Absent.`
       );
 
+      // Instant cross-tab and cross-window sync to employee panel
+      try {
+        new BroadcastChannel('npb_hrms_attendance_sync').postMessage({ type: 'ATTENDANCE_CORRECTED', timestamp: Date.now() });
+      } catch (e) {}
+      localStorage.setItem('hrms_attendance_updated', String(Date.now()));
+      window.dispatchEvent(new CustomEvent('master-refresh'));
+
       setReviewModal({ open: false, request: null, action: 'approved', notes: '', submitting: false });
       fetchRequests();
     } catch (err) {
