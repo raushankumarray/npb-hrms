@@ -52,6 +52,13 @@ export default function ManagerPanel({ user, company, activeTab }) {
   const [showSolveTicketModal, setShowSolveTicketModal] = useState(false);
   const [chatTicketId, setChatTicketId] = useState(null);
   const [showChatModal, setShowChatModal] = useState(false);
+  // Helpdesk complaint creation states for manager
+  const [showRaiseComplaintModal, setShowRaiseComplaintModal] = useState(false);
+  const [complaintCategory, setComplaintCategory] = useState('other');
+  const [complaintTitle, setComplaintTitle] = useState('');
+  const [complaintDescription, setComplaintDescription] = useState('');
+  const [submittingComplaint, setSubmittingComplaint] = useState(false);
+  const [complaintFilter, setComplaintFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -312,6 +319,39 @@ export default function ManagerPanel({ user, company, activeTab }) {
       setError(err.message || 'Failed to assign ticket.');
     }
   };
+
+  const handleCreateComplaint = async (e) => {
+    e.preventDefault();
+    if (!complaintTitle.trim()) {
+      setError('Please provide a title for your complaint.');
+      return;
+    }
+    setSubmittingComplaint(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await apiRequest('/tickets/service-request', {
+        method: 'POST',
+        body: {
+          request_type: complaintCategory,
+          title: complaintTitle.trim(),
+          description: complaintDescription.trim()
+        }
+      });
+      setShowRaiseComplaintModal(false);
+      setComplaintTitle('');
+      setComplaintDescription('');
+      setSuccess(`Complaint #${res.requestId} submitted successfully! Auto-assigned to Technical Support Team.`);
+      // Refresh tickets
+      const tickRes = await apiRequest('/tickets/service-requests?view=all');
+      setTickets(tickRes.requests || []);
+    } catch (err) {
+      setError(err.message || 'Failed to submit complaint.');
+    } finally {
+      setSubmittingComplaint(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -323,6 +363,10 @@ export default function ManagerPanel({ user, company, activeTab }) {
               ? 'Attendance Approval'
               : activeTab === 'reports'
               ? 'Team Reports'
+              : activeTab === 'live-map'
+              ? 'Live Route & Map'
+              : activeTab === 'tickets'
+              ? 'Helpdesk & Tickets'
               : 'Manager Team Portal'}
           </h2>
           <p className="text-xs text-slate-500">{company?.name} • Assigned team oversight, attendance metrics, and approvals</p>
@@ -965,120 +1009,209 @@ export default function ManagerPanel({ user, company, activeTab }) {
       )}
 
       {/* TAB: HELPDESK & SERVICE TICKETS */}
-      {activeTab === 'tickets' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Team Helpdesk & Service Tickets</h3>
-              <p className="text-xs text-slate-500">Resolve team missing punch requests, inquiries, and correction appeals</p>
+      {activeTab === 'tickets' && (() => {
+        const isMyTicket = (t) => (
+          (user.employee_id && t.employee_id === user.employee_id) ||
+          t.employee_name === (user.fullName || user.username) ||
+          t.created_by_username === user.username
+        );
+        const myTicketsCount = tickets.filter(isMyTicket).length;
+        const teamTicketsCount = tickets.filter(t => !isMyTicket(t)).length;
+        const displayTickets = tickets.filter(t => {
+          if (complaintFilter === 'mine') return isMyTicket(t);
+          if (complaintFilter === 'team') return !isMyTicket(t);
+          return true;
+        });
+
+        return (
+          <div className="space-y-4">
+            {/* Top Bar with Raise Complaint Button */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Helpdesk & Service Tickets</h3>
+                <p className="text-xs text-slate-500">
+                  Track team inquiries or raise issues directly to the Technical Support Team
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setComplaintCategory('other');
+                  setComplaintTitle('');
+                  setComplaintDescription('');
+                  setShowRaiseComplaintModal(true);
+                }}
+                className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+              >
+                <Ticket className="w-4 h-4" />
+                <span>+ Raise Complaint / Issue</span>
+              </button>
             </div>
-          </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                  <tr>
-                    <th className="p-3">Ticket ID</th>
-                    <th className="p-3">Team Member</th>
-                    <th className="p-3">Category</th>
-                    <th className="p-3">Title & Request</th>
-                    <th className="p-3">Date</th>
-                    <th className="p-3">Assigned To</th>
-                    <th className="p-3">Status</th>
-                    <th className="p-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {tickets.map(t => (
-                    <tr key={t.id} className="hover:bg-slate-50/50">
-                      <td className="p-3 font-mono font-bold text-sky-600">#{t.id}</td>
-                      <td className="p-3 font-semibold text-slate-900">{t.employee_name} ({t.employee_id})</td>
-                      <td className="p-3 font-medium text-slate-700 capitalize">{t.category || t.request_type}</td>
-                      <td className="p-3">
-                        <p className="font-semibold text-slate-800">{t.title}</p>
-                        {t.description && <p className="text-[11px] text-slate-500 truncate max-w-xs">{t.description}</p>}
-                      </td>
-                      <td className="p-3 text-slate-600">{new Date(t.created_at).toLocaleDateString()}</td>
-                      <td className="p-3">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          t.assigned_role === 'support' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
-                          t.assigned_role === 'admin' ? 'bg-purple-100 text-purple-800 border border-purple-200' :
-                          'bg-sky-100 text-sky-800 border border-sky-200'
-                        }`}>
-                          {t.assigned_role === 'support' ? 'Support Panel' : t.assigned_role === 'admin' ? 'Admin' : 'Manager'}
-                        </span>
-                      </td>
-                      <td className="p-3">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' :
-                          t.status === 'in_progress' ? 'bg-amber-100 text-amber-700' :
-                          t.status === 'closed' ? 'bg-slate-100 text-slate-600' :
-                          'bg-rose-100 text-rose-700'
-                        }`}>
-                          {t.status}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => {
-                              setChatTicketId(t.id);
-                              setShowChatModal(true);
-                            }}
-                            className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors"
-                            title="Open Ticket Conversation"
-                          >
-                            <MessageSquare className="w-3.5 h-3.5" />
-                            Chat
-                          </button>
+            {/* Quick Filter Tabs */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setComplaintFilter('all')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
+                  complaintFilter === 'all'
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                All Tickets ({tickets.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setComplaintFilter('mine')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
+                  complaintFilter === 'mine'
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                My Raised Complaints ({myTicketsCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setComplaintFilter('team')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
+                  complaintFilter === 'team'
+                    ? 'bg-sky-600 text-white border-sky-600'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                Team Member Tickets ({teamTicketsCount})
+              </button>
+            </div>
 
-                          {/* Assign Dropdown Button: Admin or Support */}
-                          {t.status !== 'closed' && (
-                            <select
-                              defaultValue=""
-                              onChange={async (e) => {
-                                const target = e.target.value;
-                                if (!target) return;
-                                await handleAssignTicket(t.id, target);
-                                e.target.value = '';
-                              }}
-                              className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-semibold cursor-pointer focus:outline-none transition-colors"
-                              title="Assign ticket to Admin or Support"
-                            >
-                              <option value="" disabled>Assign ▾</option>
-                              <option value="admin">Assign to Admin</option>
-                              <option value="support">Assign to Support</option>
-                            </select>
-                          )}
-
-                          <button
-                            onClick={() => {
-                              setSelectedTicket(t);
-                              setTicketResolutionNotes(t.resolution_notes || '');
-                              setShowSolveTicketModal(true);
-                            }}
-                            className="px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-xs font-semibold"
-                          >
-                            Resolve
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {tickets.length === 0 && (
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
                     <tr>
-                      <td colSpan="7" className="p-8 text-center text-slate-400">
-                        No team service tickets found.
-                      </td>
+                      <th className="p-3">Ticket ID</th>
+                      <th className="p-3">Requester</th>
+                      <th className="p-3">Category</th>
+                      <th className="p-3">Title & Request</th>
+                      <th className="p-3">Date</th>
+                      <th className="p-3">Assigned To</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Action</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {displayTickets.map(t => {
+                      const mine = isMyTicket(t);
+                      return (
+                        <tr key={t.id} className="hover:bg-slate-50/50">
+                          <td className="p-3 font-mono font-bold text-sky-600">#{t.id}</td>
+                          <td className="p-3 font-semibold text-slate-900">
+                            <div className="flex items-center gap-1.5">
+                              <span>{t.employee_name}</span>
+                              {mine ? (
+                                <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-700 font-bold text-[10px]">
+                                  My Complaint
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 text-[10px]">({t.employee_code || t.employee_id})</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-3 font-medium text-slate-700 capitalize">{t.category || t.request_type}</td>
+                          <td className="p-3">
+                            <p className="font-semibold text-slate-800">{t.title}</p>
+                            {t.description && <p className="text-[11px] text-slate-500 truncate max-w-xs">{t.description}</p>}
+                          </td>
+                          <td className="p-3 text-slate-600">{new Date(t.created_at).toLocaleDateString()}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              t.assigned_role === 'support' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
+                              t.assigned_role === 'admin' ? 'bg-purple-100 text-purple-800 border border-purple-200' :
+                              'bg-sky-100 text-sky-800 border border-sky-200'
+                            }`}>
+                              {t.assigned_role === 'support' ? 'Support Panel' : t.assigned_role === 'admin' ? 'Admin' : 'Manager'}
+                            </span>
+                          </td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' :
+                              t.status === 'in_progress' ? 'bg-amber-100 text-amber-700' :
+                              t.status === 'closed' ? 'bg-slate-100 text-slate-600' :
+                              'bg-rose-100 text-rose-700'
+                            }`}>
+                              {t.status}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setChatTicketId(t.id);
+                                  setShowChatModal(true);
+                                }}
+                                className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors"
+                                title="Open Ticket Conversation"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" />
+                                Chat
+                              </button>
+
+                              {!mine && t.status !== 'closed' && (
+                                <select
+                                  defaultValue=""
+                                  onChange={async (e) => {
+                                    const target = e.target.value;
+                                    if (!target) return;
+                                    await handleAssignTicket(t.id, target);
+                                    e.target.value = '';
+                                  }}
+                                  className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-semibold cursor-pointer focus:outline-none transition-colors"
+                                  title="Assign ticket to Admin or Support"
+                                >
+                                  <option value="" disabled>Assign ▾</option>
+                                  <option value="admin">Assign to Admin</option>
+                                  <option value="support">Assign to Support</option>
+                                </select>
+                              )}
+
+                              {!mine && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedTicket(t);
+                                    setTicketResolutionNotes(t.resolution_notes || '');
+                                    setShowSolveTicketModal(true);
+                                  }}
+                                  className="px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-xs font-semibold"
+                                >
+                                  Resolve
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {displayTickets.length === 0 && (
+                      <tr>
+                        <td colSpan="8" className="p-8 text-center text-slate-400">
+                          {complaintFilter === 'mine'
+                            ? 'You have not raised any complaints yet.'
+                            : complaintFilter === 'team'
+                            ? 'No team service tickets found.'
+                            : 'No tickets found.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* TAB: TEAM REPORTS - MONTHLY ATTENDANCE SHEET */}
       {activeTab === 'reports' && (
@@ -1167,6 +1300,114 @@ export default function ManagerPanel({ user, company, activeTab }) {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: RAISE COMPLAINT TO SUPPORT */}
+      {showRaiseComplaintModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Ticket className="w-5 h-5 text-indigo-600" />
+                  Raise Complaint / Support Issue
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Submit an issue directly to the Technical Support Team
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRaiseComplaintModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Auto-assignment notice */}
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 flex items-start gap-2.5 text-xs text-indigo-900">
+              <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Auto-Assigned to Support Team Only</p>
+                <p className="text-indigo-700">
+                  This issue will be routed directly to the Central Technical Support Team for prompt resolution.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleCreateComplaint} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Issue Category *</label>
+                <select
+                  value={complaintCategory}
+                  onChange={(e) => setComplaintCategory(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="other">System / Software Glitch or Other</option>
+                  <option value="attendance_correction">Attendance / Punch Issue</option>
+                  <option value="device_change">Device Registration / Binding Problem</option>
+                  <option value="password_reset">Password / Authentication Issue</option>
+                  <option value="account_problem">Account / Permissions Inquiry</option>
+                  <option value="missing_punch">Missing Punch Appeal</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Complaint Title / Subject *</label>
+                <input
+                  type="text"
+                  required
+                  value={complaintTitle}
+                  onChange={(e) => setComplaintTitle(e.target.value)}
+                  placeholder="e.g. Map tracking delay or attendance punch error..."
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Detailed Explanation of Issue *</label>
+                <textarea
+                  required
+                  rows={4}
+                  value={complaintDescription}
+                  onChange={(e) => setComplaintDescription(e.target.value)}
+                  placeholder="Describe the exact issue faced, steps to reproduce, or error messages encountered..."
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <span className="text-[11px] font-semibold text-slate-400">
+                  Target: <strong className="text-indigo-600">Technical Support</strong>
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRaiseComplaintModal(false)}
+                    className="px-3 py-1.5 border border-slate-200 rounded-lg font-semibold text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submittingComplaint}
+                    className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                  >
+                    {submittingComplaint ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        Submitting...
+                      </>
+                    ) : (
+                      'Submit Complaint'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

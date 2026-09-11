@@ -40,7 +40,7 @@ try {
   console.warn('Migration note for service_requests:', e.message);
 }
 
-// Create Service Request / Ticket (Employee)
+// Create Service Request / Ticket (Employee or Manager)
 router.post('/service-request', verifyAuth, (req, res) => {
   const {
     request_type, title, description,
@@ -51,18 +51,31 @@ router.post('/service-request', verifyAuth, (req, res) => {
     return res.status(400).json({ error: 'Request type and title are required.' });
   }
 
-  const employeeId = req.user.role_name === 'employee' ? req.user.employee_id : req.body.employee_id;
+  let employeeId = req.user.employee_id;
+  if (!employeeId && req.user.id) {
+    const empRow = db.prepare('SELECT id FROM employees WHERE user_id = ?').get(req.user.id);
+    if (empRow) employeeId = empRow.id;
+  }
+  if (!employeeId && req.body.employee_id) {
+    employeeId = req.body.employee_id;
+  }
+
   const companyId = req.user.company_id || req.body.company_id;
 
   if (!employeeId || !companyId) {
     return res.status(400).json({ error: 'Employee and company identification required.' });
   }
 
-  // User Rule: All employee helpdesk complaints/issues are routed DIRECTLY to the Support Team.
-  // Do NOT assign to Manager or Company Admin.
+  // User Rule: All employee and manager helpdesk complaints/issues are routed DIRECTLY to the Support Team.
+  // Auto-assigned strictly to Technical Support Team only.
   const assignedRole = 'support';
   const assignedTo = null;
   const emp = db.prepare('SELECT full_name, manager_id FROM employees WHERE id = ?').get(employeeId);
+  const senderDisplayName = emp?.full_name || req.user.full_name || req.user.username;
+  const senderRoleLabel = req.user.role_name === 'manager' ? 'Manager' : 'Employee';
+
+  const validTypes = ['missing_punch', 'password_reset', 'device_change', 'attendance_correction', 'account_problem', 'other'];
+  const sanitizedRequestType = validTypes.includes(request_type) ? request_type : 'other';
 
   const result = db.prepare(`
     INSERT INTO service_requests (
@@ -71,7 +84,7 @@ router.post('/service-request', verifyAuth, (req, res) => {
       assigned_role, assigned_to
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
   `).run(
-    companyId, employeeId, request_type, title.trim(), description || null,
+    companyId, employeeId, sanitizedRequestType, title.trim(), description || null,
     punch_date || null, suggested_punch_in || null, suggested_punch_out || null,
     assignedRole, assignedTo
   );
@@ -83,7 +96,7 @@ router.post('/service-request', verifyAuth, (req, res) => {
     db.prepare(`
       INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
       VALUES (?, ?, ?, ?, ?)
-    `).run(reqId, req.user.id, emp?.full_name || req.user.username, req.user.role_name, `Ticket created: "${title.trim()}". Directly routed to Technical Support Team for resolution.`);
+    `).run(reqId, req.user.id, senderDisplayName, req.user.role_name, `Ticket created by ${senderRoleLabel} (${senderDisplayName}): "${title.trim()}". Directly routed to Technical Support Team for resolution.`);
   } catch (e) {}
 
   // Send notification directly to Technical Support Team and Super Admins
@@ -97,7 +110,7 @@ router.post('/service-request', verifyAuth, (req, res) => {
       db.prepare(`
         INSERT INTO notifications (user_id, company_id, title, message, type, link)
         VALUES (?, ?, 'New Support Ticket', ?, 'ticket', '/support')
-      `).run(su.id, companyId, `${emp?.full_name || 'Employee'} submitted support ticket #${reqId}: "${title.trim()}" (${request_type})`);
+      `).run(su.id, companyId, `${senderRoleLabel} ${senderDisplayName} submitted support ticket #${reqId}: "${title.trim()}" (${request_type})`);
     }
   } catch (e) {}
 
@@ -143,16 +156,18 @@ router.get('/service-requests', verifyAuth, (req, res) => {
 
   // If scope is explicitly 'own' or for specific employee
   if (req.query.scope === 'own') {
-    query += ' AND sr.employee_id = ?';
-    params.push(req.user.employee_id);
+    query += ' AND (sr.employee_id = ? OR e.user_id = ?)';
+    params.push(req.user.employee_id, req.user.id);
   } else if (req.user.role_name === 'manager' || req.query.scope === 'team' || req.query.scope === 'reporting') {
     if (req.user.role_name === 'manager') {
       query += ` AND (
         e.manager_id = ? 
         OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?)
         OR (sr.assigned_role = 'manager' AND (sr.assigned_to = ? OR sr.assigned_to IS NULL))
+        OR sr.employee_id = ?
+        OR e.user_id = ?
       )`;
-      params.push(req.user.employee_id, req.user.employee_id, req.user.id);
+      params.push(req.user.employee_id, req.user.employee_id, req.user.id, req.user.employee_id, req.user.id);
     }
   } else if (req.user.role_name === 'support') {
     if (req.query.scope === 'support' || !req.query.scope) {
