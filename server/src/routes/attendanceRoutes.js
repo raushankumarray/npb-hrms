@@ -2238,7 +2238,13 @@ function buildMonthlySheetData(req, options = {}) {
     empParams.push(req.user.employee_id);
   }
 
-  const { employee_id, employee_ids, search } = options;
+  const { employee_id, employee_ids, search, manager_id } = options;
+
+  if (manager_id && manager_id !== 'all') {
+    empQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    empParams.push(parseInt(manager_id, 10), parseInt(manager_id, 10));
+  }
+
   if (employee_ids) {
     const ids = Array.isArray(employee_ids)
       ? employee_ids.map(Number).filter(n => !isNaN(n))
@@ -2436,6 +2442,7 @@ router.get('/monthly-sheet', verifyAuth, (req, res) => {
     employee_id,
     employee_ids,
     search,
+    manager_id,
     limit = 10,
     offset = 0
   } = req.query;
@@ -2445,7 +2452,8 @@ router.get('/monthly-sheet', verifyAuth, (req, res) => {
     year,
     employee_id,
     employee_ids,
-    search
+    search,
+    manager_id
   });
 
   const pLimit = parseInt(limit, 10) || 10;
@@ -2480,7 +2488,8 @@ router.post('/monthly-sheet-export', verifyAuth, (req, res) => {
     employee_id,
     employee_ids,
     search,
-    manager_name
+    manager_name,
+    manager_id
   } = req.body;
 
   const result = buildMonthlySheetData(req, {
@@ -2488,7 +2497,8 @@ router.post('/monthly-sheet-export', verifyAuth, (req, res) => {
     year,
     employee_id,
     employee_ids,
-    search
+    search,
+    manager_id
   });
 
   const monthNames = [

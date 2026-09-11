@@ -62,17 +62,30 @@ router.post('/service-request', verifyAuth, (req, res) => {
 
   const companyId = req.user.company_id || req.body.company_id;
 
+  if (!employeeId && req.user.role_name === 'company_admin') {
+    let empRow = db.prepare('SELECT id FROM employees WHERE user_id = ?').get(req.user.id);
+    if (!empRow && companyId) {
+      const resEmp = db.prepare(`
+        INSERT INTO employees (company_id, user_id, employee_id, full_name, email, mobile, department, designation)
+        VALUES (?, ?, ?, ?, ?, ?, 'Administration', 'Company Administrator')
+      `).run(companyId, req.user.id, 'ADMIN_' + req.user.id, req.user.full_name || req.user.username, req.user.email || null, req.user.mobile || null);
+      employeeId = resEmp.lastInsertRowid;
+    } else if (empRow) {
+      employeeId = empRow.id;
+    }
+  }
+
   if (!employeeId || !companyId) {
     return res.status(400).json({ error: 'Employee and company identification required.' });
   }
 
-  // User Rule: All employee and manager helpdesk complaints/issues are routed DIRECTLY to the Support Team.
-  // Auto-assigned strictly to Technical Support Team only.
+  // User Rule: All employee, manager, and company admin complaints/issues are routed DIRECTLY to the Support Team.
+  // Auto-assigned strictly to Technical Support Team only. Neither Manager nor Company Admin assign tickets.
   const assignedRole = 'support';
   const assignedTo = null;
   const emp = db.prepare('SELECT full_name, manager_id FROM employees WHERE id = ?').get(employeeId);
   const senderDisplayName = emp?.full_name || req.user.full_name || req.user.username;
-  const senderRoleLabel = req.user.role_name === 'manager' ? 'Manager' : 'Employee';
+  const senderRoleLabel = req.user.role_name === 'company_admin' ? 'Company Admin' : req.user.role_name === 'manager' ? 'Manager' : 'Employee';
 
   const validTypes = ['missing_punch', 'password_reset', 'device_change', 'attendance_correction', 'account_problem', 'other'];
   const sanitizedRequestType = validTypes.includes(request_type) ? request_type : 'other';

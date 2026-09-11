@@ -304,21 +304,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
     }
   };
 
-  const handleAssignTicket = async (ticketId, targetRole) => {
-    try {
-      const res = await apiRequest(`/tickets/service-requests/${ticketId}/assign`, {
-        method: 'PUT',
-        body: { target_role: targetRole }
-      });
-      setSuccess(res.message || `Ticket #${ticketId} assigned to ${targetRole} successfully.`);
-      // Auto-open chat thread for the assigned ticket
-      setChatTicketId(ticketId);
-      setShowChatModal(true);
-      fetchData();
-    } catch (err) {
-      setError(err.message || 'Failed to assign ticket.');
-    }
-  };
 
   const handleCreateComplaint = async (e) => {
     e.preventDefault();
@@ -1158,23 +1143,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                                 Chat
                               </button>
 
-                              {!mine && t.status !== 'closed' && (
-                                <select
-                                  defaultValue=""
-                                  onChange={async (e) => {
-                                    const target = e.target.value;
-                                    if (!target) return;
-                                    await handleAssignTicket(t.id, target);
-                                    e.target.value = '';
-                                  }}
-                                  className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-semibold cursor-pointer focus:outline-none transition-colors"
-                                  title="Assign ticket to Admin or Support"
-                                >
-                                  <option value="" disabled>Assign ▾</option>
-                                  <option value="admin">Assign to Admin</option>
-                                  <option value="support">Assign to Support</option>
-                                </select>
-                              )}
+
 
                               {!mine && (
                                 <button

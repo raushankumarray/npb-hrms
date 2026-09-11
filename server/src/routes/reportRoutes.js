@@ -7,7 +7,7 @@ const { exportCustomExcel, exportHtmlReport, formatTo12Hour } = require('../serv
 const { logAudit } = require('../services/audit');
 
 // Helper to query report data with all filters
-function fetchReportDataset({ companyId, from_date, to_date, department, manager_id, employee_id, status, search, limit, offset, userRole, currentEmpId }) {
+function fetchReportDataset({ companyId, from_date, to_date, month, year, department, manager_id, employee_id, employee_ids, status, search, limit, offset, userRole, currentEmpId }) {
   let baseQuery = `
     FROM attendance_records a
     JOIN employees e ON a.employee_id = e.id
@@ -30,20 +30,39 @@ function fetchReportDataset({ companyId, from_date, to_date, department, manager
   } else if (userRole === 'employee') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(currentEmpId);
-  } else if (employee_id) {
+  }
+
+  if (employee_ids) {
+    const ids = Array.isArray(employee_ids)
+      ? employee_ids.map(Number).filter(n => !isNaN(n))
+      : String(employee_ids).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    if (ids.length > 0) {
+      baseQuery += ` AND a.employee_id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+  } else if (employee_id && employee_id !== 'all') {
     baseQuery += ' AND a.employee_id = ?';
     params.push(employee_id);
   }
 
-  if (from_date && to_date) {
+  let finalFromDate = from_date;
+  let finalToDate = to_date;
+  if (month && year) {
+    const mStr = String(month).padStart(2, '0');
+    const daysInMonth = new Date(parseInt(year, 10), parseInt(month, 10), 0).getDate();
+    finalFromDate = `${year}-${mStr}-01`;
+    finalToDate = `${year}-${mStr}-${String(daysInMonth).padStart(2, '0')}`;
+  }
+
+  if (finalFromDate && finalToDate) {
     baseQuery += ' AND a.date BETWEEN ? AND ?';
-    params.push(from_date, to_date);
-  } else if (from_date) {
+    params.push(finalFromDate, finalToDate);
+  } else if (finalFromDate) {
     baseQuery += ' AND a.date >= ?';
-    params.push(from_date);
-  } else if (to_date) {
+    params.push(finalFromDate);
+  } else if (finalToDate) {
     baseQuery += ' AND a.date <= ?';
-    params.push(to_date);
+    params.push(finalToDate);
   }
 
   if (department) {
@@ -51,9 +70,9 @@ function fetchReportDataset({ companyId, from_date, to_date, department, manager
     params.push(department);
   }
 
-  if (manager_id) {
-    baseQuery += ' AND e.manager_id = ?';
-    params.push(manager_id);
+  if (manager_id && manager_id !== 'all') {
+    baseQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+    params.push(parseInt(manager_id, 10), parseInt(manager_id, 10));
   }
 
   if (status && status !== 'all') {
@@ -78,14 +97,22 @@ function fetchReportDataset({ companyId, from_date, to_date, department, manager
       e.designation as "Designation",
       COALESCE(m.full_name, 'None') as "Manager Name",
       a.date as "Date",
-      COALESCE(a.punch_in_time, 'Missing') as "Punch In",
-      COALESCE(a.punch_out_time, 'Missing') as "Punch Out",
+      COALESCE(a.punch_in_time, '--:--:--') as "Punch In",
+      COALESCE(a.punch_out_time, '--:--:--') as "Punch Out",
+      COALESCE(a.punch_in_time, '--:--:--') as "Punch In Time",
+      COALESCE(a.punch_out_time, '--:--:--') as "Punch Out Time",
       COALESCE(a.punch_in_location, 'Office') as "Location Name",
+      COALESCE(a.punch_in_location, 'Office') as "Punch In Address",
+      COALESCE(a.punch_out_location, 'Office') as "Punch Out Address",
       a.punch_in_lat as "Latitude",
       a.punch_in_lng as "Longitude",
+      CASE WHEN a.punch_in_lat IS NOT NULL THEN (ROUND(a.punch_in_lat, 4) || ', ' || ROUND(a.punch_in_lng, 4)) ELSE '--' END as "Punch In Lat/Long",
+      CASE WHEN a.punch_out_lat IS NOT NULL THEN (ROUND(a.punch_out_lat, 4) || ', ' || ROUND(a.punch_out_lng, 4)) ELSE '--' END as "Punch Out Lat/Long",
       a.punch_in_accuracy as "GPS Accuracy",
       a.status as "Attendance Status",
+      a.status as "Status",
       a.total_hours as "Total Working Hours",
+      a.total_hours as "Working Hours",
       COALESCE(s.name, 'General') as "Shift",
       COALESCE(a.remarks, '') as "Remarks"
     ${baseQuery}
@@ -104,15 +131,18 @@ function fetchReportDataset({ companyId, from_date, to_date, department, manager
 // Get Report Data API (for table display with pagination)
 router.get('/data', verifyAuth, (req, res) => {
   const companyId = getTenantCompanyId(req);
-  const { from_date, to_date, department, manager_id, employee_id, status, search, limit = 25, offset = 0 } = req.query;
+  const { from_date, to_date, month, year, department, manager_id, employee_id, employee_ids, status, search, limit = 25, offset = 0 } = req.query;
 
   const result = fetchReportDataset({
     companyId,
     from_date,
     to_date,
+    month,
+    year,
     department,
     manager_id,
     employee_id,
+    employee_ids,
     status,
     search,
     limit,
@@ -132,25 +162,31 @@ router.post('/export', verifyAuth, (req, res) => {
     selected_columns,
     from_date,
     to_date,
+    month,
+    year,
     department,
     manager_id,
     employee_id,
+    employee_ids,
     status,
     search
   } = req.body;
 
-  if (!Array.isArray(selected_columns) || selected_columns.length === 0) {
-    return res.status(400).json({ error: 'Please select at least one column to export.' });
-  }
+  const cols = Array.isArray(selected_columns) && selected_columns.length > 0
+    ? selected_columns
+    : ['Date', 'Employee Name', 'Punch In', 'Punch Out', 'Location Name', 'Attendance Status', 'Total Working Hours'];
 
   // Fetch all matching data (no pagination limit for full report download)
   const result = fetchReportDataset({
     companyId,
     from_date,
     to_date,
+    month,
+    year,
     department,
     manager_id,
     employee_id,
+    employee_ids,
     status,
     search,
     userRole: req.user.role_name,
@@ -167,8 +203,8 @@ router.post('/export', verifyAuth, (req, res) => {
     req.user.id,
     req.user.role_name,
     format,
-    JSON.stringify(selected_columns),
-    JSON.stringify({ from_date, to_date, department, status })
+    JSON.stringify(cols),
+    JSON.stringify({ from_date, to_date, month, year, department, status })
   );
 
   logAudit({
@@ -179,14 +215,14 @@ router.post('/export', verifyAuth, (req, res) => {
     panel: 'Reports & Export',
     action: 'REPORT_EXPORTED',
     targetEntity: 'report_exports',
-    newValues: { format, rowCount: result.rows.length, selectedColumns: selected_columns },
+    newValues: { format, rowCount: result.rows.length, selectedColumns: cols },
     reason: `Exported ${result.rows.length} rows as ${format.toUpperCase()}`
   });
 
   if (format === 'xlsx') {
     const excelBuffer = exportCustomExcel({
       data: result.rows,
-      selectedColumns: selected_columns,
+      selectedColumns: cols,
       sheetName: 'Attendance Report'
     });
 
@@ -196,10 +232,10 @@ router.post('/export', verifyAuth, (req, res) => {
   } else if (format === 'pdf' || format === 'html') {
     // Generate professional printable HTML report for clean print to PDF
     const compName = req.user.company_id ? db.prepare('SELECT name FROM companies WHERE id = ?').get(req.user.company_id)?.name : 'NPB HRMS';
-    const dateRangeStr = from_date && to_date ? `${from_date} to ${to_date}` : 'All Recorded Dates';
+    const dateRangeStr = from_date && to_date ? `${from_date} to ${to_date}` : (month && year ? `${month}/${year}` : 'All Recorded Dates');
     const htmlReport = exportHtmlReport({
       data: result.rows,
-      selectedColumns: selected_columns,
+      selectedColumns: cols,
       title: 'Custom Attendance & HRMS Report',
       companyName: compName,
       dateRange: dateRangeStr,
