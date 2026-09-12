@@ -5,6 +5,7 @@ const db = require('../db');
 const { verifyAuth, generateToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection } = require('../services/firebase');
 
 // Helper to get or insert an application setting
 function getSetting(key, defaultValue = '') {
@@ -204,6 +205,52 @@ router.put('/superadmin/account', verifyAuth, requireRole(['super_admin']), (req
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update Super Admin account: ' + err.message });
+  }
+});
+
+// 4. GET /api/system/firebase-status - Retrieve Firebase connection status
+router.get('/firebase-status', (req, res) => {
+  res.json({ status: getFirebaseStatus() });
+});
+
+// 5. POST /api/system/firebase-config - Update Firebase project credentials (Super Admin only)
+router.post('/firebase-config', verifyAuth, requireRole(['super_admin']), (req, res) => {
+  const { projectId, serviceAccountJson, databaseUrl } = req.body;
+
+  try {
+    const success = saveFirebaseConfig({ projectId, serviceAccountJson, databaseUrl });
+    const status = getFirebaseStatus();
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: 'super_admin',
+      panel: 'Super Admin Firebase Config',
+      action: 'FIREBASE_CONFIG_UPDATED',
+      targetEntity: 'application_settings',
+      newValues: { projectId: status.projectId, databaseUrl: status.databaseUrl, connected: status.connected },
+      reason: 'Super Admin updated Firebase configuration credentials'
+    });
+
+    res.json({
+      success,
+      message: status.connected
+        ? `Firebase successfully connected to project "${status.projectId}".`
+        : 'Firebase credentials saved. Awaiting valid project keys.',
+      status
+    });
+  } catch (err) {
+    res.status(400).json({ error: 'Failed to configure Firebase: ' + err.message });
+  }
+});
+
+// 6. POST /api/system/firebase-test - Test Live Connection (Super Admin only)
+router.post('/firebase-test', verifyAuth, requireRole(['super_admin']), async (req, res) => {
+  try {
+    const result = await testFirebaseConnection();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -4,7 +4,8 @@ import {
   Ban, ToggleLeft, ToggleRight, Trash2, Edit3, Settings2, Search,
   RefreshCw, FileSpreadsheet, Eye, ArrowUpRight, Key, Lock,
   Upload, Image, Globe, Save, Check, UserCheck, Sparkles, Sliders,
-  ChevronLeft, ChevronRight, SlidersHorizontal, Filter, Compass
+  ChevronLeft, ChevronRight, SlidersHorizontal, Filter, Compass,
+  Flame, Database, Radio
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import CustomExportModal from '../components/CustomExportModal';
@@ -95,6 +96,27 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   });
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingAccount, setSavingAccount] = useState(false);
+
+  // Firebase Realtime & Cloud Sync State
+  const [firebaseStatus, setFirebaseStatus] = useState({
+    configured: false,
+    connected: false,
+    projectId: null,
+    databaseUrl: null,
+    source: null,
+    hasServiceAccountKey: false,
+    services: { firestore: false, realtimeDb: false, fcm: false },
+    error: null
+  });
+  const [firebaseForm, setFirebaseForm] = useState({
+    projectId: '',
+    databaseUrl: '',
+    serviceAccountJson: ''
+  });
+  const [loadingFirebase, setLoadingFirebase] = useState(false);
+  const [savingFirebase, setSavingFirebase] = useState(false);
+  const [testingFirebase, setTestingFirebase] = useState(false);
+  const [firebaseTestResult, setFirebaseTestResult] = useState(null);
 
 
   // All Employees Directory State
@@ -192,6 +214,20 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               username: meRes.user.username || '',
               full_name: meRes.user.fullName || meRes.user.full_name || ''
             }));
+          }
+        } catch (e) {}
+
+        try {
+          const fbRes = await apiRequest('/system/firebase-status');
+          if (fbRes && fbRes.status) {
+            setFirebaseStatus(fbRes.status);
+            if (fbRes.status.projectId) {
+              setFirebaseForm(prev => ({
+                ...prev,
+                projectId: fbRes.status.projectId || '',
+                databaseUrl: fbRes.status.databaseUrl || ''
+              }));
+            }
           }
         } catch (e) {}
       }
@@ -320,6 +356,81 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setError(err.message);
     } finally {
       setSavingAccount(false);
+    }
+  };
+
+  // Fetch Firebase Status
+  const fetchFirebaseStatus = async () => {
+    try {
+      setLoadingFirebase(true);
+      const res = await apiRequest('/system/firebase-status');
+      if (res && res.status) {
+        setFirebaseStatus(res.status);
+        if (res.status.projectId) {
+          setFirebaseForm(prev => ({
+            ...prev,
+            projectId: res.status.projectId || '',
+            databaseUrl: res.status.databaseUrl || ''
+          }));
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch Firebase status', e);
+    } finally {
+      setLoadingFirebase(false);
+    }
+  };
+
+  // Save Firebase Config & Connect
+  const handleSaveFirebaseConfig = async (e) => {
+    e.preventDefault();
+    setSavingFirebase(true);
+    setError('');
+    setSuccess('');
+    setFirebaseTestResult(null);
+    try {
+      const res = await apiRequest('/system/firebase-config', {
+        method: 'POST',
+        body: {
+          projectId: firebaseForm.projectId,
+          databaseUrl: firebaseForm.databaseUrl,
+          serviceAccountJson: firebaseForm.serviceAccountJson
+        }
+      });
+      setSuccess(res.message || 'Firebase configuration updated successfully!');
+      if (res.status) {
+        setFirebaseStatus(res.status);
+      } else {
+        await fetchFirebaseStatus();
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to update Firebase configuration');
+    } finally {
+      setSavingFirebase(false);
+    }
+  };
+
+  // Test Firebase Live Connection
+  const handleTestFirebaseConnection = async () => {
+    setTestingFirebase(true);
+    setFirebaseTestResult(null);
+    setError('');
+    try {
+      const res = await apiRequest('/system/firebase-test', {
+        method: 'POST'
+      });
+      setFirebaseTestResult(res);
+      if (res.success) {
+        setSuccess('Firebase live connection test succeeded!');
+        await fetchFirebaseStatus();
+      } else {
+        setError(res.error || 'Firebase test connection failed');
+      }
+    } catch (err) {
+      setError(err.message || 'Firebase connection test request failed');
+      setFirebaseTestResult({ success: false, error: err.message });
+    } finally {
+      setTestingFirebase(false);
     }
   };
 
@@ -2048,6 +2159,211 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <Key className="w-4 h-4" />
                   )}
                   <span>Update Super Admin Credentials</span>
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Card 3: Firebase Realtime Database & Cloud Sync */}
+          <div className="xl:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                  <Flame className="w-5 h-5 text-amber-500" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-slate-900">Firebase Realtime Database & Cloud Sync</h3>
+                    {firebaseStatus.connected ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        Connected & Active ({firebaseStatus.projectId})
+                      </span>
+                    ) : firebaseStatus.configured ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                        <span className="w-2 h-2 rounded-full bg-sky-500" />
+                        Configured ({firebaseStatus.projectId})
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                        <span className="w-2 h-2 rounded-full bg-slate-400" />
+                        Awaiting Project Credentials (SQLite Active)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Connect Google Cloud Firebase for live GPS tracking route streaming, ticket chat messaging, and push notifications
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={fetchFirebaseStatus}
+                  disabled={loadingFirebase}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1.5"
+                  title="Reload Firebase status"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingFirebase ? 'animate-spin' : ''}`} />
+                  <span>Refresh Status</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Architecture Overview Banner */}
+            <div className="p-4 rounded-xl bg-gradient-to-r from-amber-500/5 via-orange-500/5 to-amber-500/5 border border-amber-200/60 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
+                  <Database className="w-4 h-4 text-amber-600" />
+                  <span>Dual-Engine Architecture: SQLite Core + Firebase Realtime Stream</span>
+                </div>
+                <p className="text-xs text-amber-800/80 leading-relaxed max-w-3xl">
+                  NPB HRMS retains local SQLite for high-reliability transactional data, audit logs, and payroll calculations. When Firebase is connected, live GPS routes, instant ticket chat messages, attendance punches, and FCM push notifications automatically synchronize to Google Firebase in real-time.
+                </p>
+              </div>
+
+              {/* Service Indicator Badges */}
+              <div className="flex items-center gap-2 shrink-0">
+                <div className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 ${
+                  firebaseStatus.services?.firestore
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${firebaseStatus.services?.firestore ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                  <span>Cloud Firestore</span>
+                </div>
+                <div className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 ${
+                  firebaseStatus.services?.realtimeDb
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${firebaseStatus.services?.realtimeDb ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                  <span>Realtime DB</span>
+                </div>
+                <div className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 ${
+                  firebaseStatus.services?.fcm
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}>
+                  <Radio className={`w-3 h-3 ${firebaseStatus.services?.fcm ? 'text-emerald-600' : 'text-slate-400'}`} />
+                  <span>FCM Push</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Test Results Message */}
+            {firebaseTestResult && (
+              <div className={`p-3.5 rounded-xl border text-xs flex items-start gap-3 ${
+                firebaseTestResult.success
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-rose-50 border-rose-200 text-rose-900'
+              }`}>
+                {firebaseTestResult.success ? (
+                  <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                )}
+                <div className="space-y-1">
+                  <p className="font-bold">{firebaseTestResult.message || (firebaseTestResult.success ? 'Connection Verified' : 'Connection Error')}</p>
+                  {firebaseTestResult.success ? (
+                    <div className="flex items-center gap-4 text-[11px] text-emerald-700">
+                      <span>Project: <strong className="font-mono">{firebaseTestResult.projectId}</strong></span>
+                      <span>Firestore Latency: <strong>{firebaseTestResult.firestoreLatencyMs}ms</strong></span>
+                      <span>Write Test: <strong>Passed</strong></span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-rose-700 leading-relaxed font-mono">
+                      {firebaseTestResult.error}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Firebase Form */}
+            <form onSubmit={handleSaveFirebaseConfig} className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">
+                    Firebase Project ID *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={firebaseForm.projectId}
+                    onChange={(e) => setFirebaseForm({ ...firebaseForm, projectId: e.target.value })}
+                    placeholder="e.g. npb-hrms-live-12345"
+                    className="w-full px-3.5 py-2.5 border rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Your Google Cloud / Firebase Project ID found in Firebase Console.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">
+                    Realtime Database URL <span className="font-normal text-slate-400">(Optional for Firestore-only)</span>
+                  </label>
+                  <input
+                    type="url"
+                    value={firebaseForm.databaseUrl}
+                    onChange={(e) => setFirebaseForm({ ...firebaseForm, databaseUrl: e.target.value })}
+                    placeholder="https://your-project-default-rtdb.firebaseio.com"
+                    className="w-full px-3.5 py-2.5 border rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Firebase Realtime Database instance URL for high-frequency GPS ping sockets.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1 flex items-center justify-between">
+                  <span>Firebase Service Account Private Key JSON</span>
+                  <span className="text-[11px] text-slate-400 font-normal">
+                    {firebaseStatus.hasServiceAccountKey ? '✅ Credentials currently loaded' : 'Paste JSON content below'}
+                  </span>
+                </label>
+                <textarea
+                  rows={4}
+                  value={firebaseForm.serviceAccountJson}
+                  onChange={(e) => setFirebaseForm({ ...firebaseForm, serviceAccountJson: e.target.value })}
+                  placeholder={`Paste your Firebase Service Account JSON here, for example:\n{\n  "type": "service_account",\n  "project_id": "your-project-id",\n  "private_key_id": "...",\n  "private_key": "-----BEGIN PRIVATE KEY-----\\n...",\n  "client_email": "firebase-adminsdk@your-project.iam.gserviceaccount.com"\n}`}
+                  className="w-full px-3.5 py-2.5 border rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-mono leading-relaxed bg-slate-900 text-amber-200 placeholder-slate-500"
+                />
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mt-1 text-[11px] text-slate-500">
+                  <span>Download from: Firebase Console &gt; Project Settings &gt; Service Accounts &gt; "Generate new private key".</span>
+                  <span className="text-slate-400">Or place file directly at <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-600">server/config/serviceAccountKey.json</code></span>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={handleTestFirebaseConnection}
+                  disabled={testingFirebase}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-all flex items-center gap-2 text-xs"
+                >
+                  {testingFirebase ? (
+                    <RefreshCw className="w-4 h-4 animate-spin text-amber-600" />
+                  ) : (
+                    <CheckCircle className="w-4 h-4 text-emerald-600" />
+                  )}
+                  <span>{testingFirebase ? 'Testing Connection...' : 'Test Connection Ping'}</span>
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={savingFirebase}
+                  className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm transition-all flex items-center gap-2 text-xs"
+                >
+                  {savingFirebase ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Flame className="w-4 h-4" />
+                  )}
+                  <span>Save & Connect Firebase</span>
                 </button>
               </div>
             </form>

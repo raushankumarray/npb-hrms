@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { getTenantCompanyId } = require('../middleware/rbac');
+const { syncGpsLocation } = require('../services/firebase');
 
 // Haversine distance in meters between two lat/lng pairs
 function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -133,6 +134,16 @@ router.post('/ping', verifyAuth, (req, res) => {
     companyId, employeeId, parseFloat(latitude), parseFloat(longitude),
     accuracy || null, speed || null, heading || null, location_name || null
   );
+
+  // Sync real-time location to Firebase if connected
+  syncGpsLocation(companyId, employeeId, {
+    latitude: parseFloat(latitude),
+    longitude: parseFloat(longitude),
+    accuracy,
+    speed,
+    heading,
+    location_name
+  }).catch(() => {});
 
   res.json({ success: true, message: 'Ping recorded.' });
 });

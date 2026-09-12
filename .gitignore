@@ -17,6 +17,10 @@ server/data/*.db-shm
 *.log
 npm-debug.log*
 .env
+**/.env
+*.env
+server/config/*.json
+serviceAccountKey*.json
 
 # Editor & OS files
 .DS_Store

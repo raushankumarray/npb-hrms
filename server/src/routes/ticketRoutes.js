@@ -5,6 +5,7 @@ const { verifyAuth } = require('../middleware/auth');
 const { getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { unbindUserDevice } = require('../services/deviceBinding');
+const { syncTicketMessage } = require('../services/firebase');
 
 // Helper to auto-archive resolved/old tickets based on company retention setting (default 1 day)
 function autoArchiveExpiredRequests(companyId) {
@@ -538,6 +539,14 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
       INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
       VALUES (?, ?, ?, ?, ?)
     `).run(reqId, req.user.id, senderName, role, message.trim());
+
+    // Sync message to Firebase in real-time
+    syncTicketMessage(reqId, {
+      user_id: req.user.id,
+      sender_name: senderName,
+      sender_role: role,
+      message: message.trim()
+    }).catch(() => {});
 
     let finalStatus = ticket.status;
 
