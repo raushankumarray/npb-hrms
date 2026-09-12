@@ -30,12 +30,20 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
 
-  if (user.status === 'disabled') {
-    return res.status(403).json({ error: 'Account has been disabled. Please contact Support/Admin.' });
+  if (user.status === 'disabled' || user.status === 'inactive' || user.status === 'suspended') {
+    return res.status(403).json({ error: 'Your account has been deactivated or suspended. Please contact your company administrator.' });
   }
 
   if (user.status === 'banned') {
     return res.status(403).json({ error: 'Account has been banned. Access denied.' });
+  }
+
+  // Check employee-specific status if applicable
+  if (user.employee_id) {
+    const empStatusRow = db.prepare('SELECT status FROM employees WHERE id = ?').get(user.employee_id);
+    if (empStatusRow && (empStatusRow.status === 'disabled' || empStatusRow.status === 'inactive' || empStatusRow.status === 'suspended' || empStatusRow.status === 'terminated')) {
+      return res.status(403).json({ error: `Employee account status is ${empStatusRow.status}. Access denied. Please contact HR/Administrator.` });
+    }
   }
 
   const passwordValid = bcrypt.compareSync(password, user.password_hash);
@@ -50,7 +58,7 @@ router.post('/login', (req, res) => {
     if (!comp || comp.status === 'deleted') {
       return res.status(403).json({ error: 'Company account does not exist.' });
     }
-    if (comp.status === 'disabled' || comp.status === 'banned') {
+    if (comp.status === 'disabled' || comp.status === 'banned' || comp.status === 'inactive' || comp.status === 'closed' || comp.status === 'suspended') {
       return res.status(403).json({ error: `Company access is ${comp.status}. Please contact Super Admin.` });
     }
 

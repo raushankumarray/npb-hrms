@@ -19,5 +19,8 @@
     "saas"
   ],
   "author": "Google Deepmind / Advanced Agentic Coding",
-  "license": "ISC"
+  "license": "ISC",
+  "engines": {
+    "node": ">=20.0.0"
+  }
 }
