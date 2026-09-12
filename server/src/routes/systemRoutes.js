@@ -5,7 +5,7 @@ const db = require('../db');
 const { verifyAuth, generateToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection } = require('../services/firebase');
+const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase } = require('../services/firebase');
 
 // Helper to get or insert an application setting
 function getSetting(key, defaultValue = '') {
@@ -248,6 +248,29 @@ router.post('/firebase-config', verifyAuth, requireRole(['super_admin']), (req, 
 router.post('/firebase-test', verifyAuth, requireRole(['super_admin']), async (req, res) => {
   try {
     const result = await testFirebaseConnection();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7. POST /api/system/firebase-sync-all - Force full sync of all accounts, companies, employees, and reports to Firebase (Super Admin only)
+router.post('/firebase-sync-all', verifyAuth, requireRole(['super_admin']), async (req, res) => {
+  try {
+    const result = await syncAllDatabaseToFirebase();
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: 'super_admin',
+      panel: 'Super Admin Firebase Config',
+      action: 'FIREBASE_FULL_SYNC',
+      targetEntity: 'firebase_sync',
+      newValues: result,
+      reason: 'Super Admin triggered manual full database sync to Firebase'
+    });
     res.json(result);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

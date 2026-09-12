@@ -5,6 +5,7 @@ const db = require('../db');
 const { generateToken, verifyAuth } = require('../middleware/auth');
 const { checkAndBindDevice } = require('../services/deviceBinding');
 const { logAudit } = require('../services/audit');
+const { syncUser, syncEmployee } = require('../services/firebase');
 
 // Unified generic Login endpoint for ALL user roles
 router.post('/login', (req, res) => {
@@ -102,6 +103,9 @@ router.post('/login', (req, res) => {
 
   // Update last login
   db.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+
+  // Real-time sync user sign-in event to Firebase
+  syncUser({ ...user, last_login_at: new Date().toISOString() }).catch(() => {});
 
   // Generate JWT Token
   const token = generateToken(user);
@@ -327,6 +331,18 @@ router.put('/profile', verifyAuth, (req, res) => {
 
     transaction();
 
+    // Real-time sync profile updates to Firebase
+    try {
+      const freshUser = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id LEFT JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(userId);
+      if (freshUser) {
+        syncUser(freshUser).catch(() => {});
+      }
+      const freshEmp = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id LEFT JOIN companies c ON e.company_id = c.id WHERE e.user_id = ?').get(userId);
+      if (freshEmp) {
+        syncEmployee(freshEmp).catch(() => {});
+      }
+    } catch (e) {}
+
     // Generate refreshed token
     const token = generateToken({
       id: userId,
@@ -388,6 +404,14 @@ router.post('/change-password', verifyAuth, (req, res) => {
     targetId: req.user.id,
     reason: 'User self password change'
   });
+
+  // Real-time sync updated password event to Firebase
+  try {
+    const freshUser = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id LEFT JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(req.user.id);
+    if (freshUser) {
+      syncUser(freshUser).catch(() => {});
+    }
+  } catch (e) {}
 
   res.json({ success: true, message: 'Password changed successfully.' });
 });

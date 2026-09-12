@@ -11,6 +11,7 @@ const {
   commitAttendanceImport
 } = require('../services/excelService');
 const { logAudit } = require('../services/audit');
+const { syncAttendancePunch, syncCompanyReports } = require('../services/firebase');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -423,6 +424,16 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
 
   transaction();
 
+  // Real-time sync punch-in to Firebase
+  try {
+    syncAttendancePunch(companyId, employeeId, {
+      date: today,
+      punch_in_time: nowTime,
+      status: 'Missing Punch Out'
+    }).catch(() => {});
+    syncCompanyReports(companyId).catch(() => {});
+  } catch (e) {}
+
   res.json({
     success: true,
     message: `Punched in successfully at ${nowTime}`,
@@ -567,6 +578,17 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
   });
 
   transaction();
+
+  // Real-time sync punch-out to Firebase
+  try {
+    syncAttendancePunch(companyId, employeeId, {
+      date: today,
+      punch_in_time: existing.punch_in_time,
+      punch_out_time: nowTime,
+      status: attendanceStatus
+    }).catch(() => {});
+    syncCompanyReports(companyId).catch(() => {});
+  } catch (e) {}
 
   res.json({
     success: true,

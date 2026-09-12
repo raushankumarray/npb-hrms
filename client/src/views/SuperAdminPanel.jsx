@@ -116,6 +116,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [loadingFirebase, setLoadingFirebase] = useState(false);
   const [savingFirebase, setSavingFirebase] = useState(false);
   const [testingFirebase, setTestingFirebase] = useState(false);
+  const [syncingAllFirebase, setSyncingAllFirebase] = useState(false);
   const [firebaseTestResult, setFirebaseTestResult] = useState(null);
 
 
@@ -431,6 +432,27 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setFirebaseTestResult({ success: false, error: err.message });
     } finally {
       setTestingFirebase(false);
+    }
+  };
+
+  // Sync All Data to Firebase (Companies, Employees, Users, Attendance, Reports)
+  const handleSyncAllFirebase = async () => {
+    setSyncingAllFirebase(true);
+    setError('');
+    try {
+      const res = await apiRequest('/system/firebase-sync-all', {
+        method: 'POST'
+      });
+      if (res.success) {
+        setSuccess(res.message || 'All company and employee records successfully synchronized to Firebase!');
+        await fetchFirebaseStatus();
+      } else {
+        setError(res.error || 'Failed to sync data to Firebase');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to sync data to Firebase');
+    } finally {
+      setSyncingAllFirebase(false);
     }
   };
 
@@ -2339,19 +2361,36 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               </div>
 
               <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={handleTestFirebaseConnection}
-                  disabled={testingFirebase}
-                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-all flex items-center gap-2 text-xs"
-                >
-                  {testingFirebase ? (
-                    <RefreshCw className="w-4 h-4 animate-spin text-amber-600" />
-                  ) : (
-                    <CheckCircle className="w-4 h-4 text-emerald-600" />
-                  )}
-                  <span>{testingFirebase ? 'Testing Connection...' : 'Test Connection Ping'}</span>
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleTestFirebaseConnection}
+                    disabled={testingFirebase}
+                    className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold transition-all flex items-center gap-2 text-xs"
+                  >
+                    {testingFirebase ? (
+                      <RefreshCw className="w-4 h-4 animate-spin text-amber-600" />
+                    ) : (
+                      <CheckCircle className="w-4 h-4 text-emerald-600" />
+                    )}
+                    <span>{testingFirebase ? 'Testing Connection...' : 'Test Connection Ping'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSyncAllFirebase}
+                    disabled={syncingAllFirebase || !firebaseStatus.connected}
+                    className="px-4 py-2.5 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-xl font-semibold transition-all flex items-center gap-2 text-xs disabled:opacity-50"
+                    title={firebaseStatus.connected ? "Push all SQLite companies, employees, accounts and reports to Firebase Cloud" : "Connect Firebase first to enable full sync"}
+                  >
+                    {syncingAllFirebase ? (
+                      <RefreshCw className="w-4 h-4 animate-spin text-sky-600" />
+                    ) : (
+                      <Database className="w-4 h-4 text-sky-600" />
+                    )}
+                    <span>{syncingAllFirebase ? 'Syncing All Data...' : 'Sync All Data to Firebase'}</span>
+                  </button>
+                </div>
 
                 <button
                   type="submit"

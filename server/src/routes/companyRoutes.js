@@ -8,6 +8,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { syncCompany, syncUser, deleteFromFirebase } = require('../services/firebase');
 
 // Configure disk storage for company logo uploads
 const logoStorage = multer.diskStorage({
@@ -222,6 +223,19 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
   });
 
   const createdId = transaction();
+
+  // Real-time sync newly created company and admin user into Firebase
+  try {
+    const compRecord = db.prepare('SELECT * FROM companies WHERE id = ?').get(createdId);
+    if (compRecord) {
+      syncCompany(compRecord, { username: admin_username, email: admin_email, password: admin_password }).catch(() => {});
+    }
+    const adminUserRecord = db.prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.company_id = ? AND r.name = 'company_admin' LIMIT 1").get(createdId);
+    if (adminUserRecord) {
+      syncUser(adminUserRecord).catch(() => {});
+    }
+  } catch (e) {}
+
   res.status(201).json({ success: true, companyId: createdId, message: 'Company created successfully.' });
 });
 
@@ -352,6 +366,19 @@ router.put('/:id', verifyAuth, (req, res) => {
   });
 
   transaction();
+
+  // Real-time sync updated company profile and admin user to Firebase
+  try {
+    const compRecord = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
+    if (compRecord) {
+      syncCompany(compRecord, { username: admin_username, email: admin_email, password: admin_password }).catch(() => {});
+    }
+    const adminUserRecord = db.prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.company_id = ? AND r.name = 'company_admin' LIMIT 1").get(companyId);
+    if (adminUserRecord) {
+      syncUser(adminUserRecord).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: 'Company details and credentials updated successfully.' });
 });
 
@@ -388,6 +415,18 @@ router.post('/:id/change-password', verifyAuth, requireRole(['super_admin']), (r
     targetId: adminUser.id,
     reason: 'Super Admin reset company admin password'
   });
+
+  // Sync refreshed user and company to Firebase
+  try {
+    const adminRecord = db.prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?").get(adminUser.id);
+    if (adminRecord) {
+      syncUser(adminRecord).catch(() => {});
+    }
+    const compRecord = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
+    if (compRecord) {
+      syncCompany(compRecord, { username: adminUser.username, password: new_password.trim() }).catch(() => {});
+    }
+  } catch (e) {}
 
   res.json({ success: true, message: `Password for Company Admin (${adminUser.username}) changed successfully.` });
 });
@@ -680,6 +719,9 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
       reason: 'Company and all associated accounts/records permanently purged from database'
     });
   } catch (e) {}
+
+  // Delete from Firebase
+  deleteFromFirebase('companies', companyId).catch(() => {});
 
   return company.name;
 }

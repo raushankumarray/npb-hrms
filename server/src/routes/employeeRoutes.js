@@ -13,6 +13,7 @@ const {
   commitEmployeeDiffUpdate
 } = require('../services/excelService');
 const { logAudit } = require('../services/audit');
+const { syncEmployee, syncUser, deleteFromFirebase } = require('../services/firebase');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -483,6 +484,19 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
   });
 
   const createdId = transaction();
+
+  // Real-time sync newly created employee and user account into Firebase
+  try {
+    const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(createdId);
+    if (empRecord) {
+      syncEmployee(empRecord, { password }).catch(() => {});
+    }
+    const userRecord = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(empRecord?.user_id);
+    if (userRecord) {
+      syncUser(userRecord).catch(() => {});
+    }
+  } catch (e) {}
+
   res.status(201).json({ success: true, employeeId: createdId, employeeCode: finalEmpId, message: 'Personnel added successfully.' });
 });
 
@@ -647,6 +661,19 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
   });
 
   transaction();
+
+  // Real-time sync updated employee profile and user account to Firebase
+  try {
+    const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(empId);
+    if (empRecord) {
+      syncEmployee(empRecord, { password }).catch(() => {});
+    }
+    const userRecord = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(empRecord?.user_id);
+    if (userRecord) {
+      syncUser(userRecord).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: 'Personnel updated successfully.' });
 });
 
@@ -700,6 +727,18 @@ router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'man
     });
   })();
 
+  // Real-time sync toggled status to Firebase
+  try {
+    const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(empId);
+    if (empRecord) {
+      syncEmployee(empRecord).catch(() => {});
+    }
+    const userRecord = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(emp?.user_id);
+    if (userRecord) {
+      syncUser(userRecord).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, status: targetStatus, message: `Account for "${emp.full_name}" is now ${targetStatus}.` });
 });
 
@@ -750,6 +789,18 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'm
     targetId: emp.user_id,
     reason: `Password updated for employee ${emp.employee_id} (${emp.full_name})`
   });
+
+  // Real-time sync updated user credentials to Firebase
+  try {
+    const userRecord = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(emp.user_id);
+    if (userRecord) {
+      syncUser(userRecord).catch(() => {});
+    }
+    const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(empId);
+    if (empRecord) {
+      syncEmployee(empRecord, { password: targetPassword.trim() }).catch(() => {});
+    }
+  } catch (e) {}
 
   res.json({ success: true, message: `Password for "${emp.full_name}" updated successfully.` });
 });
@@ -829,6 +880,10 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'supe
   });
 
   transaction();
+
+  // Delete from Firebase
+  deleteFromFirebase('employees', empId, { companyId: emp.company_id, userId: emp.user_id }).catch(() => {});
+
   res.json({ success: true, message: `Employee "${emp.full_name}" has been permanently deleted from the database.` });
 });
 
