@@ -1,4 +1,7 @@
-const admin = require('firebase-admin');
+const { initializeApp, cert, deleteApp, getApps } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { getDatabase } = require('firebase-admin/database');
+const { getMessaging } = require('firebase-admin/messaging');
 const path = require('path');
 const fs = require('fs');
 const db = require('../db');
@@ -6,6 +9,7 @@ const db = require('../db');
 let firebaseApp = null;
 let firestoreDb = null;
 let realtimeDb = null;
+let messagingService = null;
 
 let firebaseStatus = {
   initialized: false,
@@ -13,6 +17,11 @@ let firebaseStatus = {
   mode: 'unconfigured',
   projectId: null,
   databaseUrl: null,
+  services: {
+    firestore: false,
+    realtimeDb: false,
+    fcm: false
+  },
   features: {
     realtimeGpsSync: true,
     realtimeTicketChat: true,
@@ -22,6 +31,36 @@ let firebaseStatus = {
   lastConnectedAt: null,
   lastError: null
 };
+
+// Tolerant parser for service account JSON (handles missing braces, unescaped newlines)
+function parseServiceAccount(input) {
+  if (!input) return null;
+  if (typeof input === 'object' && input !== null) {
+    const copy = { ...input };
+    if (copy.private_key && typeof copy.private_key === 'string') {
+      copy.private_key = copy.private_key.replace(/\\n/g, '\n');
+    }
+    return copy;
+  }
+  if (typeof input !== 'string') return null;
+  let str = input.trim();
+  if (!str.startsWith('{') && str.includes('"project_id"')) {
+    str = '{' + str;
+  }
+  if (!str.endsWith('}') && str.includes('"project_id"')) {
+    str = str + '}';
+  }
+  try {
+    const parsed = JSON.parse(str);
+    if (parsed.private_key && typeof parsed.private_key === 'string') {
+      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+    }
+    return parsed;
+  } catch (e) {
+    console.warn('Failed to parse Service Account JSON:', e.message);
+    return null;
+  }
+}
 
 // Helper to read setting from SQLite application_settings table
 function getAppSetting(key) {
@@ -57,15 +96,19 @@ function setAppSetting(key, val, desc = '') {
  */
 function initFirebase() {
   try {
-    // If existing app exists, clean up before re-init
-    if (firebaseApp) {
-      try {
-        firebaseApp.delete();
-      } catch (e) {}
-      firebaseApp = null;
-      firestoreDb = null;
-      realtimeDb = null;
-    }
+    // Clean up any existing app before re-init
+    try {
+      const existingApps = getApps();
+      for (const app of existingApps) {
+        if (app.name === 'npb-hrms-admin' || app.name === '[DEFAULT]') {
+          deleteApp(app).catch(() => {});
+        }
+      }
+    } catch (e) {}
+    firebaseApp = null;
+    firestoreDb = null;
+    realtimeDb = null;
+    messagingService = null;
 
     let explicitProjectId = process.env.FIREBASE_PROJECT_ID || getAppSetting('firebase_project_id');
     let databaseURL = process.env.FIREBASE_DATABASE_URL || getAppSetting('firebase_database_url');
@@ -74,11 +117,7 @@ function initFirebase() {
     // 1. Check SQLite setting
     const dbJson = getAppSetting('firebase_service_account_json');
     if (dbJson) {
-      try {
-        serviceAccount = JSON.parse(dbJson);
-      } catch (e) {
-        console.warn('Failed to parse firebase_service_account_json from DB');
-      }
+      serviceAccount = parseServiceAccount(dbJson);
     }
 
     // 2. Check local files
@@ -90,8 +129,8 @@ function initFirebase() {
       for (const p of configPaths) {
         if (fs.existsSync(p)) {
           try {
-            serviceAccount = JSON.parse(fs.readFileSync(p, 'utf8'));
-            break;
+            serviceAccount = parseServiceAccount(fs.readFileSync(p, 'utf8'));
+            if (serviceAccount) break;
           } catch (e) {}
         }
       }
@@ -99,9 +138,7 @@ function initFirebase() {
 
     // 3. Check environment variables
     if (!serviceAccount && process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-      try {
-        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-      } catch (e) {}
+      serviceAccount = parseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
     }
 
     if (!serviceAccount && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
@@ -119,6 +156,11 @@ function initFirebase() {
         mode: 'awaiting_credentials',
         projectId: explicitProjectId || null,
         databaseUrl: databaseURL || null,
+        services: {
+          firestore: false,
+          realtimeDb: false,
+          fcm: false
+        },
         features: {
           realtimeGpsSync: true,
           realtimeTicketChat: true,
@@ -132,36 +174,47 @@ function initFirebase() {
       return false;
     }
 
-    // Initialize Firebase Admin
+    // Initialize Firebase Admin with modern modular SDK
     const config = {
-      credential: admin.credential.cert(serviceAccount)
+      credential: cert(serviceAccount)
     };
     if (databaseURL) {
       config.databaseURL = databaseURL;
     }
 
-    firebaseApp = admin.initializeApp(config, 'npb-hrms-admin');
+    firebaseApp = initializeApp(config, 'npb-hrms-admin');
 
     try {
-      firestoreDb = admin.firestore(firebaseApp);
+      firestoreDb = getFirestore(firebaseApp);
     } catch (e) {
       console.warn('Firestore initialization notice:', e.message);
     }
 
     if (databaseURL) {
       try {
-        realtimeDb = admin.database(firebaseApp);
+        realtimeDb = getDatabase(firebaseApp);
       } catch (e) {
         console.warn('Realtime Database initialization notice:', e.message);
       }
+    }
+
+    try {
+      messagingService = getMessaging(firebaseApp);
+    } catch (e) {
+      console.warn('Messaging initialization notice:', e.message);
     }
 
     firebaseStatus = {
       initialized: true,
       connected: true,
       mode: 'live',
-      projectId: serviceAccount.project_id,
-      databaseUrl: databaseURL || `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`,
+      projectId: serviceAccount.project_id || explicitProjectId,
+      databaseUrl: databaseURL || (serviceAccount.project_id ? `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com` : null),
+      services: {
+        firestore: !!firestoreDb,
+        realtimeDb: !!realtimeDb,
+        fcm: !!messagingService
+      },
       features: {
         realtimeGpsSync: true,
         realtimeTicketChat: true,
@@ -300,25 +353,52 @@ async function testFirebaseConnection() {
   }
 
   try {
-    // Write test heartbeat
     const testPayload = {
       ping: 'pong',
       timestamp: new Date().toISOString(),
       testBy: 'NPB HRMS Super Admin'
     };
 
+    let testedFirestore = false;
+    let testedRealtime = false;
+
+    if (firestoreDb) {
+      try {
+        await firestoreDb.collection('_connection_test').doc('heartbeat').set(testPayload);
+        testedFirestore = true;
+      } catch (e) {
+        console.warn('Firestore test ping notice:', e.message);
+      }
+    }
+
     if (realtimeDb) {
-      await realtimeDb.ref('_connection_test/heartbeat').set(testPayload);
-    } else if (firestoreDb) {
-      await firestoreDb.collection('_connection_test').doc('heartbeat').set(testPayload);
+      try {
+        await Promise.race([
+          realtimeDb.ref('_connection_test/heartbeat').set(testPayload),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Realtime DB timeout (verify Database URL and test mode rules)')), 3500))
+        ]);
+        testedRealtime = true;
+      } catch (e) {
+        console.warn('Realtime DB test ping notice:', e.message);
+      }
     }
 
     const latency = Date.now() - start;
+
+    if (!testedFirestore && !testedRealtime) {
+      return {
+        success: false,
+        error: 'Could not write test heartbeat to Firestore or Realtime Database. Please verify that either Cloud Firestore or Realtime Database is enabled in your Firebase Console and rules allow access.'
+      };
+    }
+
     return {
       success: true,
       latencyMs: latency,
       projectId: firebaseStatus.projectId,
       databaseUrl: firebaseStatus.databaseUrl,
+      firestoreTested: testedFirestore,
+      realtimeDbTested: testedRealtime,
       message: `Firebase connection verified! Read/Write latency: ${latency}ms.`
     };
   } catch (err) {
