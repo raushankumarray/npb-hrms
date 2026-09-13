@@ -8,7 +8,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { syncCompany, syncUser, deleteFromFirebase, syncCompanySettings, syncCompanyModules } = require('../services/firebase');
+const { syncCompany, syncUser, deleteFromFirebase, syncCompanySettings, syncCompanyModules, syncShift, syncWeeklyOff, syncLeaveType } = require('../services/firebase');
 
 // Configure disk storage for company logo uploads
 const logoStorage = multer.diskStorage({
@@ -251,7 +251,7 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
 
   const createdId = transaction();
 
-  // Real-time sync newly created company and admin user into Firebase
+  // Real-time sync newly created company, admin user, settings, modules, shifts, and weekly offs into Firebase
   try {
     const compRecord = db.prepare('SELECT * FROM companies WHERE id = ?').get(createdId);
     if (compRecord) {
@@ -261,6 +261,20 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
     if (adminUserRecord) {
       syncUser(adminUserRecord).catch(() => {});
     }
+    const sRec = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(createdId);
+    if (sRec) syncCompanySettings(createdId, sRec).catch(() => {});
+    const mRecs = db.prepare('SELECT module_name, is_enabled FROM company_modules WHERE company_id = ?').all(createdId);
+    if (mRecs && mRecs.length > 0) {
+      const mObj = {};
+      mRecs.forEach(m => mObj[m.module_name] = !!m.is_enabled);
+      syncCompanyModules(createdId, mObj).catch(() => {});
+    }
+    const shiftRec = db.prepare('SELECT * FROM shifts WHERE company_id = ?').get(createdId);
+    if (shiftRec) syncShift(shiftRec).catch(() => {});
+    const woffRec = db.prepare('SELECT * FROM weekly_off_settings WHERE company_id = ?').get(createdId);
+    if (woffRec) syncWeeklyOff(woffRec).catch(() => {});
+    const ltRecs = db.prepare('SELECT * FROM leave_types WHERE company_id = ?').all(createdId);
+    ltRecs.forEach(lt => syncLeaveType(lt).catch(() => {}));
   } catch (e) {}
 
   res.status(201).json({ success: true, companyId: createdId, message: 'Company created successfully.' });

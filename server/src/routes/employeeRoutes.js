@@ -13,7 +13,7 @@ const {
   commitEmployeeDiffUpdate
 } = require('../services/excelService');
 const { logAudit } = require('../services/audit');
-const { syncEmployee, syncUser, deleteFromFirebase, syncEmployeeMapping, deleteEmployeeMapping } = require('../services/firebase');
+const { syncEmployee, syncUser, deleteFromFirebase, syncEmployeeMapping, deleteEmployeeMapping, syncLeaveBalance } = require('../services/firebase');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -485,7 +485,7 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
 
   const createdId = transaction();
 
-  // Real-time sync newly created employee and user account into Firebase
+  // Real-time sync newly created employee, user account, mapping, and leave balances into Firebase
   try {
     const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(createdId);
     if (empRecord) {
@@ -495,6 +495,12 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
     if (userRecord) {
       syncUser(userRecord).catch(() => {});
     }
+    if (finalManagerId) {
+      const mapRecord = db.prepare('SELECT * FROM employee_mappings WHERE manager_id = ? AND employee_id = ?').get(finalManagerId, createdId);
+      if (mapRecord) syncEmployeeMapping(mapRecord).catch(() => {});
+    }
+    const balRecords = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ?').all(createdId);
+    balRecords.forEach(lb => syncLeaveBalance(lb.employee_id, lb.leave_type_id).catch(() => {}));
   } catch (e) {}
 
   res.status(201).json({ success: true, employeeId: createdId, employeeCode: finalEmpId, message: 'Personnel added successfully.' });
@@ -956,6 +962,24 @@ router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'manager'
   });
 
   transaction();
+
+  // Real-time Firebase Sync for bulk mappings
+  try {
+    for (const rawId of employee_ids) {
+      const eId = parseInt(rawId, 10);
+      const mRow = db.prepare("SELECT * FROM employee_mappings WHERE employee_id = ? AND mapping_type = 'manager'").get(eId);
+      if (mRow) {
+        syncEmployeeMapping(mRow).catch(() => {});
+      } else {
+        deleteEmployeeMapping(eId).catch(() => {});
+      }
+      const eRow = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(eId);
+      if (eRow) syncEmployee(eRow).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('Firebase bulk-mapping sync notice:', e.message);
+  }
+
   res.json({
     success: true,
     message: `Successfully updated reporting mappings for ${employee_ids.length} staff members.`

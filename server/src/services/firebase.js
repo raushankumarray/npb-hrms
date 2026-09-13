@@ -693,16 +693,25 @@ async function syncEmployeeMapping(mapping) {
   }
 }
 
-async function deleteEmployeeMapping(mappingId, companyId, managerId, employeeId) {
+async function deleteEmployeeMapping(mappingIdOrCompId, companyId, managerId, employeeId) {
   if (!firebaseStatus.connected) return null;
   try {
-    const key = `${companyId}_${managerId}_${employeeId}`;
-    if (firestoreDb) {
-      await firestoreDb.collection('employee_mappings').doc(key).delete().catch(() => {});
-      if (mappingId) await firestoreDb.collection('employee_mappings').doc(String(mappingId)).delete().catch(() => {});
+    const keysToDelete = [];
+    if (typeof mappingIdOrCompId === 'object' && mappingIdOrCompId !== null) {
+      const { id, company_id, companyId: cId, manager_id, managerId: mId, employee_id, employeeId: eId } = mappingIdOrCompId;
+      const c = cId || company_id;
+      const m = mId || manager_id;
+      const e = eId || employee_id;
+      if (id) keysToDelete.push(String(id));
+      if (c && m && e) keysToDelete.push(`${c}_${m}_${e}`);
+    } else {
+      if (mappingIdOrCompId) keysToDelete.push(String(mappingIdOrCompId));
+      if (companyId) keysToDelete.push(String(companyId));
+      if (companyId && managerId && employeeId) keysToDelete.push(`${companyId}_${managerId}_${employeeId}`);
     }
-    if (realtimeDb) {
-      await realtimeDb.ref(`employee_mappings/${companyId}/${managerId}_${employeeId}`).remove().catch(() => {});
+    for (const k of keysToDelete) {
+      if (firestoreDb) await firestoreDb.collection('employee_mappings').doc(k).delete().catch(() => {});
+      if (realtimeDb) await realtimeDb.ref(`employee_mappings/${k}`).remove().catch(() => {});
     }
     return true;
   } catch (err) {
@@ -1105,9 +1114,13 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
     if (entityType === 'companies') {
       if (firestoreDb) {
         await firestoreDb.collection('companies').doc(strId).delete().catch(() => {});
+        await firestoreDb.collection('company_settings').doc(strId).delete().catch(() => {});
+        await firestoreDb.collection('company_modules').doc(strId).delete().catch(() => {});
       }
       if (realtimeDb) {
         await realtimeDb.ref(`companies/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`company_settings/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`company_modules/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`company_employees/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`company_attendance/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`live_locations/${strId}`).remove().catch(() => {});
@@ -1671,6 +1684,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     let leaveRequestsMap = new Map();
     let correctionsMap = new Map();
     let ticketsMap = new Map();
+    let settingsMap = new Map();
+    let modulesMap = new Map();
 
     // 1. Fetch from Firestore if available
     if (firestoreDb) {
@@ -1699,6 +1714,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchFsCollection('leave_requests', leaveRequestsMap);
       await fetchFsCollection('attendance_corrections', correctionsMap);
       await fetchFsCollection('support_tickets', ticketsMap);
+      await fetchFsCollection('company_settings', settingsMap);
+      await fetchFsCollection('company_modules', modulesMap);
 
       try {
         const snap = await firestoreDb.collection('attendance_punches').limit(1000).get();
@@ -1752,7 +1769,13 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchRtDbCollection('leave_requests', leaveRequestsMap);
       await fetchRtDbCollection('attendance_corrections', correctionsMap);
       await fetchRtDbCollection('support_tickets', ticketsMap);
+      await fetchRtDbCollection('company_settings', settingsMap);
+      await fetchRtDbCollection('company_modules', modulesMap);
     }
+
+    // Strict 1:1 Mirror: Purge existing local tenant data before restore so that local database
+    // strictly mirrors Firebase with 0 ghost/leftover companies, while strictly preserving Super Admin `adminn`.
+    await wipeAllCompanyDataFromDb({ syncToFirebase: false });
 
     // 3. Upsert into SQLite in transaction
     let restoredCompanies = 0;
@@ -1852,48 +1875,41 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (c.id) companyIdMap.set(String(c.id), targetCompId);
         companyIdMap.set(String(targetCompId), targetCompId);
 
-        // Settings & Modules
+        // Settings & Modules restored directly from Firebase if present, or fallback defaults
+        const s = settingsMap.get(String(targetCompId)) || settingsMap.get(String(docKey)) || (c.id ? settingsMap.get(String(c.id)) : null);
+        const timezone = s?.timezone || 'Asia/Kolkata';
+        const workingHours = Number(s?.workingHoursPerDay || s?.working_hours_per_day || 8.0);
+        const halfDayMin = Number(s?.halfDayMinHours || s?.half_day_min_hours || 4.0);
+        const fullDayMin = Number(s?.fullDayMinHours || s?.full_day_min_hours || 8.0);
+        const branding = s?.showBrandingMode || s?.show_branding_mode || 'both';
+        const geofencePol = s?.geofencePolicy || s?.geofence_policy || 'strict';
+        const websiteTitle = s?.websiteTitle || s?.website_title || '';
+        const contactInfo = s?.contactInfo || s?.contact_info || '';
+
         const existingSettings = db.prepare('SELECT id FROM company_settings WHERE company_id = ?').get(targetCompId);
-        if (!existingSettings) {
+        if (existingSettings) {
           db.prepare(`
-            INSERT INTO company_settings (company_id, timezone, working_hours_per_day, half_day_min_hours, full_day_min_hours, show_branding_mode)
-            VALUES (?, 'Asia/Kolkata', 8.0, 4.0, 8.0, 'both')
-          `).run(targetCompId);
+            UPDATE company_settings SET timezone = ?, working_hours_per_day = ?, half_day_min_hours = ?, full_day_min_hours = ?, show_branding_mode = ?, geofence_policy = ?, website_title = ?, contact_info = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(timezone, workingHours, halfDayMin, fullDayMin, branding, geofencePol, websiteTitle, contactInfo, existingSettings.id);
+        } else {
+          db.prepare(`
+            INSERT INTO company_settings (company_id, timezone, working_hours_per_day, half_day_min_hours, full_day_min_hours, show_branding_mode, geofence_policy, website_title, contact_info)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(targetCompId, timezone, workingHours, halfDayMin, fullDayMin, branding, geofencePol, websiteTitle, contactInfo);
         }
 
-        const modules = ['geofencing', 'live_tracking', 'leave_management', 'payroll', 'support_tickets', 'dynamic_forms'];
-        for (const m of modules) {
+        const mObj = modulesMap.get(String(targetCompId)) || modulesMap.get(String(docKey)) || (c.id ? modulesMap.get(String(c.id)) : null);
+        const mods = mObj?.modules || mObj || {};
+        const allModules = ['geofencing', 'live_tracking', 'leave_management', 'payroll', 'support_tickets', 'dynamic_forms'];
+        for (const m of allModules) {
+          const isEnabled = (mods[m] !== undefined) ? (mods[m] ? 1 : 0) : 1;
           const existingMod = db.prepare('SELECT id FROM company_modules WHERE company_id = ? AND module_name = ?').get(targetCompId, m);
-          if (!existingMod) {
-            db.prepare(`
-              INSERT INTO company_modules (company_id, module_name, is_enabled)
-              VALUES (?, ?, 1)
-            `).run(targetCompId, m);
+          if (existingMod) {
+            db.prepare('UPDATE company_modules SET is_enabled = ? WHERE id = ?').run(isEnabled, existingMod.id);
+          } else {
+            db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled) VALUES (?, ?, ?)').run(targetCompId, m, isEnabled);
           }
-        }
-
-        // Ensure default Shift
-        const existingShift = db.prepare('SELECT id FROM shifts WHERE company_id = ?').get(targetCompId);
-        if (!existingShift) {
-          const sRes = db.prepare(`
-            INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, status)
-            VALUES (?, 'Standard Shift', '09:00', '18:00', 8.0, 15, 60, 'active')
-          `).run(targetCompId);
-          shiftIdMap.set(`default_${targetCompId}`, sRes.lastInsertRowid);
-        } else {
-          shiftIdMap.set(`default_${targetCompId}`, existingShift.id);
-        }
-
-        // Ensure default Weekly Off Setting
-        const existingWeeklyOff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ?').get(targetCompId);
-        if (!existingWeeklyOff) {
-          const wRes = db.prepare(`
-            INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
-            VALUES (?, 'Standard Weekly Off', '["Sunday"]', 1)
-          `).run(targetCompId);
-          weeklyOffIdMap.set(`default_${targetCompId}`, wRes.lastInsertRowid);
-        } else {
-          weeklyOffIdMap.set(`default_${targetCompId}`, existingWeeklyOff.id);
         }
 
         // Ensure company admin account is active / created if provided in company metadata
@@ -1928,23 +1944,11 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         restoredCompanies++;
       }
 
-      // First valid company fallback ID
-      let firstValidCompanyId = db.prepare('SELECT id FROM companies WHERE is_deleted = 0 ORDER BY id ASC LIMIT 1').get()?.id || null;
-      if (!firstValidCompanyId && (companiesMap.size > 0 || usersMap.size > 0 || employeesMap.size > 0 || shiftsMap.size > 0)) {
-        const defCompRes = db.prepare(`
-          INSERT INTO companies (name, portal_name, code, status, is_deleted)
-          VALUES ('Default Restored Company', 'Default Restored Company', 'RESTORED_CO', 'active', 0)
-        `).run();
-        firstValidCompanyId = defCompRes.lastInsertRowid;
-        claimedCompanyIds.add(firstValidCompanyId);
-      }
-
-      // Phase 2: Restore Shifts & Weekly Off Settings (Parent to Employees)
+      // Phase 2: Restore Shifts & Weekly Off Settings (ONLY for companies present in Firebase!)
       for (const [docKey, s] of shiftsMap) {
-        let compId = s.companyId || s.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        if (compId && s.name) {
+        let rawCompId = s.companyId || s.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (compId && claimedCompanyIds.has(compId) && s.name) {
           const sName = String(s.name).trim();
           const sStart = s.startTime || s.start_time || '09:00';
           const sEnd = s.endTime || s.end_time || '18:00';
@@ -1992,10 +1996,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       }
 
       for (const [docKey, w] of weeklyOffsMap) {
-        let compId = w.companyId || w.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        if (compId && w.name) {
+        let rawCompId = w.companyId || w.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (compId && claimedCompanyIds.has(compId) && w.name) {
           const wName = String(w.name).trim();
           const wOffDays = typeof w.offDaysJson === 'string' ? w.offDaysJson : (typeof w.off_days_json === 'string' ? w.off_days_json : JSON.stringify(w.offDays || w.off_days || ['Sunday']));
           const wDefault = (w.isDefault || w.is_default) ? 1 : 0;
@@ -2037,13 +2040,12 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // Phase 3: Restore Holidays & Geofences (Parent to Employees)
+      // Phase 3: Restore Holidays & Geofences (ONLY for companies present in Firebase!)
       for (const [_, h] of holidaysMap) {
-        let compId = h.companyId || h.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
+        let rawCompId = h.companyId || h.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
         const hDate = h.holidayDate || h.holiday_date;
-        if (compId && h.name && hDate) {
+        if (compId && claimedCompanyIds.has(compId) && h.name && hDate) {
           const hName = String(h.name).trim();
           const hOpt = (h.isOptional || h.is_optional) ? 1 : 0;
           const hApp = h.appliesTo || h.applies_to || 'all';
@@ -2064,11 +2066,10 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       }
 
       for (const [docKey, g] of geofencesMap) {
-        let compId = g.companyId || g.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
+        let rawCompId = g.companyId || g.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
         const locName = (g.locationName || g.location_name || g.name || '').trim();
-        if (compId && locName && g.latitude !== undefined && g.longitude !== undefined) {
+        if (compId && claimedCompanyIds.has(compId) && locName && g.latitude !== undefined && g.longitude !== undefined) {
           const gLat = parseFloat(g.latitude);
           const gLng = parseFloat(g.longitude);
           const gRadius = parseFloat(g.radius || 100);
@@ -2111,12 +2112,11 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // Phase 4: Restore Leave Types (Parent to Leave Balances & Requests)
+      // Phase 4: Restore Leave Types (ONLY for companies present in Firebase!)
       for (const [docKey, lt] of leaveTypesMap) {
-        let compId = lt.companyId || lt.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        if (compId && lt.name) {
+        let rawCompId = lt.companyId || lt.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (compId && claimedCompanyIds.has(compId) && lt.name) {
           const ltName = String(lt.name).trim();
           const quota = Number(lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0);
           const accrual = Number(lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
@@ -2175,13 +2175,25 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let compId = null;
         if (rawCompId) {
           const mappedCompId = companyIdMap.get(String(rawCompId)) || Number(rawCompId);
-          if (mappedCompId && !isNaN(mappedCompId)) {
-            const compExists = db.prepare('SELECT id FROM companies WHERE id = ?').get(mappedCompId);
-            if (compExists) compId = compExists.id;
+          if (mappedCompId && !isNaN(mappedCompId) && claimedCompanyIds.has(mappedCompId)) {
+            compId = mappedCompId;
           }
         }
+        // If this is a tenant user but their company does not exist in Firebase, do not restore them!
         if (!compId && (roleName === 'company_admin' || roleName === 'manager' || roleName === 'employee')) {
-          compId = firstValidCompanyId;
+          continue;
+        }
+
+        // Check if username is adminn (Super Admin) - never alter Super Admin credentials or role
+        if (username.toLowerCase() === 'adminn') {
+          const existingAdmin = db.prepare("SELECT id FROM users WHERE LOWER(username) = 'adminn'").get();
+          if (existingAdmin) {
+            userIdMap.set(String(docKey), existingAdmin.id);
+            if (u.id) userIdMap.set(String(u.id), existingAdmin.id);
+            userIdMap.set('adminn', existingAdmin.id);
+            claimedUserIds.add(existingAdmin.id);
+            continue;
+          }
         }
 
         let status = (u.status || 'active').toLowerCase().trim();
@@ -2288,12 +2300,12 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let compId = null;
         if (rawCompId) {
           const mappedComp = companyIdMap.get(String(rawCompId)) || Number(rawCompId);
-          if (mappedComp && !isNaN(mappedComp)) {
-            const exists = db.prepare('SELECT id FROM companies WHERE id = ?').get(mappedComp);
-            if (exists) compId = exists.id;
+          if (mappedComp && !isNaN(mappedComp) && claimedCompanyIds.has(mappedComp)) {
+            compId = mappedComp;
           }
         }
-        if (!compId) compId = firstValidCompanyId;
+        // If employee belongs to an unrecovered company, skip! Zero dummy companies.
+        if (!compId || !claimedCompanyIds.has(compId)) continue;
 
         const rawCode = (emp.employeeCode || emp.employee_id || (!isNaN(rawEmpId) && rawEmpId > 0 ? `EMP${rawEmpId}` : `EMP_${Date.now()}`)).trim();
         const fullName = (emp.fullName || emp.full_name || emp.username || `Employee ${rawCode}`).trim();
@@ -2309,47 +2321,23 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (status === 'block' || status === 'blocked') status = 'banned';
         if (!['active', 'disabled', 'banned', 'deleted'].includes(status)) status = 'active';
 
-        // Validate or resolve shift_id strictly from SQLite
+        // Shift ID: Only set if actually defined in recovered shifts for this company
         let shiftId = null;
         if (emp.shiftId || emp.shift_id) {
           const rawShift = shiftIdMap.get(String(emp.shiftId || emp.shift_id)) || Number(emp.shiftId || emp.shift_id);
           const s = db.prepare('SELECT id FROM shifts WHERE id = ? AND company_id = ?').get(rawShift, compId);
           if (s) shiftId = s.id;
         }
-        if (!shiftId) {
-          let defShift = db.prepare('SELECT id FROM shifts WHERE company_id = ? LIMIT 1').get(compId);
-          if (!defShift) {
-            const insS = db.prepare(`
-              INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, status)
-              VALUES (?, 'Standard Shift', '09:00', '18:00', 8.0, 15, 60, 'active')
-            `).run(compId);
-            shiftId = insS.lastInsertRowid;
-          } else {
-            shiftId = defShift.id;
-          }
-        }
 
-        // Validate or resolve weekly_off_id strictly from SQLite
+        // Weekly Off ID: Only set if actually defined in recovered weekly offs for this company
         let weeklyOffId = null;
         if (emp.weeklyOffId || emp.weekly_off_id) {
           const rawWoff = weeklyOffIdMap.get(String(emp.weeklyOffId || emp.weekly_off_id)) || Number(emp.weeklyOffId || emp.weekly_off_id);
           const w = db.prepare('SELECT id FROM weekly_off_settings WHERE id = ? AND company_id = ?').get(rawWoff, compId);
           if (w) weeklyOffId = w.id;
         }
-        if (!weeklyOffId) {
-          let defWoff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? LIMIT 1').get(compId);
-          if (!defWoff) {
-            const insW = db.prepare(`
-              INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
-              VALUES (?, 'Standard Weekly Off', '["Sunday"]', 1)
-            `).run(compId);
-            weeklyOffId = insW.lastInsertRowid;
-          } else {
-            weeklyOffId = defWoff.id;
-          }
-        }
 
-        // Validate or resolve geofence_id
+        // Geofence ID: Only set if actually defined in recovered geofences for this company
         let geofenceId = null;
         if (emp.geofenceId || emp.geofence_id) {
           const rawGeo = geofenceIdMap.get(String(emp.geofenceId || emp.geofence_id)) || Number(emp.geofenceId || emp.geofence_id);
@@ -2491,18 +2479,18 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
       // Phase 7: Restore Employee Mappings & Cross-linking
       for (const [_, m] of mappingsMap) {
-        let compId = m.companyId || m.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
+        let rawCompId = m.companyId || m.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (!compId || !claimedCompanyIds.has(compId)) continue;
         let mgrId = m.managerId || m.manager_id || m.supervisorId || m.supervisor_id;
         if (mgrId) mgrId = employeeIdMap.get(String(mgrId)) || Number(mgrId);
         let empId = m.employeeId || m.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
         const mapType = m.mappingType || m.mapping_type || 'manager';
 
-        if (compId && mgrId && empId && mgrId !== empId) {
-          const mgrExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(mgrId);
-          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+        if (mgrId && empId && mgrId !== empId && claimedEmployeeIds.has(mgrId) && claimedEmployeeIds.has(empId)) {
+          const mgrExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(mgrId, compId);
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
           if (mgrExists && empExists) {
             const existingMap = db.prepare('SELECT id FROM employee_mappings WHERE manager_id = ? AND employee_id = ? AND mapping_type = ?').get(mgrId, empId, mapType);
             if (!existingMap) {
@@ -2519,18 +2507,18 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       // Cross-link employee managerId & hrId from employee documents now that all employees exist
       for (const [_, emp] of employeesMap) {
         let empId = emp.id ? (employeeIdMap.get(String(emp.id)) || Number(emp.id)) : null;
-        if (empId) {
+        if (empId && claimedEmployeeIds.has(empId)) {
           if (emp.managerId || emp.manager_id) {
             const rawM = emp.managerId || emp.manager_id;
             const mappedM = employeeIdMap.get(String(rawM)) || Number(rawM);
-            if (mappedM && mappedM !== empId && db.prepare('SELECT id FROM employees WHERE id = ?').get(mappedM)) {
+            if (mappedM && mappedM !== empId && claimedEmployeeIds.has(mappedM)) {
               db.prepare('UPDATE employees SET manager_id = ? WHERE id = ?').run(mappedM, empId);
             }
           }
           if (emp.hrId || emp.hr_id) {
             const rawH = emp.hrId || emp.hr_id;
             const mappedH = employeeIdMap.get(String(rawH)) || Number(rawH);
-            if (mappedH && mappedH !== empId && db.prepare('SELECT id FROM employees WHERE id = ?').get(mappedH)) {
+            if (mappedH && mappedH !== empId && claimedEmployeeIds.has(mappedH)) {
               db.prepare('UPDATE employees SET hr_id = ? WHERE id = ?').run(mappedH, empId);
             }
           }
@@ -2540,24 +2528,17 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       // Phase 8: Restore Leave Balances & Leave Requests
       const currentYear = new Date().getFullYear();
       for (const [_, lb] of leaveBalancesMap) {
-        let compId = lb.companyId || lb.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
+        let rawCompId = lb.companyId || lb.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (!compId || !claimedCompanyIds.has(compId)) continue;
         let empId = lb.employeeId || lb.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
         let ltId = lb.leaveTypeId || lb.leave_type_id;
         if (ltId) ltId = leaveTypeIdMap.get(String(ltId)) || Number(ltId);
 
-        if (compId && empId && ltId) {
-          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
-          let ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ?').get(ltId);
-          if (!ltExists) {
-            const defLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? LIMIT 1').get(compId);
-            if (defLt) {
-              ltId = defLt.id;
-              ltExists = defLt;
-            }
-          }
+        if (empId && ltId && claimedEmployeeIds.has(empId)) {
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
+          const ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ? AND company_id = ?').get(ltId, compId);
           if (empExists && ltExists) {
             const yr = Number(lb.year || currentYear);
             const opening = Number(lb.opening_balance || lb.openingBalance || lb.allocated || 0);
@@ -2582,47 +2563,40 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       }
 
       for (const [_, lr] of leaveRequestsMap) {
-        let compId = lr.companyId || lr.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
+        let rawCompId = lr.companyId || lr.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (!compId || !claimedCompanyIds.has(compId)) continue;
         let empId = lr.employeeId || lr.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
         let ltId = lr.leaveTypeId || lr.leave_type_id;
         if (ltId) ltId = leaveTypeIdMap.get(String(ltId)) || Number(ltId);
 
-        if (compId && empId && (lr.startDate || lr.start_date)) {
-          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
-          if (empExists) {
-            let finalLtId = ltId;
-            const ltExists = finalLtId ? db.prepare('SELECT id FROM leave_types WHERE id = ?').get(finalLtId) : null;
-            if (!ltExists) {
-              const defLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? LIMIT 1').get(compId);
-              if (defLt) finalLtId = defLt.id;
-            }
-            if (finalLtId) {
-              const sDate = lr.startDate || lr.start_date;
-              const eDate = lr.endDate || lr.end_date || sDate;
-              let lrStatus = lr.status || 'pending';
-              if (!['pending', 'approved', 'rejected', 'cancelled'].includes(lrStatus)) lrStatus = 'pending';
-              db.prepare(`
-                INSERT INTO leave_requests (company_id, employee_id, leave_type_id, start_date, end_date, total_days, reason, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              `).run(compId, empId, finalLtId, sDate, eDate, lr.totalDays || lr.total_days || 1.0, lr.reason || 'Leave application', lrStatus);
-            }
+        if (empId && ltId && (lr.startDate || lr.start_date) && claimedEmployeeIds.has(empId)) {
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
+          const ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ? AND company_id = ?').get(ltId, compId);
+          if (empExists && ltExists) {
+            const sDate = lr.startDate || lr.start_date;
+            const eDate = lr.endDate || lr.end_date || sDate;
+            let lrStatus = lr.status || 'pending';
+            if (!['pending', 'approved', 'rejected', 'cancelled'].includes(lrStatus)) lrStatus = 'pending';
+            db.prepare(`
+              INSERT INTO leave_requests (company_id, employee_id, leave_type_id, start_date, end_date, total_days, reason, status)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(compId, empId, ltId, sDate, eDate, lr.totalDays || lr.total_days || 1.0, lr.reason || 'Leave application', lrStatus);
           }
         }
       }
 
       // Phase 9: Restore Attendance Corrections & Attendance Records
       for (const [_, cr] of correctionsMap) {
-        let compId = cr.companyId || cr.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
+        let rawCompId = cr.companyId || cr.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (!compId || !claimedCompanyIds.has(compId)) continue;
         let empId = cr.employeeId || cr.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
 
-        if (compId && empId && cr.date) {
-          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+        if (empId && cr.date && claimedEmployeeIds.has(empId)) {
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
           if (empExists) {
             let crStatus = cr.status || 'pending';
             if (!['pending', 'approved', 'rejected', 'cancelled'].includes(crStatus)) crStatus = 'pending';
@@ -2642,9 +2616,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
         let empId = rawEmpId ? (employeeIdMap.get(String(rawEmpId)) || Number(rawEmpId)) : null;
 
-        if (compId && empId && date && !isNaN(compId) && !isNaN(empId)) {
+        if (compId && empId && date && claimedCompanyIds.has(compId) && claimedEmployeeIds.has(empId)) {
           const compExists = db.prepare('SELECT id FROM companies WHERE id = ?').get(compId);
-          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
 
           if (compExists && empExists) {
             let attStatus = att.status || 'Present';
@@ -2684,9 +2658,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
       // Phase 10: Restore Support Tickets
       for (const [_, st] of ticketsMap) {
-        let compId = st.companyId || st.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (compId && !db.prepare('SELECT id FROM companies WHERE id = ?').get(compId)) {
+        let rawCompId = st.companyId || st.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (compId && !claimedCompanyIds.has(compId)) {
           compId = null;
         }
 
@@ -2705,7 +2679,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
           let authorId = uId;
           if (!authorId || !db.prepare('SELECT id FROM users WHERE id = ?').get(authorId)) {
-            authorId = db.prepare('SELECT id FROM users LIMIT 1').get()?.id || 1;
+            authorId = db.prepare("SELECT id FROM users WHERE role_id = (SELECT id FROM roles WHERE name = 'super_admin') OR username = 'adminn' LIMIT 1").get()?.id || 1;
           }
 
           const existingTkt = db.prepare('SELECT id FROM support_tickets WHERE ticket_number = ?').get(tktNum);
