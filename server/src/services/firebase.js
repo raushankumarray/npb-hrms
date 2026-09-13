@@ -392,6 +392,8 @@ async function syncCompany(company, extra = {}) {
       name: company.name,
       code: company.code,
       portalName: company.portal_name || company.name,
+      portal_name: company.portal_name || company.name,
+      logo: company.logo || '',
       email: company.email || adminEmail || '',
       phone: company.phone || '',
       address: company.address || '',
@@ -444,9 +446,15 @@ async function syncEmployee(employee, extra = {}) {
     const payload = {
       id: employee.id,
       companyId: employee.company_id,
+      company_id: employee.company_id,
+      userId: employee.user_id || extra.userId || null,
+      user_id: employee.user_id || extra.userId || null,
       companyName: companyName,
+      company_name: companyName,
       employeeCode: employee.employee_id || '',
+      employee_id: employee.employee_id || '',
       fullName: employee.full_name,
+      full_name: employee.full_name,
       username: username,
       email: employee.email || '',
       mobile: employee.mobile || '',
@@ -454,10 +462,16 @@ async function syncEmployee(employee, extra = {}) {
       designation: employee.designation || '',
       city: employee.city || '',
       role: employee.role_name || extra.role || 'employee',
+      role_name: employee.role_name || extra.role || 'employee',
       managerId: employee.manager_id || null,
+      manager_id: employee.manager_id || null,
       reportsToAdmin: employee.reports_to_admin ? 1 : 0,
+      reports_to_admin: employee.reports_to_admin ? 1 : 0,
       status: employee.status || 'active',
       shiftId: employee.shift_id || null,
+      shift_id: employee.shift_id || null,
+      weeklyOffId: employee.weekly_off_id || null,
+      weekly_off_id: employee.weekly_off_id || null,
       updatedAt: new Date().toISOString(),
       createdAt: employee.created_at || new Date().toISOString()
     };
@@ -512,8 +526,15 @@ async function syncUser(user) {
       id: user.id,
       username: user.username,
       email: user.email || '',
+      mobile: user.mobile || '',
+      passwordHash: user.password_hash || '',
+      password_hash: user.password_hash || '',
       role: roleName,
+      role_name: roleName,
+      roleId: user.role_id || null,
+      role_id: user.role_id || null,
       companyId: user.company_id || null,
+      company_id: user.company_id || null,
       companyName: companyName,
       status: user.status || 'active',
       lastLoginAt: user.last_login_at || new Date().toISOString(),
@@ -693,7 +714,7 @@ async function syncAllDatabaseToFirebase() {
     }
 
     // 2. Sync all active users
-    const users = db.prepare('SELECT u.id, u.username, u.email, u.company_id, u.status, u.last_login_at, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.is_deleted = 0').all();
+    const users = db.prepare('SELECT u.id, u.username, u.email, u.mobile, u.password_hash, u.company_id, u.role_id, u.status, u.last_login_at, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.is_deleted = 0').all();
     let usersCount = 0;
     for (const u of users) {
       await syncUser(u);
