@@ -5,7 +5,7 @@ const db = require('../db');
 const { verifyAuth, generateToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase } = require('../services/firebase');
+const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase, fetchAllFromFirebaseAndRestoreToDb, resetFirebaseConfig } = require('../services/firebase');
 
 // Helper to get or insert an application setting
 function getSetting(key, defaultValue = '') {
@@ -270,6 +270,48 @@ router.post('/firebase-sync-all', verifyAuth, requireRole(['super_admin']), asyn
       targetEntity: 'firebase_sync',
       newValues: result,
       reason: 'Super Admin triggered manual full database sync to Firebase'
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 8. POST /api/system/firebase-fetch-all - Fetch all data from Firebase & restore/recover into local website & database (Super Admin only)
+router.post('/firebase-fetch-all', verifyAuth, requireRole(['super_admin']), async (req, res) => {
+  try {
+    const result = await fetchAllFromFirebaseAndRestoreToDb();
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: 'super_admin',
+      panel: 'Super Admin Firebase Recovery',
+      action: 'FIREBASE_RESTORE_ALL_DATA',
+      targetEntity: 'firebase_restore',
+      newValues: result,
+      reason: 'Super Admin recovered all data from Firebase into local database'
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 9. POST /api/system/firebase-reset - Disconnect / Change Firebase account (Super Admin only)
+router.post('/firebase-reset', verifyAuth, requireRole(['super_admin']), async (req, res) => {
+  try {
+    const result = await resetFirebaseConfig();
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: 'super_admin',
+      panel: 'Super Admin Firebase Config',
+      action: 'FIREBASE_CONFIG_RESET',
+      targetEntity: 'application_settings',
+      reason: 'Super Admin disconnected Firebase to configure another account'
     });
     res.json(result);
   } catch (err) {
