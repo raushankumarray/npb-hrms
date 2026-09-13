@@ -1177,13 +1177,15 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     const companyIdMap = new Map();
     const userIdMap = new Map();
     const employeeIdMap = new Map();
+    const claimedCompanyIds = new Set();
+    const claimedEmployeeIds = new Set();
 
     const restoreTransaction = db.transaction(() => {
       // A. Restore Companies
       for (const [docKey, c] of companiesMap) {
         let rawId = Number(c.id);
-        const code = (c.code || (!isNaN(rawId) && rawId > 0 ? `COMP${rawId}` : `COMP_${Date.now()}_${Math.floor(Math.random() * 1000)}`)).trim().toUpperCase();
-        const name = (c.name || c.portalName || c.portal_name || code || 'Company').trim();
+        const rawCode = (c.code || (!isNaN(rawId) && rawId > 0 ? `COMP${rawId}` : `COMP_${Date.now()}_${Math.floor(Math.random() * 1000)}`)).trim().toUpperCase();
+        const name = (c.name || c.portalName || c.portal_name || rawCode || 'Company').trim();
         const portalName = (c.portal_name || c.portalName || name || 'Portal').trim();
         const email = c.email || '';
         const phone = c.phone || '';
@@ -1199,35 +1201,62 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let targetCompId = (!isNaN(rawId) && rawId > 0) ? rawId : null;
         let existing = null;
 
-        if (targetCompId) {
-          existing = db.prepare('SELECT id FROM companies WHERE id = ?').get(targetCompId);
+        if (targetCompId && !claimedCompanyIds.has(targetCompId)) {
+          existing = db.prepare('SELECT id, code FROM companies WHERE id = ?').get(targetCompId);
         }
-        if (!existing && code) {
-          existing = db.prepare('SELECT id FROM companies WHERE code = ?').get(code);
-          if (existing) targetCompId = existing.id;
+        if (!existing && rawCode) {
+          const byCode = db.prepare('SELECT id, code FROM companies WHERE LOWER(code) = LOWER(?)').get(rawCode);
+          if (byCode && !claimedCompanyIds.has(byCode.id)) {
+            existing = byCode;
+            targetCompId = existing.id;
+          }
+        }
+
+        // Guarantee unique code
+        let finalCode = rawCode;
+        let codeConflict = db.prepare('SELECT id FROM companies WHERE LOWER(code) = LOWER(?) AND (? IS NULL OR id != ?)').get(finalCode, existing?.id, existing?.id);
+        let codeSuffix = 1;
+        while (codeConflict) {
+          finalCode = `${rawCode}_${codeSuffix++}`;
+          codeConflict = db.prepare('SELECT id FROM companies WHERE LOWER(code) = LOWER(?) AND (? IS NULL OR id != ?)').get(finalCode, existing?.id, existing?.id);
         }
 
         if (existing) {
           db.prepare(`
             UPDATE companies SET name = ?, portal_name = ?, code = ?, email = ?, phone = ?, address = ?, logo = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(name, portalName, code, email, phone, address, logo, status, existing.id);
+          `).run(name, portalName, finalCode, email, phone, address, logo, status, existing.id);
           targetCompId = existing.id;
         } else {
-          if (targetCompId) {
-            db.prepare(`
-              INSERT INTO companies (id, name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `).run(targetCompId, name, portalName, code, email, phone, address, logo, status);
+          let canUseCompId = (!isNaN(targetCompId) && targetCompId > 0 && !claimedCompanyIds.has(targetCompId));
+          if (canUseCompId) {
+            const occupied = db.prepare('SELECT id FROM companies WHERE id = ?').get(targetCompId);
+            if (occupied) canUseCompId = false;
+          }
+
+          if (canUseCompId) {
+            try {
+              db.prepare(`
+                INSERT INTO companies (id, name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(targetCompId, name, portalName, finalCode, email, phone, address, logo, status);
+            } catch (err) {
+              const insRes = db.prepare(`
+                INSERT INTO companies (name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(name, portalName, finalCode, email, phone, address, logo, status);
+              targetCompId = insRes.lastInsertRowid;
+            }
           } else {
             const insRes = db.prepare(`
               INSERT INTO companies (name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `).run(name, portalName, code, email, phone, address, logo, status);
+            `).run(name, portalName, finalCode, email, phone, address, logo, status);
             targetCompId = insRes.lastInsertRowid;
           }
         }
 
+        claimedCompanyIds.add(targetCompId);
         companyIdMap.set(String(docKey), targetCompId);
         if (c.id) companyIdMap.set(String(c.id), targetCompId);
         companyIdMap.set(String(targetCompId), targetCompId);
@@ -1248,7 +1277,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           `).run(targetCompId, m);
         }
 
-        // Ensure at least one default Shift
+        // Ensure default Shift
         const existingShift = db.prepare('SELECT id FROM shifts WHERE company_id = ?').get(targetCompId);
         if (!existingShift) {
           db.prepare(`
@@ -1272,15 +1301,24 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           const aPass = c.adminPassword || c.admin_password || 'Admin@123';
           const aEmail = c.adminEmail || c.admin_email || email;
           const aHash = bcrypt.hashSync(String(aPass).trim(), 10);
-          const existingAdmin = db.prepare('SELECT id FROM users WHERE username = ?').get(aUname);
+          
+          const existingAdmin = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(aUname);
           if (existingAdmin) {
-            db.prepare('UPDATE users SET company_id = ?, password_hash = ?, status = ?, is_deleted = 0 WHERE id = ?')
+            db.prepare('UPDATE users SET company_id = ?, password_hash = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
               .run(targetCompId, aHash, status, existingAdmin.id);
+            userIdMap.set(aUname.toLowerCase(), existingAdmin.id);
           } else {
-            db.prepare(`
+            let safeAdminUsername = aUname;
+            let suffix = 1;
+            while (db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(safeAdminUsername)) {
+              safeAdminUsername = `${aUname}_${suffix++}`;
+            }
+            const insAdmin = db.prepare(`
               INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status, is_deleted)
               VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-            `).run(aUname, aHash, aEmail, phone, roleMap['company_admin'], targetCompId, status);
+            `).run(safeAdminUsername, aHash, aEmail, phone, roleMap['company_admin'], targetCompId, status);
+            userIdMap.set(safeAdminUsername.toLowerCase(), insAdmin.lastInsertRowid);
+            userIdMap.set(aUname.toLowerCase(), insAdmin.lastInsertRowid);
           }
         }
 
@@ -1293,7 +1331,11 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       // B. Restore Users
       for (const [docKey, u] of usersMap) {
         let rawUserId = Number(u.id);
-        const username = (u.username || `user_${docKey}`).trim();
+        let baseUsername = (u.username || u.name || '').trim();
+        if (!baseUsername) {
+          baseUsername = (u.email ? u.email.split('@')[0] : (u.mobile ? `user_${u.mobile}` : `user_${docKey}`)).trim();
+        }
+        const username = baseUsername;
         const email = u.email || '';
         const mobile = u.mobile || '';
         const roleName = (u.role || u.role_name || 'employee').toLowerCase().trim();
@@ -1322,7 +1364,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           finalHash = bcrypt.hashSync(String(u.password).trim(), 10);
         }
         if (!finalHash) {
-          const existingUser = db.prepare('SELECT password_hash FROM users WHERE id = ? OR username = ?').get(rawUserId, username);
+          const existingUser = db.prepare('SELECT password_hash FROM users WHERE LOWER(username) = LOWER(?)').get(username);
           if (existingUser && existingUser.password_hash) {
             finalHash = existingUser.password_hash;
           } else {
@@ -1331,28 +1373,40 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
 
-        let targetUserId = (!isNaN(rawUserId) && rawUserId > 0) ? rawUserId : null;
-        let existingById = targetUserId ? db.prepare('SELECT id FROM users WHERE id = ?').get(targetUserId) : null;
-        let existingByName = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+        // Check if user with this username ALREADY exists in database
+        const existingByName = db.prepare('SELECT id, username, role_id FROM users WHERE LOWER(username) = LOWER(?)').get(username);
+        let targetUserId = null;
 
-        if (existingById) {
+        if (existingByName) {
+          // Update the existing user WITHOUT changing their unique username (guarantees ZERO UNIQUE constraint collision)
           db.prepare(`
-            UPDATE users SET username = ?, password_hash = ?, email = ?, mobile = ?, role_id = ?, company_id = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(username, finalHash, email, mobile, roleId, compId, status, existingById.id);
-          targetUserId = existingById.id;
-        } else if (existingByName) {
-          db.prepare(`
-            UPDATE users SET password_hash = ?, email = ?, mobile = ?, role_id = ?, company_id = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
+            UPDATE users SET password_hash = ?, email = COALESCE(NULLIF(?, ''), email), mobile = COALESCE(NULLIF(?, ''), mobile),
+                             role_id = COALESCE(?, role_id), company_id = COALESCE(?, company_id), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `).run(finalHash, email, mobile, roleId, compId, status, existingByName.id);
           targetUserId = existingByName.id;
         } else {
-          if (targetUserId) {
-            db.prepare(`
-              INSERT INTO users (id, username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `).run(targetUserId, username, finalHash, email, mobile, roleId, compId, status);
+          // Check if rawUserId is positive integer and NOT already taken by another user
+          let canUseId = (!isNaN(rawUserId) && rawUserId > 0);
+          if (canUseId) {
+            const idOccupied = db.prepare('SELECT id FROM users WHERE id = ?').get(rawUserId);
+            if (idOccupied) canUseId = false;
+          }
+
+          if (canUseId) {
+            try {
+              db.prepare(`
+                INSERT INTO users (id, username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(rawUserId, username, finalHash, email, mobile, roleId, compId, status);
+              targetUserId = rawUserId;
+            } catch (err) {
+              const uRes = db.prepare(`
+                INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(username, finalHash, email, mobile, roleId, compId, status);
+              targetUserId = uRes.lastInsertRowid;
+            }
           } else {
             const uRes = db.prepare(`
               INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
@@ -1364,6 +1418,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
         userIdMap.set(String(docKey), targetUserId);
         if (u.id) userIdMap.set(String(u.id), targetUserId);
+        userIdMap.set(username.toLowerCase(), targetUserId);
         userIdMap.set(String(targetUserId), targetUserId);
 
         if (roleName === 'super_admin') {
@@ -1405,8 +1460,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           compId = defaultCompRes.lastInsertRowid;
         }
 
-        const code = (emp.employeeCode || emp.employee_id || (!isNaN(rawEmpId) && rawEmpId > 0 ? `EMP${rawEmpId}` : `EMP_${Date.now()}`)).trim();
-        const fullName = (emp.fullName || emp.full_name || emp.username || `Employee ${code}`).trim();
+        const rawCode = (emp.employeeCode || emp.employee_id || (!isNaN(rawEmpId) && rawEmpId > 0 ? `EMP${rawEmpId}` : `EMP_${Date.now()}`)).trim();
+        const fullName = (emp.fullName || emp.full_name || emp.username || `Employee ${rawCode}`).trim();
         const email = emp.email || '';
         const mobile = emp.mobile || '';
         const department = emp.department || 'General';
@@ -1441,6 +1496,20 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (defWoff) weeklyOffId = defWoff.id;
         }
 
+        // Target Employee lookup
+        let targetEmpId = (!isNaN(rawEmpId) && rawEmpId > 0 && !claimedEmployeeIds.has(rawEmpId)) ? rawEmpId : null;
+        let existingEmp = null;
+        if (targetEmpId) {
+          existingEmp = db.prepare('SELECT id FROM employees WHERE id = ?').get(targetEmpId);
+        }
+        if (!existingEmp && rawCode) {
+          const byCode = db.prepare('SELECT id FROM employees WHERE company_id = ? AND LOWER(employee_id) = LOWER(?)').get(compId, rawCode);
+          if (byCode && !claimedEmployeeIds.has(byCode.id)) {
+            existingEmp = byCode;
+            targetEmpId = existingEmp.id;
+          }
+        }
+
         // Linked User ID: Must be UNIQUE per employee and point to valid users(id)
         let rawUserId = emp.userId || emp.user_id;
         let linkedUserId = null;
@@ -1453,17 +1522,17 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
 
         if (linkedUserId) {
-          const userAlreadyUsed = db.prepare('SELECT id FROM employees WHERE user_id = ? AND (? IS NULL OR id != ?)').get(linkedUserId, rawEmpId, rawEmpId);
+          const userAlreadyUsed = db.prepare('SELECT id FROM employees WHERE user_id = ? AND (? IS NULL OR id != ?)').get(linkedUserId, targetEmpId, targetEmpId);
           if (userAlreadyUsed) {
             linkedUserId = null;
           }
         }
 
-        if (!linkedUserId) {
-          const empUsername = (emp.username || code.toLowerCase()).trim();
-          const existingUserByName = db.prepare('SELECT id FROM users WHERE username = ?').get(empUsername);
+        if (!linkedUserId && emp.username) {
+          const empUsername = String(emp.username).trim();
+          const existingUserByName = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(empUsername);
           if (existingUserByName) {
-            const used = db.prepare('SELECT id FROM employees WHERE user_id = ? AND (? IS NULL OR id != ?)').get(existingUserByName.id, rawEmpId, rawEmpId);
+            const used = db.prepare('SELECT id FROM employees WHERE user_id = ? AND (? IS NULL OR id != ?)').get(existingUserByName.id, targetEmpId, targetEmpId);
             if (!used) {
               linkedUserId = existingUserByName.id;
             }
@@ -1475,13 +1544,23 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           const roleId = roleMap[roleName] || roleMap['employee'];
           const defPass = roleName === 'manager' ? 'Manager@123' : 'Employee@123';
           const passHash = (emp.password ? bcrypt.hashSync(String(emp.password).trim(), 10) : bcrypt.hashSync(defPass, 10));
-          const newUsername = (emp.username || `${code.toLowerCase()}_${Math.floor(Math.random() * 1000)}`).trim();
+
+          const baseUsername = (emp.username || `${rawCode.toLowerCase()}_${Math.floor(Math.random() * 1000)}`).trim();
+          let safeUsername = baseUsername;
+          let suffix = 1;
+          while (db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(safeUsername)) {
+            safeUsername = `${baseUsername}_${suffix++}`;
+          }
 
           const resU = db.prepare(`
             INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status, is_deleted)
             VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-          `).run(newUsername, passHash, email, mobile, roleId, compId, status);
+          `).run(safeUsername, passHash, email, mobile, roleId, compId, status);
           linkedUserId = resU.lastInsertRowid;
+          userIdMap.set(safeUsername.toLowerCase(), linkedUserId);
+          if (emp.username && !userIdMap.has(String(emp.username).toLowerCase())) {
+            userIdMap.set(String(emp.username).toLowerCase(), linkedUserId);
+          }
         }
 
         // Determine manager_id safely (ensure target exists or set NULL)
@@ -1494,37 +1573,51 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
 
-        let targetEmpId = (!isNaN(rawEmpId) && rawEmpId > 0) ? rawEmpId : null;
-        let existingEmp = null;
-        if (targetEmpId) {
-          existingEmp = db.prepare('SELECT id FROM employees WHERE id = ?').get(targetEmpId);
-        }
-        if (!existingEmp && code) {
-          existingEmp = db.prepare('SELECT id FROM employees WHERE company_id = ? AND employee_id = ?').get(compId, code);
-          if (existingEmp) targetEmpId = existingEmp.id;
+        // Ensure finalEmpCode is unique within this company
+        let finalEmpCode = rawCode;
+        let empCodeConflict = db.prepare('SELECT id FROM employees WHERE company_id = ? AND LOWER(employee_id) = LOWER(?) AND (? IS NULL OR id != ?)').get(compId, finalEmpCode, existingEmp?.id, existingEmp?.id);
+        let empCodeSuffix = 1;
+        while (empCodeConflict) {
+          finalEmpCode = `${rawCode}_${empCodeSuffix++}`;
+          empCodeConflict = db.prepare('SELECT id FROM employees WHERE company_id = ? AND LOWER(employee_id) = LOWER(?) AND (? IS NULL OR id != ?)').get(compId, finalEmpCode, existingEmp?.id, existingEmp?.id);
         }
 
         if (existingEmp) {
           db.prepare(`
             UPDATE employees SET company_id = ?, user_id = ?, employee_id = ?, full_name = ?, mobile = ?, email = ?, department = ?, designation = ?, city = ?, manager_id = ?, shift_id = ?, weekly_off_id = ?, status = ?, is_deleted = 0, reports_to_admin = ?
             WHERE id = ?
-          `).run(compId, linkedUserId, code, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin, existingEmp.id);
+          `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin, existingEmp.id);
           targetEmpId = existingEmp.id;
         } else {
-          if (targetEmpId) {
-            db.prepare(`
-              INSERT INTO employees (id, company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-            `).run(targetEmpId, compId, linkedUserId, code, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+          let canUseEmpId = (!isNaN(targetEmpId) && targetEmpId > 0 && !claimedEmployeeIds.has(targetEmpId));
+          if (canUseEmpId) {
+            const occupied = db.prepare('SELECT id FROM employees WHERE id = ?').get(targetEmpId);
+            if (occupied) canUseEmpId = false;
+          }
+
+          if (canUseEmpId) {
+            try {
+              db.prepare(`
+                INSERT INTO employees (id, company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+              `).run(targetEmpId, compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+            } catch (err) {
+              const insE = db.prepare(`
+                INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+              `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+              targetEmpId = insE.lastInsertRowid;
+            }
           } else {
             const insE = db.prepare(`
               INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-            `).run(compId, linkedUserId, code, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+            `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
             targetEmpId = insE.lastInsertRowid;
           }
         }
 
+        claimedEmployeeIds.add(targetEmpId);
         employeeIdMap.set(String(docKey), targetEmpId);
         if (emp.id) employeeIdMap.set(String(emp.id), targetEmpId);
         employeeIdMap.set(String(targetEmpId), targetEmpId);
