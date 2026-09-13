@@ -276,7 +276,7 @@ export default function LoginView({ onLoginSuccess }) {
         <form className="mt-8 space-y-5" onSubmit={handleLogin}>
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1">
-              Username
+              Username / Mobile No. / Email
             </label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -288,7 +288,7 @@ export default function LoginView({ onLoginSuccess }) {
                 onChange={(e) => setUsername(e.target.value)}
                 required
                 className="block w-full pl-10 pr-3 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 text-sm"
-                placeholder="Enter your username"
+                placeholder="Username, Mobile No., or Email"
                 autoComplete="username"
               />
             </div>

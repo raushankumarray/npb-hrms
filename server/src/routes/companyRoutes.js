@@ -40,7 +40,7 @@ const uploadLogo = multer({
 
 // List companies (Super Admin and Support)
 router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) => {
-  const { status, search } = req.query;
+  const { status, search, company_id } = req.query;
 
   let query = `
     SELECT c.*,
@@ -48,6 +48,7 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
       (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.is_deleted = 0) as total_users,
       (SELECT username FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_username,
       (SELECT email FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_email,
+      (SELECT mobile FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_mobile,
       (SELECT COUNT(*) FROM employees e JOIN users u ON e.user_id = u.id JOIN roles r ON u.role_id = r.id WHERE e.company_id = c.id AND r.name = 'manager') as total_managers,
       s.show_branding_mode, s.timezone, s.auto_archive_days
     FROM companies c
@@ -56,8 +57,19 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
   `;
   const params = [];
 
+  if (company_id && company_id !== 'all') {
+    query += ' AND c.id = ?';
+    params.push(parseInt(company_id, 10));
+  }
+
   if (status && status !== 'all') {
-    if (status === 'closed' || status === 'disabled') {
+    if (status === 'suspended' || status === 'disabled') {
+      query += " AND (c.status = 'disabled' OR c.status = 'suspended')";
+    } else if (status === 'block' || status === 'banned') {
+      query += " AND (c.status = 'banned' OR c.status = 'block')";
+    } else if (status === 'active') {
+      query += " AND c.status = 'active'";
+    } else if (status === 'closed') {
       query += " AND (c.status = 'disabled' OR c.status = 'banned' OR c.status = 'closed')";
     } else {
       query += ' AND c.status = ?';
@@ -65,10 +77,17 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
     }
   }
 
-  if (search) {
-    query += ' AND (c.name LIKE ? OR c.code LIKE ? OR c.portal_name LIKE ? OR c.email LIKE ? OR c.phone LIKE ? OR c.address LIKE ?)';
-    const term = `%${search}%`;
-    params.push(term, term, term, term, term, term);
+  if (search && search.trim()) {
+    query += ` AND (
+      c.name LIKE ? OR c.code LIKE ? OR c.portal_name LIKE ? OR c.email LIKE ? OR c.phone LIKE ? OR c.address LIKE ?
+      OR EXISTS (
+        SELECT 1 FROM users u 
+        WHERE u.company_id = c.id 
+          AND (u.username LIKE ? OR u.email LIKE ? OR u.mobile LIKE ?)
+      )
+    )`;
+    const term = `%${search.trim()}%`;
+    params.push(term, term, term, term, term, term, term, term, term);
   }
 
   query += ' ORDER BY c.created_at DESC';
@@ -130,6 +149,14 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const cleanName = name.trim();
   const cleanCode = code.trim().toUpperCase();
   const finalPortalName = (portal_name && portal_name.trim()) ? portal_name.trim() : cleanName;
+  const cleanAdminUser = admin_username.trim();
+
+  // Determine email and mobile from admin_username or fields
+  const isEmail = cleanAdminUser.includes('@');
+  const isMobile = /^\+?[0-9]{7,15}$/.test(cleanAdminUser.replace(/[\s-]/g, ''));
+
+  const finalUserEmail = admin_email && admin_email.trim() ? admin_email.trim() : (isEmail ? cleanAdminUser : (email && email.trim() ? email.trim() : null));
+  const finalUserMobile = phone && phone.trim() ? phone.trim() : (isMobile ? cleanAdminUser : null);
 
   // Check unique code
   const existingComp = db.prepare('SELECT id FROM companies WHERE code = ?').get(cleanCode);
@@ -138,9 +165,9 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
   }
 
   // Check unique admin username
-  const existingUser = db.prepare('SELECT id FROM users WHERE username = ?').get(admin_username.trim());
+  const existingUser = db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(cleanAdminUser);
   if (existingUser) {
-    return res.status(400).json({ error: `Username "${admin_username}" is already taken.` });
+    return res.status(400).json({ error: `Username "${cleanAdminUser}" is already taken.` });
   }
 
   const roleCompAdmin = db.prepare("SELECT id FROM roles WHERE name = 'company_admin'").get();
@@ -180,12 +207,12 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
     const insertMod = db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled) VALUES (?, ?, 1)');
     modules.forEach(m => insertMod.run(newCompanyId, m));
 
-    // 4. Create Company Admin User
+    // 4. Create Company Admin User (with support for Mobile / Email / Custom Username)
     const passHash = bcrypt.hashSync(admin_password, 10);
     db.prepare(`
-      INSERT INTO users (username, password_hash, email, role_id, company_id, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(admin_username.trim(), passHash, admin_email || email, roleCompAdmin.id, newCompanyId);
+      INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'active')
+    `).run(cleanAdminUser, passHash, finalUserEmail, finalUserMobile, roleCompAdmin.id, newCompanyId);
 
     // 5. Create default shift, weekly off, and leave types
     const shiftRes = db.prepare(`
@@ -326,7 +353,12 @@ router.put('/:id', verifyAuth, (req, res) => {
     // Update admin user credentials if requested
     if (adminUser) {
       if (admin_username && admin_username.trim() && admin_username.trim() !== adminUser.username) {
-        db.prepare('UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(admin_username.trim(), adminUser.id);
+        const cleanUser = admin_username.trim();
+        const isEmail = cleanUser.includes('@');
+        const isMobile = /^\+?[0-9]{7,15}$/.test(cleanUser.replace(/[\s-]/g, ''));
+        const userEmail = admin_email !== undefined ? admin_email : (isEmail ? cleanUser : adminUser.email);
+        const userMobile = phone !== undefined ? phone : (isMobile ? cleanUser : adminUser.mobile);
+        db.prepare('UPDATE users SET username = ?, email = ?, mobile = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(cleanUser, userEmail, userMobile, adminUser.id);
       }
       if (admin_password && admin_password.trim()) {
         const passHash = bcrypt.hashSync(admin_password.trim(), 10);
@@ -334,6 +366,9 @@ router.put('/:id', verifyAuth, (req, res) => {
       }
       if (admin_email !== undefined) {
         db.prepare('UPDATE users SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(admin_email, adminUser.id);
+      }
+      if (phone !== undefined) {
+        db.prepare('UPDATE users SET mobile = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(phone, adminUser.id);
       }
     }
 

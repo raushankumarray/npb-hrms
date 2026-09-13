@@ -15,8 +15,9 @@ router.post('/login', (req, res) => {
     return res.status(400).json({ error: 'Username and password are required.' });
   }
 
+  const cleanLoginInput = username.trim();
   const user = db.prepare(`
-    SELECT u.id, u.username, u.password_hash, u.email, u.role_id, u.company_id, u.status, u.is_deleted,
+    SELECT u.id, u.username, u.password_hash, u.email, u.mobile, u.role_id, u.company_id, u.status, u.is_deleted,
            r.name as role_name,
            s.permission_level as support_level,
            e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id
@@ -24,8 +25,15 @@ router.post('/login', (req, res) => {
     JOIN roles r ON u.role_id = r.id
     LEFT JOIN support_users s ON u.id = s.user_id
     LEFT JOIN employees e ON u.id = e.user_id
-    WHERE u.username = ?
-  `).get(username.trim());
+    WHERE (
+      LOWER(u.username) = LOWER(?)
+      OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
+      OR (u.mobile IS NOT NULL AND (u.mobile = ? OR REPLACE(REPLACE(u.mobile, ' ', ''), '+91', '') = REPLACE(REPLACE(?, ' ', ''), '+91', '')))
+      OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
+      OR (e.mobile IS NOT NULL AND (e.mobile = ? OR REPLACE(REPLACE(e.mobile, ' ', ''), '+91', '') = REPLACE(REPLACE(?, ' ', ''), '+91', '')))
+    )
+    LIMIT 1
+  `).get(cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput);
 
   if (!user || user.is_deleted) {
     return res.status(401).json({ error: 'Invalid username or password.' });
@@ -135,6 +143,7 @@ router.post('/login', (req, res) => {
       id: user.id,
       username: user.username,
       email: user.email,
+      mobile: user.mobile || '',
       role: user.role_name,
       supportLevel: user.support_level,
       companyId: user.company_id,

@@ -46,9 +46,15 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null); // { id, name, code }
 
-  // Company Portals Directory & Bulk Controls
-  const [companyFilterStatus, setCompanyFilterStatus] = useState('all'); // 'all' | 'active' | 'closed'
+  // Company Portals Directory, Filter Controls & Pagination State
+  const [allCompaniesList, setAllCompaniesList] = useState([]);
+  const [companyFilterStatus, setCompanyFilterStatus] = useState('active'); // 'active' (default) | 'suspended' | 'block' | 'all'
+  const [selectedCompanyFilter, setSelectedCompanyFilter] = useState('all'); // 'all' | specific company id
   const [companySearchQuery, setCompanySearchQuery] = useState('');
+  const [companyPageSize, setCompanyPageSize] = useState(10); // default 10 rows!
+  const [companyCustomPageSize, setCompanyCustomPageSize] = useState('');
+  const [companyIsCustomPageSize, setCompanyIsCustomPageSize] = useState(false);
+  const [companyPage, setCompanyPage] = useState(1);
   const [selectedCompanyIds, setSelectedCompanyIds] = useState([]);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -173,9 +179,15 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         }
       }
       if (activeTab === 'companies' || activeTab === 'dashboard') {
+        try {
+          const allRes = await apiRequest('/companies?status=all');
+          setAllCompaniesList(allRes.companies || []);
+        } catch (e) {}
+
         const queryParams = new URLSearchParams();
         if (activeTab === 'companies') {
           if (companyFilterStatus !== 'all') queryParams.append('status', companyFilterStatus);
+          if (selectedCompanyFilter !== 'all') queryParams.append('company_id', selectedCompanyFilter);
           if (companySearchQuery.trim()) queryParams.append('search', companySearchQuery.trim());
         }
         const queryStr = queryParams.toString() ? `?${queryParams.toString()}` : '';
@@ -250,7 +262,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
     return () => window.removeEventListener('master-refresh', handleMasterRefresh);
-  }, [activeTab, dirPage, dirPageSize, dirCompanyFilter, dirRoleFilter, dirStatusFilter, dirCityFilter, dirSearchQuery, companyFilterStatus, companySearchQuery]);
+  }, [activeTab, dirPage, dirPageSize, dirCompanyFilter, dirRoleFilter, dirStatusFilter, dirCityFilter, dirSearchQuery, companyFilterStatus, selectedCompanyFilter, companySearchQuery]);
 
   // Handle Logo Upload
   const handleLogoUpload = (e) => {
@@ -655,7 +667,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
   // Select all or deselect all currently displayed companies
   const handleSelectAllCompanies = () => {
-    const allVisibleIds = companies.map(c => c.id);
+    const allVisibleIds = paginatedCompanies.map(c => c.id);
     const areAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedCompanyIds.includes(id));
     if (areAllSelected) {
       setSelectedCompanyIds([]);
@@ -917,6 +929,16 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const disabledCompanies = companies.filter(c => c.status === 'disabled').length;
   const bannedCompanies = companies.filter(c => c.status === 'banned').length;
 
+  // Company Portals pagination & slicing calculations
+  const companyEffectivePageSize = companyIsCustomPageSize && Number(companyCustomPageSize) > 0
+    ? Number(companyCustomPageSize)
+    : (companyPageSize || 10);
+  const totalCompanyPages = Math.max(1, Math.ceil(companies.length / companyEffectivePageSize));
+  const paginatedCompanies = companies.slice(
+    (companyPage - 1) * companyEffectivePageSize,
+    companyPage * companyEffectivePageSize
+  );
+
   return (
     <div className="space-y-6">
       {/* Top Banner / Breadcrumb */}
@@ -1061,112 +1083,204 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* VIEW: COMPANIES - MASTER PORTALS DIRECTORY */}
       {activeTab === 'companies' && (
         <div className="space-y-4">
-          {/* Controls Bar: Status Filters, Search, and Multi-Select Operations */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              {/* Status Filter Buttons */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-xs font-semibold text-slate-500 uppercase mr-1 flex items-center gap-1">
-                  <Filter className="w-3.5 h-3.5 text-slate-400" /> Portal Status:
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setCompanyFilterStatus('all')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                    companyFilterStatus === 'all'
-                      ? 'bg-slate-900 text-white shadow-sm'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  <span>All Companies</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
-                    companyFilterStatus === 'all' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-                  }`}>
-                    {companies.length}
+          {/* Top Action Header: Title + Register Company Button */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-sky-600" />
+                <span>Company Portals Management</span>
+              </h2>
+              <p className="text-xs text-slate-500">
+                Register tenant companies, configure custom admin credentials, and monitor company portal lifecycle
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowCreateCompany(true)}
+              className="px-4 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm active:scale-95"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Register Company</span>
+            </button>
+          </div>
+
+          {/* Squared Card: Company Status, Select Company, Custom Enter, Display Rows Limit */}
+          <div className="bg-white p-4 rounded-xl border-2 border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-sky-600" />
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">Company Filters & Display Controls</h3>
+              </div>
+              <div className="text-xs text-slate-500 font-medium">
+                Matching Portals: <strong className="text-slate-800">{companies.length}</strong>
+                {companies.length > 0 && (
+                  <span className="ml-1 text-slate-400">
+                    (Showing {Math.min((companyPage - 1) * companyEffectivePageSize + 1, companies.length)} - {Math.min(companyPage * companyEffectivePageSize, companies.length)})
                   </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCompanyFilterStatus('active')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                    companyFilterStatus === 'active'
-                      ? 'bg-emerald-600 text-white shadow-sm'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  <span>Active</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCompanyFilterStatus('closed')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                    companyFilterStatus === 'closed'
-                      ? 'bg-rose-600 text-white shadow-sm'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  <Ban className="w-3.5 h-3.5" />
-                  <span>Closed / Inactive</span>
-                </button>
+                )}
               </div>
             </div>
 
-            {/* Search Input, Search Button, and Multi-Select Control Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
-              {/* Search Form */}
-              <form
-                onSubmit={(e) => { e.preventDefault(); fetchData(); }}
-                className="flex items-center gap-2 flex-1 max-w-lg"
-              >
-                <div className="relative flex-1">
-                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+            {/* Filter Inputs Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              {/* 1. Company Status Dropdown */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Company Status</label>
+                <select
+                  value={companyFilterStatus}
+                  onChange={(e) => {
+                    setCompanyFilterStatus(e.target.value);
+                    setCompanyPage(1);
+                  }}
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="active">Active</option>
+                  <option value="suspended">Suspended</option>
+                  <option value="block">Block</option>
+                  <option value="all">All Status</option>
+                </select>
+              </div>
+
+              {/* 2. Select Company Dropdown */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Select Company</label>
+                <select
+                  value={selectedCompanyFilter}
+                  onChange={(e) => {
+                    setSelectedCompanyFilter(e.target.value);
+                    setCompanyPage(1);
+                  }}
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="all">All Companies</option>
+                  {allCompaniesList.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 3. Custom Search / Enter */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Custom Search / Name / Code</label>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-3 text-slate-400" />
                   <input
                     type="text"
                     value={companySearchQuery}
-                    onChange={(e) => setCompanySearchQuery(e.target.value)}
-                    placeholder="Search name, code, email, phone, admin username, city..."
-                    className="w-full pl-8 pr-8 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-800"
+                    onChange={(e) => {
+                      setCompanySearchQuery(e.target.value);
+                      setCompanyPage(1);
+                    }}
+                    placeholder="Search name, code, phone, admin..."
+                    className="w-full pl-8 pr-7 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-sky-500"
                   />
                   {companySearchQuery && (
                     <button
                       type="button"
-                      onClick={() => setCompanySearchQuery('')}
-                      className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 font-bold text-xs"
-                      title="Clear Search"
+                      onClick={() => {
+                        setCompanySearchQuery('');
+                        setCompanyPage(1);
+                      }}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 font-bold"
                     >
                       ✕
                     </button>
                   )}
                 </div>
-                <button
-                  type="submit"
-                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm"
-                >
-                  <Search className="w-3.5 h-3.5" />
-                  <span>Search</span>
-                </button>
-              </form>
+              </div>
 
-              {/* Multi-Selection Control Buttons */}
+              {/* 4. Display Rows Limit */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Display Rows</label>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={companyIsCustomPageSize ? 'custom' : companyPageSize}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'custom') {
+                        setCompanyIsCustomPageSize(true);
+                      } else {
+                        setCompanyIsCustomPageSize(false);
+                        setCompanyPageSize(Number(val));
+                      }
+                      setCompanyPage(1);
+                    }}
+                    className="flex-1 py-2 px-3 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    <option value={10}>10 Rows (Default)</option>
+                    <option value={25}>25 Rows</option>
+                    <option value="custom">Custom Rows</option>
+                  </select>
+                  {companyIsCustomPageSize && (
+                    <input
+                      type="number"
+                      min="1"
+                      max="500"
+                      value={companyCustomPageSize}
+                      onChange={(e) => {
+                        setCompanyCustomPageSize(e.target.value);
+                        setCompanyPage(1);
+                      }}
+                      placeholder="e.g. 50"
+                      className="w-20 py-2 px-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-sky-500 text-center"
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Filter Buttons & Selection Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompanyPage(1);
+                    fetchData();
+                  }}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+                >
+                  <Filter className="w-3.5 h-3.5" />
+                  <span>Apply Filter</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompanyFilterStatus('active');
+                    setSelectedCompanyFilter('all');
+                    setCompanySearchQuery('');
+                    setCompanyPageSize(10);
+                    setCompanyIsCustomPageSize(false);
+                    setCompanyCustomPageSize('');
+                    setCompanyPage(1);
+                    fetchData();
+                  }}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-all"
+                >
+                  Reset to Default (Active, 10 Rows)
+                </button>
+              </div>
+
+              {/* Multi-Selection Controls */}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={handleSelectAllCompanies}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
-                    companies.length > 0 && selectedCompanyIds.length === companies.length
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-2 ${
+                    paginatedCompanies.length > 0 && selectedCompanyIds.length === paginatedCompanies.length
                       ? 'bg-sky-50 text-sky-700 border-sky-300'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                   }`}
-                  title="Select all visible companies"
                 >
                   <input
                     type="checkbox"
-                    checked={companies.length > 0 && selectedCompanyIds.length === companies.length}
+                    checked={paginatedCompanies.length > 0 && selectedCompanyIds.length === paginatedCompanies.length}
                     onChange={handleSelectAllCompanies}
                     className="rounded text-sky-600 cursor-pointer pointer-events-none"
                   />
-                  <span>Select Multiple / Select All</span>
+                  <span>Select Multiple</span>
                 </button>
 
                 {selectedCompanyIds.length > 0 && (
@@ -1177,18 +1291,17 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <button
                       type="button"
                       onClick={() => setSelectedCompanyIds([])}
-                      className="px-2.5 py-1.5 text-xs text-slate-500 hover:text-slate-700 font-semibold"
+                      className="px-2 py-1 text-xs text-slate-500 hover:text-slate-700 font-semibold"
                     >
                       Clear
                     </button>
                     <button
                       type="button"
                       onClick={() => setShowBulkDeleteModal(true)}
-                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
-                      title="Permanently hard-delete all selected companies"
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      <span>Delete Selected ({selectedCompanyIds.length}) Permanently</span>
+                      <span>Delete Selected</span>
                     </button>
                   </div>
                 )}
@@ -1219,10 +1332,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <th className="p-3 w-10 text-center">
                       <input
                         type="checkbox"
-                        checked={companies.length > 0 && selectedCompanyIds.length === companies.length}
+                        checked={paginatedCompanies.length > 0 && selectedCompanyIds.length === paginatedCompanies.length}
                         onChange={handleSelectAllCompanies}
                         className="rounded text-sky-600 cursor-pointer"
-                        title="Select/Deselect All Companies"
+                        title="Select/Deselect Visible Companies"
                       />
                     </th>
                     <th className="p-3">Company Identity & Portal</th>
@@ -1242,7 +1355,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       </td>
                     </tr>
                   ) : (
-                    companies.map(c => {
+                    paginatedCompanies.map(c => {
                       const isSelected = selectedCompanyIds.includes(c.id);
                       return (
                         <tr
@@ -1282,14 +1395,14 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                               className={`text-xs font-bold rounded-lg px-2.5 py-1 border focus:outline-none cursor-pointer transition-colors ${
                                 c.status === 'active'
                                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                  : c.status === 'disabled'
+                                  : (c.status === 'disabled' || c.status === 'suspended')
                                   ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
                                   : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
                               }`}
                             >
                               <option value="active">Active</option>
-                              <option value="disabled">Disabled</option>
-                              <option value="banned">Banned / Closed</option>
+                              <option value="disabled">Suspended</option>
+                              <option value="banned">Block</option>
                             </select>
                           </td>
                           <td className="p-3">
@@ -1298,6 +1411,11 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                                 <Shield className="w-3 h-3 text-sky-500 shrink-0" />
                                 <span>{c.admin_username || 'admin'}</span>
                               </div>
+                              {c.admin_mobile && (
+                                <p className="text-[10px] font-mono text-emerald-600 font-semibold">
+                                  📞 {c.admin_mobile}
+                                </p>
+                              )}
                               <p className="text-[11px] text-slate-500">{c.admin_email || '-'}</p>
                             </div>
                           </td>
@@ -1373,6 +1491,39 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   )}
                 </tbody>
               </table>
+            </div>
+
+            {/* Pagination Controls */}
+            <div className="p-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50/50">
+              <div className="text-xs text-slate-500">
+                Showing <strong>{companies.length === 0 ? 0 : (companyPage - 1) * companyEffectivePageSize + 1}</strong> to <strong>{Math.min(companyPage * companyEffectivePageSize, companies.length)}</strong> of <strong>{companies.length}</strong> companies
+                {companyFilterStatus === 'active' && selectedCompanyFilter === 'all' && !companySearchQuery && (
+                  <span className="ml-2 text-emerald-600 font-semibold">(Default Active View)</span>
+                )}
+              </div>
+              {totalCompanyPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={companyPage === 1}
+                    onClick={() => setCompanyPage(p => Math.max(1, p - 1))}
+                    className="px-2.5 py-1 text-xs border rounded-md disabled:opacity-40 hover:bg-slate-100 bg-white font-medium text-slate-700"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-bold text-slate-700 px-2">
+                    Page {companyPage} of {totalCompanyPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={companyPage === totalCompanyPages}
+                    onClick={() => setCompanyPage(p => Math.min(totalCompanyPages, p + 1))}
+                    className="px-2.5 py-1 text-xs border rounded-md disabled:opacity-40 hover:bg-slate-100 bg-white font-medium text-slate-700"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2587,21 +2738,28 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               </div>
 
               <div className="border-t border-slate-100 pt-3">
-                <span className="font-bold text-slate-800 block mb-2">Company Administrator Account (Required on Signup)</span>
+                <span className="font-bold text-slate-800 block mb-0.5">Company Administrator Account (Required on Signup)</span>
+                <p className="text-[11px] text-slate-500 mb-2.5">
+                  Set username as Mobile Number, Email Address, or Custom User ID. The administrator can log in using any of these credentials with their custom password.
+                </p>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Admin Username *</label>
+                    <label className="font-semibold text-slate-700 block mb-1">
+                      Admin Username (Mobile No. / Email / Custom User ID) *
+                    </label>
                     <input
                       type="text"
                       required
                       value={newComp.admin_username}
                       onChange={(e) => setNewComp({ ...newComp, admin_username: e.target.value })}
-                      placeholder="e.g. acme_admin"
+                      placeholder="e.g. 9876543210, admin@acme.com, or acme_admin"
                       className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">Admin Password *</label>
+                    <label className="font-semibold text-slate-700 block mb-1">
+                      Admin Password (Custom Password) *
+                    </label>
                     <input
                       type="password"
                       required
@@ -2612,8 +2770,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     />
                   </div>
                 </div>
-                <div className="mt-2">
-                  <label className="font-semibold text-slate-700 block mb-1">Admin Email (Optional)</label>
+                <div className="mt-2.5">
+                  <label className="font-semibold text-slate-700 block mb-1">Admin Email (Optional / Recovery)</label>
                   <input
                     type="email"
                     value={newComp.admin_email}
