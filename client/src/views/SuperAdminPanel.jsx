@@ -513,29 +513,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     }
   };
 
-  // Wipe All Company Data (Sync Zero to Database & Firebase)
-  const [wipingCompanyData, setWipingCompanyData] = useState(false);
-  const handleWipeCompanyData = async () => {
-    if (!window.confirm('CRITICAL WARNING: Are you sure you want to permanently DELETE all companies, employees, attendance records, leaves, and tickets from the database and sync ZERO to Firebase?\n\nOnly the Super Admin master account (adminn) will be preserved.')) {
-      return;
-    }
-    setWipingCompanyData(true);
-    setError('');
-    setSuccess('');
-    try {
-      const res = await apiRequest('/system/wipe-company-data', {
-        method: 'POST'
-      });
-      setSuccess(res.message || 'All company and tenant data successfully wiped from database and synced to zero.');
-      await fetchData();
-      await fetchFirebaseStatus();
-    } catch (err) {
-      setError(err.message || 'Failed to wipe company data');
-    } finally {
-      setWipingCompanyData(false);
-    }
-  };
-
   const handleCreateCompany = async (e) => {
     e.preventDefault();
     setError('');
@@ -960,28 +937,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         </div>
 
         <div className="flex items-center gap-2">
-          {activeTab === 'companies' && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleWipeCompanyData}
-                disabled={wipingCompanyData}
-                className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
-                title="Wipe all companies, employees, and records from database and sync zero to Firebase (adminn preserved)"
-              >
-                {wipingCompanyData ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 text-rose-600" />}
-                <span>{wipingCompanyData ? 'Wiping...' : 'Delete All Company Data (Sync Zero)'}</span>
-              </button>
-              <button
-                onClick={() => setShowCreateCompany(true)}
-                className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                Create Company Portal
-              </button>
-            </div>
-          )}
-
           {activeTab === 'support-accounts' && (
             <button
               onClick={() => setShowCreateSupport(true)}
@@ -1155,16 +1110,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   <span>Closed / Inactive</span>
                 </button>
               </div>
-
-              {/* Action: Create New Company */}
-              <button
-                type="button"
-                onClick={() => setShowCreateCompany(true)}
-                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 ml-auto"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Register New Company</span>
-              </button>
             </div>
 
             {/* Search Input, Search Button, and Multi-Select Control Bar */}
@@ -2520,22 +2465,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       <UploadCloud className="w-4 h-4 text-sky-600" />
                     )}
                     <span>{syncingAllFirebase ? 'Refreshing Firebase...' : 'Refresh / Update Database'}</span>
-                  </button>
-
-                  {/* BUTTON 3: Delete All Company Data (Sync Zero) */}
-                  <button
-                    type="button"
-                    onClick={handleWipeCompanyData}
-                    disabled={wipingCompanyData}
-                    className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-xl font-semibold transition-all flex items-center gap-2 text-xs shadow-sm disabled:opacity-50"
-                    title="Permanently delete all companies, employees, attendance, and tickets from database and sync zero to Firebase (adminn preserved)"
-                  >
-                    {wipingCompanyData ? (
-                      <RefreshCw className="w-4 h-4 animate-spin text-rose-600" />
-                    ) : (
-                      <Trash2 className="w-4 h-4 text-rose-600" />
-                    )}
-                    <span>{wipingCompanyData ? 'Wiping All Data...' : 'Delete All Company Data (Sync Zero)'}</span>
                   </button>
 
                   {/* Test Connection Ping */}

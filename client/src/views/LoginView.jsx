@@ -61,11 +61,6 @@ export default function LoginView({ onLoginSuccess }) {
   const [error, setError] = useState('');
   const [deviceLockError, setDeviceLockError] = useState(null);
   const [copiedMac, setCopiedMac] = useState(false);
-  const [showForgotModal, setShowForgotModal] = useState(false);
-  const [forgotUsername, setForgotUsername] = useState('');
-  const [forgotDesc, setForgotDesc] = useState('');
-  const [forgotMessage, setForgotMessage] = useState('');
-  const [forgotLoading, setForgotLoading] = useState(false);
 
   // Device Deregistration Ticket Modal States
   const [showDeviceTicketModal, setShowDeviceTicketModal] = useState(false);
@@ -169,32 +164,6 @@ export default function LoginView({ onLoginSuccess }) {
       }
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleForgotPassword = async (e) => {
-    e.preventDefault();
-    if (!forgotUsername.trim()) {
-      setError('Please enter your username.');
-      return;
-    }
-
-    setForgotLoading(true);
-    try {
-      const res = await apiRequest('/auth/forgot-password', {
-        method: 'POST',
-        body: {
-          username: forgotUsername.trim(),
-          description: forgotDesc
-        }
-      });
-      setForgotMessage(res.message);
-      setForgotUsername('');
-      setForgotDesc('');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setForgotLoading(false);
     }
   };
 
@@ -359,115 +328,12 @@ export default function LoginView({ onLoginSuccess }) {
               </>
             )}
           </button>
-
-          <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
-            <button
-              type="button"
-              onClick={() => {
-                setShowForgotModal(true);
-                setForgotUsername(username.trim());
-              }}
-              className="hover:text-sky-400 transition-colors"
-            >
-              Forgot Password?
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowDeviceTicketModal(true);
-                setDeviceSearchQuery(username.trim());
-                setDeviceSearchError('');
-                setDeviceTicketSuccess(null);
-                setDeviceAccountResult(null);
-                setDeviceReason('Switching to a new device/phone. Requesting to deregister previous device.');
-              }}
-              className="text-rose-400 hover:text-rose-300 transition-colors font-medium flex items-center gap-1"
-            >
-              <Ticket className="w-3.5 h-3.5" />
-              <span>Deregister Device Ticket</span>
-            </button>
-          </div>
         </form>
 
         <div className="text-center text-xs text-slate-500">
           Protected by GPS Geofence & Device-Binding Security
         </div>
       </div>
-
-      {/* Forgot Password Modal */}
-      {showForgotModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-slate-800 border border-slate-700 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <h3 className="text-lg font-semibold text-white">Reset Password Request</h3>
-            <p className="text-sm text-slate-400">
-              Submit your username to generate a secure password-reset service ticket for your Administrator/Support.
-            </p>
-
-            {forgotMessage ? (
-              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-4 flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                <p className="text-sm text-emerald-300">{forgotMessage}</p>
-              </div>
-            ) : (
-              <form onSubmit={handleForgotPassword} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">
-                    Your Username
-                  </label>
-                  <input
-                    type="text"
-                    value={forgotUsername}
-                    onChange={(e) => setForgotUsername(e.target.value)}
-                    required
-                    placeholder="e.g. amit_kumar"
-                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">
-                    Additional Details / Reason
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={forgotDesc}
-                    onChange={(e) => setForgotDesc(e.target.value)}
-                    placeholder="e.g. Forgot my password after device update"
-                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  />
-                </div>
-                <div className="flex justify-end gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowForgotModal(false)}
-                    className="px-4 py-2 text-sm text-slate-400 hover:text-white"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={forgotLoading}
-                    className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm font-medium disabled:opacity-50"
-                  >
-                    {forgotLoading ? 'Submitting...' : 'Submit Request'}
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {forgotMessage && (
-              <div className="flex justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowForgotModal(false)}
-                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium"
-                >
-                  Close
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Device Deregistration Ticket Modal */}
       {showDeviceTicketModal && (
@@ -479,8 +345,8 @@ export default function LoginView({ onLoginSuccess }) {
                   <Ticket className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Device Deregistration Request</h3>
-                  <p className="text-xs text-slate-400">Submit ticket to unlink previous registered device</p>
+                  <h3 className="text-base font-bold text-white">Employee Device Deregistration Request</h3>
+                  <p className="text-xs text-slate-400">Submit ticket to unlink previous registered device (Employee Accounts Only)</p>
                 </div>
               </div>
               <button
@@ -543,7 +409,7 @@ export default function LoginView({ onLoginSuccess }) {
                 {/* Search Account Form */}
                 <form onSubmit={handleSearchDeviceAccount} className="space-y-3">
                   <label className="block text-xs font-medium text-slate-300">
-                    Search Account (Username, Email, or Phone Number)
+                    Search Employee Account (Username, Email, or Phone Number)
                   </label>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
@@ -552,7 +418,7 @@ export default function LoginView({ onLoginSuccess }) {
                         type="text"
                         value={deviceSearchQuery}
                         onChange={(e) => setDeviceSearchQuery(e.target.value)}
-                        placeholder="Enter username, email, or mobile..."
+                        placeholder="Enter employee username, email, or mobile..."
                         className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
                         required
                       />

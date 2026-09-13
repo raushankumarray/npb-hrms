@@ -480,6 +480,7 @@ router.post('/search-account', (req, res) => {
     LEFT JOIN companies c ON u.company_id = c.id
     LEFT JOIN employees e ON u.id = e.user_id
     WHERE u.is_deleted = 0
+      AND r.name = 'employee'
       AND (
         LOWER(u.username) = LOWER(?)
         OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
@@ -491,9 +492,31 @@ router.post('/search-account', (req, res) => {
   `).get(clean, clean, clean, clean, clean);
 
   if (!account) {
+    // Check if account exists but has an admin, support, or manager role
+    const nonEmp = db.prepare(`
+      SELECT r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id
+      LEFT JOIN employees e ON u.id = e.user_id
+      WHERE u.is_deleted = 0
+        AND (
+          LOWER(u.username) = LOWER(?)
+          OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
+          OR (u.mobile IS NOT NULL AND u.mobile = ?)
+          OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
+          OR (e.mobile IS NOT NULL AND e.mobile = ?)
+        )
+      LIMIT 1
+    `).get(clean, clean, clean, clean, clean);
+
+    if (nonEmp && nonEmp.role_name !== 'employee') {
+      return res.json({
+        found: false,
+        message: 'Device deregistration is strictly restricted to Employee accounts. Administrator, Company Admin, Support, and Manager accounts cannot be deregistered via ticket.'
+      });
+    }
+
     return res.json({
       found: false,
-      message: 'No active account found matching this username, email, or phone number.'
+      message: 'No active employee account found matching this username, email, or phone number.'
     });
   }
 
@@ -544,14 +567,15 @@ router.post('/raise-device-ticket', (req, res) => {
   }
 
   const user = db.prepare(`
-    SELECT u.id, u.username, u.company_id, e.id as emp_id, e.full_name, e.employee_id as emp_code
+    SELECT u.id, u.username, u.company_id, r.name as role_name, e.id as emp_id, e.full_name, e.employee_id as emp_code
     FROM users u
+    JOIN roles r ON u.role_id = r.id
     LEFT JOIN employees e ON u.id = e.user_id
     WHERE u.id = ? AND u.is_deleted = 0
   `).get(userId);
 
-  if (!user) {
-    return res.status(404).json({ error: 'Account not found.' });
+  if (!user || user.role_name !== 'employee') {
+    return res.status(403).json({ error: 'Device deregistration tickets can only be raised for employee accounts.' });
   }
 
   const ticketNo = `TKT-DEV-${Date.now().toString().slice(-6)}`;
