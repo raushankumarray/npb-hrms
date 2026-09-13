@@ -1454,7 +1454,12 @@ async function wipeAllCompanyDataFromDb({ syncToFirebase = true } = {}) {
       `).run();
     });
 
-    runWipe();
+    db.pragma('foreign_keys = OFF');
+    try {
+      runWipe();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
 
     // Ensure super_admin adminn is active with correct credentials
     const superAdminRole = db.prepare("SELECT id FROM roles WHERE name = 'super_admin'").get();
@@ -1758,11 +1763,16 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     const companyIdMap = new Map();
     const userIdMap = new Map();
     const employeeIdMap = new Map();
+    const shiftIdMap = new Map();
+    const weeklyOffIdMap = new Map();
+    const geofenceIdMap = new Map();
+    const leaveTypeIdMap = new Map();
     const claimedCompanyIds = new Set();
+    const claimedUserIds = new Set();
     const claimedEmployeeIds = new Set();
 
     const restoreTransaction = db.transaction(() => {
-      // A. Restore Companies
+      // Phase 1: Restore Companies & Setup Default Structures
       for (const [docKey, c] of companiesMap) {
         let rawId = Number(c.id);
         const rawCode = (c.code || (!isNaN(rawId) && rawId > 0 ? `COMP${rawId}` : `COMP_${Date.now()}_${Math.floor(Math.random() * 1000)}`)).trim().toUpperCase();
@@ -1865,19 +1875,25 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         // Ensure default Shift
         const existingShift = db.prepare('SELECT id FROM shifts WHERE company_id = ?').get(targetCompId);
         if (!existingShift) {
-          db.prepare(`
+          const sRes = db.prepare(`
             INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, status)
             VALUES (?, 'Standard Shift', '09:00', '18:00', 8.0, 15, 60, 'active')
           `).run(targetCompId);
+          shiftIdMap.set(`default_${targetCompId}`, sRes.lastInsertRowid);
+        } else {
+          shiftIdMap.set(`default_${targetCompId}`, existingShift.id);
         }
 
         // Ensure default Weekly Off Setting
         const existingWeeklyOff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ?').get(targetCompId);
         if (!existingWeeklyOff) {
-          db.prepare(`
+          const wRes = db.prepare(`
             INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
             VALUES (?, 'Standard Weekly Off', '["Sunday"]', 1)
           `).run(targetCompId);
+          weeklyOffIdMap.set(`default_${targetCompId}`, wRes.lastInsertRowid);
+        } else {
+          weeklyOffIdMap.set(`default_${targetCompId}`, existingWeeklyOff.id);
         }
 
         // Ensure company admin account is active / created if provided in company metadata
@@ -1892,6 +1908,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
             db.prepare('UPDATE users SET company_id = ?, password_hash = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
               .run(targetCompId, aHash, status, existingAdmin.id);
             userIdMap.set(aUname.toLowerCase(), existingAdmin.id);
+            claimedUserIds.add(existingAdmin.id);
           } else {
             let safeAdminUsername = aUname;
             let suffix = 1;
@@ -1904,16 +1921,244 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
             `).run(safeAdminUsername, aHash, aEmail, phone, roleMap['company_admin'], targetCompId, status);
             userIdMap.set(safeAdminUsername.toLowerCase(), insAdmin.lastInsertRowid);
             userIdMap.set(aUname.toLowerCase(), insAdmin.lastInsertRowid);
+            claimedUserIds.add(insAdmin.lastInsertRowid);
           }
         }
 
         restoredCompanies++;
       }
 
-      // First valid company fallback ID if needed
-      const firstValidCompanyId = db.prepare('SELECT id FROM companies WHERE is_deleted = 0 ORDER BY id ASC LIMIT 1').get()?.id || null;
+      // First valid company fallback ID
+      let firstValidCompanyId = db.prepare('SELECT id FROM companies WHERE is_deleted = 0 ORDER BY id ASC LIMIT 1').get()?.id || null;
+      if (!firstValidCompanyId && (companiesMap.size > 0 || usersMap.size > 0 || employeesMap.size > 0 || shiftsMap.size > 0)) {
+        const defCompRes = db.prepare(`
+          INSERT INTO companies (name, portal_name, code, status, is_deleted)
+          VALUES ('Default Restored Company', 'Default Restored Company', 'RESTORED_CO', 'active', 0)
+        `).run();
+        firstValidCompanyId = defCompRes.lastInsertRowid;
+        claimedCompanyIds.add(firstValidCompanyId);
+      }
 
-      // B. Restore Users
+      // Phase 2: Restore Shifts & Weekly Off Settings (Parent to Employees)
+      for (const [docKey, s] of shiftsMap) {
+        let compId = s.companyId || s.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        if (compId && s.name) {
+          const sName = String(s.name).trim();
+          const sStart = s.startTime || s.start_time || '09:00';
+          const sEnd = s.endTime || s.end_time || '18:00';
+          const sHours = Number(s.workingHours || s.working_hours || 8.0);
+          const sGrace = Number(s.graceTimeMins || s.grace_time_mins || 15);
+          const sBreak = Number(s.breakTimeMins || s.break_time_mins || 60);
+          const sRot = s.isRotational ? 1 : 0;
+          const sStatus = s.status || 'active';
+
+          let targetShiftId = (!isNaN(Number(s.id)) && Number(s.id) > 0) ? Number(s.id) : null;
+          const existingShift = db.prepare('SELECT id FROM shifts WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, sName);
+          if (existingShift) {
+            db.prepare(`
+              UPDATE shifts SET start_time = ?, end_time = ?, working_hours = ?, grace_time_mins = ?, break_time_mins = ?, is_rotational = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus, existingShift.id);
+            targetShiftId = existingShift.id;
+          } else {
+            let canUseId = (targetShiftId && !db.prepare('SELECT id FROM shifts WHERE id = ?').get(targetShiftId));
+            if (canUseId) {
+              try {
+                db.prepare(`
+                  INSERT INTO shifts (id, company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(targetShiftId, compId, sName, sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus);
+              } catch (e) {
+                const ins = db.prepare(`
+                  INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(compId, sName, sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus);
+                targetShiftId = ins.lastInsertRowid;
+              }
+            } else {
+              const ins = db.prepare(`
+                INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(compId, sName, sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus);
+              targetShiftId = ins.lastInsertRowid;
+            }
+          }
+          shiftIdMap.set(String(docKey), targetShiftId);
+          if (s.id) shiftIdMap.set(String(s.id), targetShiftId);
+          shiftIdMap.set(String(targetShiftId), targetShiftId);
+        }
+      }
+
+      for (const [docKey, w] of weeklyOffsMap) {
+        let compId = w.companyId || w.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        if (compId && w.name) {
+          const wName = String(w.name).trim();
+          const wOffDays = typeof w.offDaysJson === 'string' ? w.offDaysJson : (typeof w.off_days_json === 'string' ? w.off_days_json : JSON.stringify(w.offDays || w.off_days || ['Sunday']));
+          const wDefault = (w.isDefault || w.is_default) ? 1 : 0;
+
+          let targetWoffId = (!isNaN(Number(w.id)) && Number(w.id) > 0) ? Number(w.id) : null;
+          const existingWoff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, wName);
+          if (existingWoff) {
+            db.prepare(`
+              UPDATE weekly_off_settings SET off_days_json = ?, is_default = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(wOffDays, wDefault, existingWoff.id);
+            targetWoffId = existingWoff.id;
+          } else {
+            let canUseId = (targetWoffId && !db.prepare('SELECT id FROM weekly_off_settings WHERE id = ?').get(targetWoffId));
+            if (canUseId) {
+              try {
+                db.prepare(`
+                  INSERT INTO weekly_off_settings (id, company_id, name, off_days_json, is_default)
+                  VALUES (?, ?, ?, ?, ?)
+                `).run(targetWoffId, compId, wName, wOffDays, wDefault);
+              } catch (e) {
+                const ins = db.prepare(`
+                  INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
+                  VALUES (?, ?, ?, ?)
+                `).run(compId, wName, wOffDays, wDefault);
+                targetWoffId = ins.lastInsertRowid;
+              }
+            } else {
+              const ins = db.prepare(`
+                INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
+                VALUES (?, ?, ?, ?)
+              `).run(compId, wName, wOffDays, wDefault);
+              targetWoffId = ins.lastInsertRowid;
+            }
+          }
+          weeklyOffIdMap.set(String(docKey), targetWoffId);
+          if (w.id) weeklyOffIdMap.set(String(w.id), targetWoffId);
+          weeklyOffIdMap.set(String(targetWoffId), targetWoffId);
+        }
+      }
+
+      // Phase 3: Restore Holidays & Geofences (Parent to Employees)
+      for (const [_, h] of holidaysMap) {
+        let compId = h.companyId || h.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        const hDate = h.holidayDate || h.holiday_date;
+        if (compId && h.name && hDate) {
+          const hName = String(h.name).trim();
+          const hOpt = (h.isOptional || h.is_optional) ? 1 : 0;
+          const hApp = h.appliesTo || h.applies_to || 'all';
+
+          const existingHoliday = db.prepare('SELECT id FROM holidays WHERE company_id = ? AND holiday_date = ?').get(compId, hDate);
+          if (existingHoliday) {
+            db.prepare(`
+              UPDATE holidays SET name = ?, is_optional = ?, applies_to = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(hName, hOpt, hApp, existingHoliday.id);
+          } else {
+            db.prepare(`
+              INSERT INTO holidays (company_id, name, holiday_date, is_optional, applies_to)
+              VALUES (?, ?, ?, ?, ?)
+            `).run(compId, hName, hDate, hOpt, hApp);
+          }
+        }
+      }
+
+      for (const [docKey, g] of geofencesMap) {
+        let compId = g.companyId || g.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        const locName = (g.locationName || g.location_name || g.name || '').trim();
+        if (compId && locName && g.latitude !== undefined && g.longitude !== undefined) {
+          const gLat = parseFloat(g.latitude);
+          const gLng = parseFloat(g.longitude);
+          const gRadius = parseFloat(g.radius || 100);
+          const gStatus = (g.status || 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active';
+
+          let targetGeoId = (!isNaN(Number(g.id)) && Number(g.id) > 0) ? Number(g.id) : null;
+          const existingGeo = db.prepare('SELECT id FROM geofences WHERE company_id = ? AND LOWER(location_name) = LOWER(?)').get(compId, locName);
+          if (existingGeo) {
+            db.prepare(`
+              UPDATE geofences SET latitude = ?, longitude = ?, radius = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(gLat, gLng, gRadius, gStatus, existingGeo.id);
+            targetGeoId = existingGeo.id;
+          } else {
+            let canUseId = (targetGeoId && !db.prepare('SELECT id FROM geofences WHERE id = ?').get(targetGeoId));
+            if (canUseId) {
+              try {
+                db.prepare(`
+                  INSERT INTO geofences (id, company_id, location_name, latitude, longitude, radius, status)
+                  VALUES (?, ?, ?, ?, ?, ?, ?)
+                `).run(targetGeoId, compId, locName, gLat, gLng, gRadius, gStatus);
+              } catch (e) {
+                const ins = db.prepare(`
+                  INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, status)
+                  VALUES (?, ?, ?, ?, ?, ?)
+                `).run(compId, locName, gLat, gLng, gRadius, gStatus);
+                targetGeoId = ins.lastInsertRowid;
+              }
+            } else {
+              const ins = db.prepare(`
+                INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+              `).run(compId, locName, gLat, gLng, gRadius, gStatus);
+              targetGeoId = ins.lastInsertRowid;
+            }
+          }
+          geofenceIdMap.set(String(docKey), targetGeoId);
+          if (g.id) geofenceIdMap.set(String(g.id), targetGeoId);
+          geofenceIdMap.set(String(targetGeoId), targetGeoId);
+        }
+      }
+
+      // Phase 4: Restore Leave Types (Parent to Leave Balances & Requests)
+      for (const [docKey, lt] of leaveTypesMap) {
+        let compId = lt.companyId || lt.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        if (compId && lt.name) {
+          const ltName = String(lt.name).trim();
+          const quota = Number(lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0);
+          const accrual = Number(lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
+
+          let targetLtId = (!isNaN(Number(lt.id)) && Number(lt.id) > 0) ? Number(lt.id) : null;
+          const existingLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, ltName);
+          if (existingLt) {
+            db.prepare(`
+              UPDATE leave_types SET default_yearly_quota = ?, monthly_accrual_rate = ?
+              WHERE id = ?
+            `).run(quota, accrual, existingLt.id);
+            targetLtId = existingLt.id;
+          } else {
+            let canUseId = (targetLtId && !db.prepare('SELECT id FROM leave_types WHERE id = ?').get(targetLtId));
+            if (canUseId) {
+              try {
+                db.prepare(`
+                  INSERT INTO leave_types (id, company_id, name, default_yearly_quota, monthly_accrual_rate)
+                  VALUES (?, ?, ?, ?, ?)
+                `).run(targetLtId, compId, ltName, quota, accrual);
+              } catch (e) {
+                const ins = db.prepare(`
+                  INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate)
+                  VALUES (?, ?, ?, ?)
+                `).run(compId, ltName, quota, accrual);
+                targetLtId = ins.lastInsertRowid;
+              }
+            } else {
+              const ins = db.prepare(`
+                INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate)
+                VALUES (?, ?, ?, ?)
+              `).run(compId, ltName, quota, accrual);
+              targetLtId = ins.lastInsertRowid;
+            }
+          }
+          leaveTypeIdMap.set(String(docKey), targetLtId);
+          if (lt.id) leaveTypeIdMap.set(String(lt.id), targetLtId);
+          leaveTypeIdMap.set(String(targetLtId), targetLtId);
+        }
+      }
+
+      // Phase 5: Restore Users (Parent to Employees & Support Tickets)
       for (const [docKey, u] of usersMap) {
         let rawUserId = Number(u.id);
         let baseUsername = (u.username || u.name || '').trim();
@@ -1962,8 +2207,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         const existingByName = db.prepare('SELECT id, username, role_id FROM users WHERE LOWER(username) = LOWER(?)').get(username);
         let targetUserId = null;
 
-        if (existingByName) {
-          // Update the existing user WITHOUT changing their unique username (guarantees ZERO UNIQUE constraint collision)
+        if (existingByName && !claimedUserIds.has(existingByName.id)) {
+          // Update the existing user WITHOUT changing their unique username
           db.prepare(`
             UPDATE users SET password_hash = ?, email = COALESCE(NULLIF(?, ''), email), mobile = COALESCE(NULLIF(?, ''), mobile),
                              role_id = COALESCE(?, role_id), company_id = COALESCE(?, company_id), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
@@ -1971,8 +2216,14 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           `).run(finalHash, email, mobile, roleId, compId, status, existingByName.id);
           targetUserId = existingByName.id;
         } else {
-          // Check if rawUserId is positive integer and NOT already taken by another user
-          let canUseId = (!isNaN(rawUserId) && rawUserId > 0);
+          // Disambiguate username if username is taken or claimed
+          let safeUsername = username;
+          let uSuffix = 1;
+          while (db.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').get(safeUsername)) {
+            safeUsername = `${username}_${uSuffix++}`;
+          }
+
+          let canUseId = (!isNaN(rawUserId) && rawUserId > 0 && !claimedUserIds.has(rawUserId));
           if (canUseId) {
             const idOccupied = db.prepare('SELECT id FROM users WHERE id = ?').get(rawUserId);
             if (idOccupied) canUseId = false;
@@ -1983,24 +2234,25 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
               db.prepare(`
                 INSERT INTO users (id, username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              `).run(rawUserId, username, finalHash, email, mobile, roleId, compId, status);
+              `).run(rawUserId, safeUsername, finalHash, email, mobile, roleId, compId, status);
               targetUserId = rawUserId;
             } catch (err) {
               const uRes = db.prepare(`
                 INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              `).run(username, finalHash, email, mobile, roleId, compId, status);
+              `).run(safeUsername, finalHash, email, mobile, roleId, compId, status);
               targetUserId = uRes.lastInsertRowid;
             }
           } else {
             const uRes = db.prepare(`
               INSERT INTO users (username, password_hash, email, mobile, role_id, company_id, status, is_deleted, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `).run(username, finalHash, email, mobile, roleId, compId, status);
+            `).run(safeUsername, finalHash, email, mobile, roleId, compId, status);
             targetUserId = uRes.lastInsertRowid;
           }
         }
 
+        claimedUserIds.add(targetUserId);
         userIdMap.set(String(docKey), targetUserId);
         if (u.id) userIdMap.set(String(u.id), targetUserId);
         userIdMap.set(username.toLowerCase(), targetUserId);
@@ -2029,7 +2281,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         restoredUsers++;
       }
 
-      // C. Restore Employees
+      // Phase 6: Restore Employees (Linking to Valid Users, Shifts, Weekly Offs, and Geofences)
       for (const [docKey, emp] of employeesMap) {
         let rawEmpId = Number(emp.id);
         let rawCompId = emp.companyId || emp.company_id;
@@ -2042,14 +2294,6 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
         if (!compId) compId = firstValidCompanyId;
-
-        if (!compId) {
-          const defaultCompRes = db.prepare(`
-            INSERT INTO companies (name, portal_name, code, status, is_deleted)
-            VALUES ('Default Restored Company', 'Default Restored Company', 'RESTORED_CO', 'active', 0)
-          `).run();
-          compId = defaultCompRes.lastInsertRowid;
-        }
 
         const rawCode = (emp.employeeCode || emp.employee_id || (!isNaN(rawEmpId) && rawEmpId > 0 ? `EMP${rawEmpId}` : `EMP_${Date.now()}`)).trim();
         const fullName = (emp.fullName || emp.full_name || emp.username || `Employee ${rawCode}`).trim();
@@ -2065,27 +2309,56 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (status === 'block' || status === 'blocked') status = 'banned';
         if (!['active', 'disabled', 'banned', 'deleted'].includes(status)) status = 'active';
 
-        // Validate or resolve shift_id
+        // Validate or resolve shift_id strictly from SQLite
         let shiftId = null;
         if (emp.shiftId || emp.shift_id) {
-          const s = db.prepare('SELECT id FROM shifts WHERE id = ? AND company_id = ?').get(Number(emp.shiftId || emp.shift_id), compId);
+          const rawShift = shiftIdMap.get(String(emp.shiftId || emp.shift_id)) || Number(emp.shiftId || emp.shift_id);
+          const s = db.prepare('SELECT id FROM shifts WHERE id = ? AND company_id = ?').get(rawShift, compId);
           if (s) shiftId = s.id;
         }
         if (!shiftId) {
-          const defShift = db.prepare('SELECT id FROM shifts WHERE company_id = ? LIMIT 1').get(compId);
-          if (defShift) shiftId = defShift.id;
+          let defShift = db.prepare('SELECT id FROM shifts WHERE company_id = ? LIMIT 1').get(compId);
+          if (!defShift) {
+            const insS = db.prepare(`
+              INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, status)
+              VALUES (?, 'Standard Shift', '09:00', '18:00', 8.0, 15, 60, 'active')
+            `).run(compId);
+            shiftId = insS.lastInsertRowid;
+          } else {
+            shiftId = defShift.id;
+          }
         }
 
-        // Validate weekly_off_id
+        // Validate or resolve weekly_off_id strictly from SQLite
         let weeklyOffId = null;
         if (emp.weeklyOffId || emp.weekly_off_id) {
-          const w = db.prepare('SELECT id FROM weekly_off_settings WHERE id = ? AND company_id = ?').get(Number(emp.weeklyOffId || emp.weekly_off_id), compId);
+          const rawWoff = weeklyOffIdMap.get(String(emp.weeklyOffId || emp.weekly_off_id)) || Number(emp.weeklyOffId || emp.weekly_off_id);
+          const w = db.prepare('SELECT id FROM weekly_off_settings WHERE id = ? AND company_id = ?').get(rawWoff, compId);
           if (w) weeklyOffId = w.id;
         }
         if (!weeklyOffId) {
-          const defWoff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? LIMIT 1').get(compId);
-          if (defWoff) weeklyOffId = defWoff.id;
+          let defWoff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? LIMIT 1').get(compId);
+          if (!defWoff) {
+            const insW = db.prepare(`
+              INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
+              VALUES (?, 'Standard Weekly Off', '["Sunday"]', 1)
+            `).run(compId);
+            weeklyOffId = insW.lastInsertRowid;
+          } else {
+            weeklyOffId = defWoff.id;
+          }
         }
+
+        // Validate or resolve geofence_id
+        let geofenceId = null;
+        if (emp.geofenceId || emp.geofence_id) {
+          const rawGeo = geofenceIdMap.get(String(emp.geofenceId || emp.geofence_id)) || Number(emp.geofenceId || emp.geofence_id);
+          const g = db.prepare('SELECT id FROM geofences WHERE id = ? AND company_id = ?').get(rawGeo, compId);
+          if (g) geofenceId = g.id;
+        }
+
+        let geoMode = (emp.geofenceMode || emp.geofence_mode || 'company').toLowerCase().trim();
+        if (!['company', 'custom', 'none'].includes(geoMode)) geoMode = 'company';
 
         // Target Employee lookup
         let targetEmpId = (!isNaN(rawEmpId) && rawEmpId > 0 && !claimedEmployeeIds.has(rawEmpId)) ? rawEmpId : null;
@@ -2154,13 +2427,13 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
 
-        // Determine manager_id safely (ensure target exists or set NULL)
+        // Manager ID (will be fully cross-linked in Phase 7)
         let managerId = null;
         if (emp.managerId || emp.manager_id) {
           const rawMgr = Number(emp.managerId || emp.manager_id);
           if (!isNaN(rawMgr) && rawMgr > 0) {
             const mExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(rawMgr);
-            if (mExists) managerId = mExists.id;
+            if (mExists && mExists.id !== targetEmpId) managerId = mExists.id;
           }
         }
 
@@ -2175,9 +2448,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
         if (existingEmp) {
           db.prepare(`
-            UPDATE employees SET company_id = ?, user_id = ?, employee_id = ?, full_name = ?, mobile = ?, email = ?, department = ?, designation = ?, city = ?, manager_id = ?, shift_id = ?, weekly_off_id = ?, status = ?, is_deleted = 0, reports_to_admin = ?
+            UPDATE employees SET company_id = ?, user_id = ?, employee_id = ?, full_name = ?, mobile = ?, email = ?, department = ?, designation = ?, city = ?, manager_id = ?, shift_id = ?, weekly_off_id = ?, geofence_id = ?, geofence_mode = ?, status = ?, is_deleted = 0, reports_to_admin = ?
             WHERE id = ?
-          `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin, existingEmp.id);
+          `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin, existingEmp.id);
           targetEmpId = existingEmp.id;
         } else {
           let canUseEmpId = (!isNaN(targetEmpId) && targetEmpId > 0 && !claimedEmployeeIds.has(targetEmpId));
@@ -2189,21 +2462,21 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (canUseEmpId) {
             try {
               db.prepare(`
-                INSERT INTO employees (id, company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-              `).run(targetEmpId, compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+                INSERT INTO employees (id, company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, status, is_deleted, reports_to_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+              `).run(targetEmpId, compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin);
             } catch (err) {
               const insE = db.prepare(`
-                INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-              `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+                INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, status, is_deleted, reports_to_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+              `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin);
               targetEmpId = insE.lastInsertRowid;
             }
           } else {
             const insE = db.prepare(`
-              INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, status, is_deleted, reports_to_admin)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-            `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, status, reportsToAdmin);
+              INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, status, is_deleted, reports_to_admin)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin);
             targetEmpId = insE.lastInsertRowid;
           }
         }
@@ -2216,113 +2489,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         restoredEmployees++;
       }
 
-      // D. Restore Shifts, Weekly Offs, Holidays, Geofences
-      for (const [_, s] of shiftsMap) {
-        let compId = s.companyId || s.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        if (compId && s.name) {
-          const sName = String(s.name).trim();
-          const sStart = s.startTime || s.start_time || '09:00';
-          const sEnd = s.endTime || s.end_time || '18:00';
-          const sHours = Number(s.workingHours || s.working_hours || 8.0);
-          const sGrace = Number(s.graceTimeMins || s.grace_time_mins || 15);
-          const sBreak = Number(s.breakTimeMins || s.break_time_mins || 60);
-          const sRot = s.isRotational ? 1 : 0;
-          const sStatus = s.status || 'active';
-
-          const existingShift = db.prepare('SELECT id FROM shifts WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, sName);
-          if (existingShift) {
-            db.prepare(`
-              UPDATE shifts SET start_time = ?, end_time = ?, working_hours = ?, grace_time_mins = ?, break_time_mins = ?, is_rotational = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `).run(sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus, existingShift.id);
-          } else {
-            db.prepare(`
-              INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(compId, sName, sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus);
-          }
-        }
-      }
-
-      for (const [_, w] of weeklyOffsMap) {
-        let compId = w.companyId || w.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        if (compId && w.name) {
-          const wName = String(w.name).trim();
-          const wOffDays = typeof w.offDaysJson === 'string' ? w.offDaysJson : (typeof w.off_days_json === 'string' ? w.off_days_json : JSON.stringify(w.offDays || w.off_days || ['Sunday']));
-          const wDefault = (w.isDefault || w.is_default) ? 1 : 0;
-
-          const existingWoff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, wName);
-          if (existingWoff) {
-            db.prepare(`
-              UPDATE weekly_off_settings SET off_days_json = ?, is_default = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `).run(wOffDays, wDefault, existingWoff.id);
-          } else {
-            db.prepare(`
-              INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
-              VALUES (?, ?, ?, ?)
-            `).run(compId, wName, wOffDays, wDefault);
-          }
-        }
-      }
-
-      for (const [_, h] of holidaysMap) {
-        let compId = h.companyId || h.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        const hDate = h.holidayDate || h.holiday_date;
-        if (compId && h.name && hDate) {
-          const hName = String(h.name).trim();
-          const hOpt = (h.isOptional || h.is_optional) ? 1 : 0;
-          const hApp = h.appliesTo || h.applies_to || 'all';
-
-          const existingHoliday = db.prepare('SELECT id FROM holidays WHERE company_id = ? AND holiday_date = ?').get(compId, hDate);
-          if (existingHoliday) {
-            db.prepare(`
-              UPDATE holidays SET name = ?, is_optional = ?, applies_to = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `).run(hName, hOpt, hApp, existingHoliday.id);
-          } else {
-            db.prepare(`
-              INSERT INTO holidays (company_id, name, holiday_date, is_optional, applies_to)
-              VALUES (?, ?, ?, ?, ?)
-            `).run(compId, hName, hDate, hOpt, hApp);
-          }
-        }
-      }
-
-      for (const [_, g] of geofencesMap) {
-        let compId = g.companyId || g.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        const locName = (g.locationName || g.location_name || g.name || '').trim();
-        if (compId && locName && g.latitude !== undefined && g.longitude !== undefined) {
-          const gLat = parseFloat(g.latitude);
-          const gLng = parseFloat(g.longitude);
-          const gRadius = parseFloat(g.radius || 100);
-          const gAddr = g.address || '';
-          const gStatus = (g.status || 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active';
-
-          const existingGeo = db.prepare('SELECT id FROM geofences WHERE company_id = ? AND LOWER(location_name) = LOWER(?)').get(compId, locName);
-          if (existingGeo) {
-            db.prepare(`
-              UPDATE geofences SET latitude = ?, longitude = ?, radius = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `).run(gLat, gLng, gRadius, gStatus, existingGeo.id);
-          } else {
-            db.prepare(`
-              INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, status)
-              VALUES (?, ?, ?, ?, ?, ?)
-            `).run(compId, locName, gLat, gLng, gRadius, gStatus);
-          }
-        }
-      }
-
-      // E. Restore Employee Mappings
+      // Phase 7: Restore Employee Mappings & Cross-linking
       for (const [_, m] of mappingsMap) {
         let compId = m.companyId || m.company_id;
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
@@ -2349,31 +2516,28 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // F. Restore Leave Types, Balances, and Requests
-      for (const [_, lt] of leaveTypesMap) {
-        let compId = lt.companyId || lt.company_id;
-        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        if (!compId) compId = firstValidCompanyId;
-        if (compId && lt.name) {
-          const ltName = String(lt.name).trim();
-          const quota = Number(lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0);
-          const accrual = Number(lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
-
-          const existingLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, ltName);
-          if (existingLt) {
-            db.prepare(`
-              UPDATE leave_types SET default_yearly_quota = ?, monthly_accrual_rate = ?
-              WHERE id = ?
-            `).run(quota, accrual, existingLt.id);
-          } else {
-            db.prepare(`
-              INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate)
-              VALUES (?, ?, ?, ?)
-            `).run(compId, ltName, quota, accrual);
+      // Cross-link employee managerId & hrId from employee documents now that all employees exist
+      for (const [_, emp] of employeesMap) {
+        let empId = emp.id ? (employeeIdMap.get(String(emp.id)) || Number(emp.id)) : null;
+        if (empId) {
+          if (emp.managerId || emp.manager_id) {
+            const rawM = emp.managerId || emp.manager_id;
+            const mappedM = employeeIdMap.get(String(rawM)) || Number(rawM);
+            if (mappedM && mappedM !== empId && db.prepare('SELECT id FROM employees WHERE id = ?').get(mappedM)) {
+              db.prepare('UPDATE employees SET manager_id = ? WHERE id = ?').run(mappedM, empId);
+            }
+          }
+          if (emp.hrId || emp.hr_id) {
+            const rawH = emp.hrId || emp.hr_id;
+            const mappedH = employeeIdMap.get(String(rawH)) || Number(rawH);
+            if (mappedH && mappedH !== empId && db.prepare('SELECT id FROM employees WHERE id = ?').get(mappedH)) {
+              db.prepare('UPDATE employees SET hr_id = ? WHERE id = ?').run(mappedH, empId);
+            }
           }
         }
       }
 
+      // Phase 8: Restore Leave Balances & Leave Requests
       const currentYear = new Date().getFullYear();
       for (const [_, lb] of leaveBalancesMap) {
         let compId = lb.companyId || lb.company_id;
@@ -2382,10 +2546,18 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let empId = lb.employeeId || lb.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
         let ltId = lb.leaveTypeId || lb.leave_type_id;
+        if (ltId) ltId = leaveTypeIdMap.get(String(ltId)) || Number(ltId);
 
         if (compId && empId && ltId) {
           const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
-          const ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ?').get(ltId);
+          let ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ?').get(ltId);
+          if (!ltExists) {
+            const defLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? LIMIT 1').get(compId);
+            if (defLt) {
+              ltId = defLt.id;
+              ltExists = defLt;
+            }
+          }
           if (empExists && ltExists) {
             const yr = Number(lb.year || currentYear);
             const opening = Number(lb.opening_balance || lb.openingBalance || lb.allocated || 0);
@@ -2416,6 +2588,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let empId = lr.employeeId || lr.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
         let ltId = lr.leaveTypeId || lr.leave_type_id;
+        if (ltId) ltId = leaveTypeIdMap.get(String(ltId)) || Number(ltId);
 
         if (compId && empId && (lr.startDate || lr.start_date)) {
           const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
@@ -2440,7 +2613,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // G. Restore Attendance Corrections
+      // Phase 9: Restore Attendance Corrections & Attendance Records
       for (const [_, cr] of correctionsMap) {
         let compId = cr.companyId || cr.company_id;
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
@@ -2461,7 +2634,6 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // H. Restore Attendance Records
       for (const [_, att] of attendanceMap) {
         let rawCompId = att.companyId || att.company_id;
         let rawEmpId = att.employeeId || att.employee_id;
@@ -2510,10 +2682,14 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // I. Restore Support Tickets
+      // Phase 10: Restore Support Tickets
       for (const [_, st] of ticketsMap) {
         let compId = st.companyId || st.company_id;
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (compId && !db.prepare('SELECT id FROM companies WHERE id = ?').get(compId)) {
+          compId = null;
+        }
+
         let uId = st.userId || st.user_id || st.createdByUserId || st.created_by_user_id;
         if (uId) uId = userIdMap.get(String(uId)) || Number(uId);
 
@@ -2548,7 +2724,16 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       }
     });
 
-    restoreTransaction();
+    db.pragma('foreign_keys = OFF');
+    let restoreError = null;
+    try {
+      restoreTransaction();
+    } catch (err) {
+      restoreError = err;
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+    if (restoreError) throw restoreError;
 
     // Run database sanitation to guarantee clean relational integrity (safeguards Super Admin and Support)
     try {

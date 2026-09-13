@@ -104,14 +104,39 @@ function sanitizeDatabase() {
       `).run();
       stats.orphanedTickets = tktRes.changes;
 
+      try {
+        db.prepare(`
+          DELETE FROM support_tickets
+          WHERE (company_id IS NOT NULL AND company_id NOT IN (SELECT id FROM companies WHERE is_deleted = 0))
+             OR created_by_user_id NOT IN (SELECT id FROM users)
+        `).run();
+      } catch (e) {}
+
       // 11. Clean orphaned notifications
       db.prepare(`
         DELETE FROM notifications
         WHERE user_id NOT IN (SELECT id FROM users)
       `).run();
+
+      // 12. Enforce absolute zero foreign key violations
+      try {
+        const fkViolations = db.prepare('PRAGMA foreign_key_check').all();
+        if (fkViolations && fkViolations.length > 0) {
+          for (const v of fkViolations) {
+            try {
+              db.prepare(`DELETE FROM "${v.table}" WHERE rowid = ?`).run(v.rowid);
+            } catch (err) {}
+          }
+        }
+      } catch (e) {}
     });
 
-    sanitizeTransaction();
+    db.pragma('foreign_keys = OFF');
+    try {
+      sanitizeTransaction();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
 
     console.log('[SanitizeDB] Database cleanup finished:', stats);
     return { success: true, stats };
