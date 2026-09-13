@@ -76,13 +76,18 @@ function getAppSetting(key) {
 // Helper to save setting to SQLite application_settings table
 function setAppSetting(key, val, desc = '') {
   try {
-    db.prepare(`
-      INSERT INTO application_settings (setting_key, setting_value, description, updated_at)
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(setting_key) DO UPDATE SET
-        setting_value = excluded.setting_value,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(key, val, desc);
+    const existing = db.prepare('SELECT id FROM application_settings WHERE setting_key = ?').get(key);
+    if (existing) {
+      db.prepare(`
+        UPDATE application_settings SET setting_value = ?, description = COALESCE(NULLIF(?, ''), description), updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(val, desc, existing.id);
+    } else {
+      db.prepare(`
+        INSERT INTO application_settings (setting_key, setting_value, description, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(key, val, desc);
+    }
   } catch (err) {
     console.error('Failed to save setting:', key, err.message);
   }
@@ -1461,7 +1466,10 @@ async function wipeAllCompanyDataFromDb({ syncToFirebase = true } = {}) {
           INSERT INTO users (username, password_hash, email, role_id, company_id, status)
           VALUES ('adminn', ?, 'superadmin@npbhrms.com', ?, NULL, 'active')
         `).run(passHash, superAdminRole.id);
-        db.prepare('INSERT INTO super_admins (user_id, full_name) VALUES (?, ?) ON CONFLICT(user_id) DO NOTHING').run(resU.lastInsertRowid, 'Global Super Administrator');
+        const existingSA = db.prepare('SELECT id FROM super_admins WHERE user_id = ?').get(resU.lastInsertRowid);
+        if (!existingSA) {
+          db.prepare('INSERT INTO super_admins (user_id, full_name) VALUES (?, ?)').run(resU.lastInsertRowid, 'Global Super Administrator');
+        }
       }
     }
 
@@ -1835,19 +1843,23 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         companyIdMap.set(String(targetCompId), targetCompId);
 
         // Settings & Modules
-        db.prepare(`
-          INSERT INTO company_settings (company_id, timezone, working_hours_per_day, half_day_min_hours, full_day_min_hours, show_branding_mode)
-          VALUES (?, 'Asia/Kolkata', 8.0, 4.0, 8.0, 'both')
-          ON CONFLICT(company_id) DO NOTHING
-        `).run(targetCompId);
+        const existingSettings = db.prepare('SELECT id FROM company_settings WHERE company_id = ?').get(targetCompId);
+        if (!existingSettings) {
+          db.prepare(`
+            INSERT INTO company_settings (company_id, timezone, working_hours_per_day, half_day_min_hours, full_day_min_hours, show_branding_mode)
+            VALUES (?, 'Asia/Kolkata', 8.0, 4.0, 8.0, 'both')
+          `).run(targetCompId);
+        }
 
         const modules = ['geofencing', 'live_tracking', 'leave_management', 'payroll', 'support_tickets', 'dynamic_forms'];
         for (const m of modules) {
-          db.prepare(`
-            INSERT INTO company_modules (company_id, module_name, is_enabled)
-            VALUES (?, ?, 1)
-            ON CONFLICT(company_id, module_name) DO NOTHING
-          `).run(targetCompId, m);
+          const existingMod = db.prepare('SELECT id FROM company_modules WHERE company_id = ? AND module_name = ?').get(targetCompId, m);
+          if (!existingMod) {
+            db.prepare(`
+              INSERT INTO company_modules (company_id, module_name, is_enabled)
+              VALUES (?, ?, 1)
+            `).run(targetCompId, m);
+          }
         }
 
         // Ensure default Shift
@@ -1995,17 +2007,23 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         userIdMap.set(String(targetUserId), targetUserId);
 
         if (roleName === 'super_admin') {
-          db.prepare(`
-            INSERT INTO super_admins (user_id, full_name)
-            VALUES (?, 'Global Super Administrator')
-            ON CONFLICT(user_id) DO NOTHING
-          `).run(targetUserId);
+          const existingAdmin = db.prepare('SELECT id FROM super_admins WHERE user_id = ?').get(targetUserId);
+          if (!existingAdmin) {
+            db.prepare(`
+              INSERT INTO super_admins (user_id, full_name)
+              VALUES (?, 'Global Super Administrator')
+            `).run(targetUserId);
+          }
         } else if (roleName === 'support') {
-          db.prepare(`
-            INSERT INTO support_users (user_id, full_name, permission_level)
-            VALUES (?, 'Technical Support Specialist', 4)
-            ON CONFLICT(user_id) DO UPDATE SET permission_level = 4
-          `).run(targetUserId);
+          const existingSupport = db.prepare('SELECT id FROM support_users WHERE user_id = ?').get(targetUserId);
+          if (existingSupport) {
+            db.prepare('UPDATE support_users SET permission_level = 4 WHERE id = ?').run(existingSupport.id);
+          } else {
+            db.prepare(`
+              INSERT INTO support_users (user_id, full_name, permission_level)
+              VALUES (?, 'Technical Support Specialist', 4)
+            `).run(targetUserId);
+          }
         }
 
         restoredUsers++;
@@ -2204,17 +2222,27 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
         if (!compId) compId = firstValidCompanyId;
         if (compId && s.name) {
-          db.prepare(`
-            INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(company_id, name) DO UPDATE SET
-              start_time = excluded.start_time,
-              end_time = excluded.end_time,
-              working_hours = excluded.working_hours,
-              grace_time_mins = excluded.grace_time_mins,
-              break_time_mins = excluded.break_time_mins,
-              status = excluded.status
-          `).run(compId, s.name, s.startTime || s.start_time || '09:00', s.endTime || s.end_time || '18:00', s.workingHours || s.working_hours || 8.0, s.graceTimeMins || s.grace_time_mins || 15, s.breakTimeMins || s.break_time_mins || 60, s.isRotational ? 1 : 0, s.status || 'active');
+          const sName = String(s.name).trim();
+          const sStart = s.startTime || s.start_time || '09:00';
+          const sEnd = s.endTime || s.end_time || '18:00';
+          const sHours = Number(s.workingHours || s.working_hours || 8.0);
+          const sGrace = Number(s.graceTimeMins || s.grace_time_mins || 15);
+          const sBreak = Number(s.breakTimeMins || s.break_time_mins || 60);
+          const sRot = s.isRotational ? 1 : 0;
+          const sStatus = s.status || 'active';
+
+          const existingShift = db.prepare('SELECT id FROM shifts WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, sName);
+          if (existingShift) {
+            db.prepare(`
+              UPDATE shifts SET start_time = ?, end_time = ?, working_hours = ?, grace_time_mins = ?, break_time_mins = ?, is_rotational = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus, existingShift.id);
+          } else {
+            db.prepare(`
+              INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(compId, sName, sStart, sEnd, sHours, sGrace, sBreak, sRot, sStatus);
+          }
         }
       }
 
@@ -2223,13 +2251,22 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
         if (!compId) compId = firstValidCompanyId;
         if (compId && w.name) {
-          db.prepare(`
-            INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(company_id, name) DO UPDATE SET
-              off_days_json = excluded.off_days_json,
-              is_default = excluded.is_default
-          `).run(compId, w.name, w.offDaysJson || w.off_days_json || '["Sunday"]', w.isDefault ? 1 : 0);
+          const wName = String(w.name).trim();
+          const wOffDays = typeof w.offDaysJson === 'string' ? w.offDaysJson : (typeof w.off_days_json === 'string' ? w.off_days_json : JSON.stringify(w.offDays || w.off_days || ['Sunday']));
+          const wDefault = (w.isDefault || w.is_default) ? 1 : 0;
+
+          const existingWoff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, wName);
+          if (existingWoff) {
+            db.prepare(`
+              UPDATE weekly_off_settings SET off_days_json = ?, is_default = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(wOffDays, wDefault, existingWoff.id);
+          } else {
+            db.prepare(`
+              INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
+              VALUES (?, ?, ?, ?)
+            `).run(compId, wName, wOffDays, wDefault);
+          }
         }
       }
 
@@ -2239,14 +2276,22 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (!compId) compId = firstValidCompanyId;
         const hDate = h.holidayDate || h.holiday_date;
         if (compId && h.name && hDate) {
-          db.prepare(`
-            INSERT INTO holidays (company_id, name, holiday_date, is_optional, applies_to)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(company_id, holiday_date) DO UPDATE SET
-              name = excluded.name,
-              is_optional = excluded.is_optional,
-              applies_to = excluded.applies_to
-          `).run(compId, h.name, hDate, h.isOptional ? 1 : 0, h.appliesTo || h.applies_to || 'all');
+          const hName = String(h.name).trim();
+          const hOpt = (h.isOptional || h.is_optional) ? 1 : 0;
+          const hApp = h.appliesTo || h.applies_to || 'all';
+
+          const existingHoliday = db.prepare('SELECT id FROM holidays WHERE company_id = ? AND holiday_date = ?').get(compId, hDate);
+          if (existingHoliday) {
+            db.prepare(`
+              UPDATE holidays SET name = ?, is_optional = ?, applies_to = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(hName, hOpt, hApp, existingHoliday.id);
+          } else {
+            db.prepare(`
+              INSERT INTO holidays (company_id, name, holiday_date, is_optional, applies_to)
+              VALUES (?, ?, ?, ?, ?)
+            `).run(compId, hName, hDate, hOpt, hApp);
+          }
         }
       }
 
@@ -2254,18 +2299,26 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let compId = g.companyId || g.company_id;
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
         if (!compId) compId = firstValidCompanyId;
-        const locName = g.locationName || g.location_name || g.name;
+        const locName = (g.locationName || g.location_name || g.name || '').trim();
         if (compId && locName && g.latitude !== undefined && g.longitude !== undefined) {
-          db.prepare(`
-            INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, address, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(company_id, location_name) DO UPDATE SET
-              latitude = excluded.latitude,
-              longitude = excluded.longitude,
-              radius = excluded.radius,
-              address = excluded.address,
-              status = excluded.status
-          `).run(compId, locName, parseFloat(g.latitude), parseFloat(g.longitude), parseFloat(g.radius || 100), g.address || '', g.status || 'active');
+          const gLat = parseFloat(g.latitude);
+          const gLng = parseFloat(g.longitude);
+          const gRadius = parseFloat(g.radius || 100);
+          const gAddr = g.address || '';
+          const gStatus = (g.status || 'active').toLowerCase() === 'inactive' ? 'inactive' : 'active';
+
+          const existingGeo = db.prepare('SELECT id FROM geofences WHERE company_id = ? AND LOWER(location_name) = LOWER(?)').get(compId, locName);
+          if (existingGeo) {
+            db.prepare(`
+              UPDATE geofences SET latitude = ?, longitude = ?, radius = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(gLat, gLng, gRadius, gStatus, existingGeo.id);
+          } else {
+            db.prepare(`
+              INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, status)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `).run(compId, locName, gLat, gLng, gRadius, gStatus);
+          }
         }
       }
 
@@ -2278,16 +2331,19 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (mgrId) mgrId = employeeIdMap.get(String(mgrId)) || Number(mgrId);
         let empId = m.employeeId || m.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
+        const mapType = m.mappingType || m.mapping_type || 'manager';
 
         if (compId && mgrId && empId && mgrId !== empId) {
           const mgrExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(mgrId);
           const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
           if (mgrExists && empExists) {
-            db.prepare(`
-              INSERT INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
-              VALUES (?, ?, ?, ?, NULL)
-              ON CONFLICT(company_id, manager_id, employee_id) DO NOTHING
-            `).run(compId, mgrId, empId, m.mappingType || m.mapping_type || 'manager');
+            const existingMap = db.prepare('SELECT id FROM employee_mappings WHERE manager_id = ? AND employee_id = ? AND mapping_type = ?').get(mgrId, empId, mapType);
+            if (!existingMap) {
+              db.prepare(`
+                INSERT INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
+                VALUES (?, ?, ?, ?, NULL)
+              `).run(compId, mgrId, empId, mapType);
+            }
             db.prepare('UPDATE employees SET manager_id = ? WHERE id = ?').run(mgrId, empId);
           }
         }
@@ -2299,16 +2355,26 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
         if (!compId) compId = firstValidCompanyId;
         if (compId && lt.name) {
-          db.prepare(`
-            INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(company_id, name) DO UPDATE SET
-              default_yearly_quota = excluded.default_yearly_quota,
-              monthly_accrual_rate = excluded.monthly_accrual_rate
-          `).run(compId, lt.name, lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0, lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
+          const ltName = String(lt.name).trim();
+          const quota = Number(lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0);
+          const accrual = Number(lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
+
+          const existingLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, ltName);
+          if (existingLt) {
+            db.prepare(`
+              UPDATE leave_types SET default_yearly_quota = ?, monthly_accrual_rate = ?
+              WHERE id = ?
+            `).run(quota, accrual, existingLt.id);
+          } else {
+            db.prepare(`
+              INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate)
+              VALUES (?, ?, ?, ?)
+            `).run(compId, ltName, quota, accrual);
+          }
         }
       }
 
+      const currentYear = new Date().getFullYear();
       for (const [_, lb] of leaveBalancesMap) {
         let compId = lb.companyId || lb.company_id;
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
@@ -2321,14 +2387,24 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
           const ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ?').get(ltId);
           if (empExists && ltExists) {
-            db.prepare(`
-              INSERT INTO leave_balances (company_id, employee_id, leave_type_id, allocated, used, balance)
-              VALUES (?, ?, ?, ?, ?, ?)
-              ON CONFLICT(employee_id, leave_type_id) DO UPDATE SET
-                allocated = excluded.allocated,
-                used = excluded.used,
-                balance = excluded.balance
-            `).run(compId, empId, ltId, lb.allocated || 0, lb.used || 0, lb.balance || 0);
+            const yr = Number(lb.year || currentYear);
+            const opening = Number(lb.opening_balance || lb.openingBalance || lb.allocated || 0);
+            const accrued = Number(lb.accrued || 0);
+            const used = Number(lb.used || 0);
+            const bal = Number(lb.balance !== undefined ? lb.balance : (opening + accrued - used));
+
+            const existingBal = db.prepare('SELECT id FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(empId, ltId, yr);
+            if (existingBal) {
+              db.prepare(`
+                UPDATE leave_balances SET opening_balance = ?, accrued = ?, used = ?, balance = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `).run(opening, accrued, used, bal, existingBal.id);
+            } else {
+              db.prepare(`
+                INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+              `).run(empId, ltId, yr, opening, accrued, used, bal);
+            }
           }
         }
       }
@@ -2378,9 +2454,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
             let crStatus = cr.status || 'pending';
             if (!['pending', 'approved', 'rejected', 'cancelled'].includes(crStatus)) crStatus = 'pending';
             db.prepare(`
-              INSERT INTO attendance_correction_requests (company_id, employee_id, date, correction_type, requested_punch_in, requested_punch_out, requested_status, reason, status, reviewer_notes)
+              INSERT INTO attendance_correction_requests (company_id, employee_id, date, correction_type, requested_punch_in, requested_punch_out, requested_status, reason, status, review_notes)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(compId, empId, cr.date, cr.correctionType || cr.correction_type || 'both', cr.requestedPunchIn || cr.requested_punch_in || null, cr.requestedPunchOut || cr.requested_punch_out || null, cr.requestedStatus || cr.requested_status || 'Present', cr.reason || 'Attendance punch correction', crStatus, cr.reviewerNotes || cr.reviewer_notes || null);
+            `).run(compId, empId, cr.date, cr.correctionType || cr.correction_type || 'both', cr.requestedPunchIn || cr.requested_punch_in || null, cr.requestedPunchOut || cr.requested_punch_out || null, cr.requestedStatus || cr.requested_status || 'Present', cr.reason || 'Attendance punch correction', crStatus, cr.reviewNotes || cr.review_notes || cr.reviewerNotes || cr.reviewer_notes || null);
           }
         }
       }
@@ -2408,14 +2484,27 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
               else attStatus = 'Present';
             }
 
-            db.prepare(`
-              INSERT INTO attendance_records (company_id, employee_id, date, punch_in_time, punch_out_time, status, total_hours)
-              VALUES (?, ?, ?, ?, ?, ?, 8.0)
-              ON CONFLICT(company_id, employee_id, date) DO UPDATE SET
-                punch_in_time = COALESCE(excluded.punch_in_time, punch_in_time),
-                punch_out_time = COALESCE(excluded.punch_out_time, punch_out_time),
-                status = COALESCE(excluded.status, status)
-            `).run(compId, empId, date, att.punchInTime || att.punch_in_time || null, att.punchOutTime || att.punch_out_time || null, attStatus);
+            const pIn = att.punchInTime || att.punch_in_time || null;
+            const pOut = att.punchOutTime || att.punch_out_time || null;
+            const tHours = Number(att.totalHours || att.total_hours || 8.0);
+            const existingAtt = db.prepare('SELECT id FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?').get(compId, empId, date);
+
+            if (existingAtt) {
+              db.prepare(`
+                UPDATE attendance_records SET
+                  punch_in_time = COALESCE(?, punch_in_time),
+                  punch_out_time = COALESCE(?, punch_out_time),
+                  status = COALESCE(?, status),
+                  total_hours = COALESCE(?, total_hours),
+                  updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `).run(pIn, pOut, attStatus, tHours, existingAtt.id);
+            } else {
+              db.prepare(`
+                INSERT INTO attendance_records (company_id, employee_id, date, punch_in_time, punch_out_time, status, total_hours)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+              `).run(compId, empId, date, pIn, pOut, attStatus, tHours);
+            }
             restoredAttendances++;
           }
         }
@@ -2425,20 +2514,36 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       for (const [_, st] of ticketsMap) {
         let compId = st.companyId || st.company_id;
         if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
-        let uId = st.userId || st.user_id;
+        let uId = st.userId || st.user_id || st.createdByUserId || st.created_by_user_id;
         if (uId) uId = userIdMap.get(String(uId)) || Number(uId);
 
-        if (st.title) {
-          const tktNum = st.ticketNumber || st.ticket_number || `TKT-${Math.floor(100000 + Math.random() * 900000)}`;
-          let tktStatus = st.status || 'open';
+        const subject = (st.subject || st.title || '').trim();
+        if (subject) {
+          const tktNum = (st.ticketNumber || st.ticket_number || `TKT-${Math.floor(100000 + Math.random() * 900000)}`).trim();
+          let tktStatus = (st.status || 'open').toLowerCase().trim();
           if (!['open', 'in_progress', 'resolved', 'closed'].includes(tktStatus)) tktStatus = 'open';
-          db.prepare(`
-            INSERT INTO support_tickets (ticket_number, company_id, user_id, title, description, category, priority, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(ticket_number) DO UPDATE SET
-              status = excluded.status,
-              priority = excluded.priority
-          `).run(tktNum, compId, uId || null, st.title, st.description || '', st.category || 'General', st.priority || 'medium', tktStatus);
+          const priority = (st.priority || 'medium').toLowerCase().trim();
+          const validPriority = ['low', 'medium', 'high', 'urgent'].includes(priority) ? priority : 'medium';
+          const category = st.category || 'General';
+          const description = st.description || subject;
+
+          let authorId = uId;
+          if (!authorId || !db.prepare('SELECT id FROM users WHERE id = ?').get(authorId)) {
+            authorId = db.prepare('SELECT id FROM users LIMIT 1').get()?.id || 1;
+          }
+
+          const existingTkt = db.prepare('SELECT id FROM support_tickets WHERE ticket_number = ?').get(tktNum);
+          if (existingTkt) {
+            db.prepare(`
+              UPDATE support_tickets SET status = ?, priority = ?, category = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(tktStatus, validPriority, category, description, existingTkt.id);
+          } else {
+            db.prepare(`
+              INSERT INTO support_tickets (ticket_number, company_id, created_by_user_id, category, subject, description, priority, status)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(tktNum, compId || null, authorId, category, subject, description, validPriority, tktStatus);
+          }
         }
       }
     });
