@@ -403,6 +403,24 @@ router.post('/requests', verifyAuth, (req, res) => {
     );
   }
 
+  // Realtime Firebase sync
+  try {
+    const { syncLeaveRequest } = require('../services/firebase');
+    if (syncLeaveRequest) {
+      syncLeaveRequest({
+        id: result.lastInsertRowid,
+        company_id: companyId,
+        employee_id: employeeId,
+        leave_type_id,
+        start_date,
+        end_date,
+        total_days: days,
+        reason: reason.trim(),
+        status: 'pending'
+      });
+    }
+  } catch (e) {}
+
   res.status(201).json({ success: true, requestId: result.lastInsertRowid, message: 'Leave request submitted successfully.' });
 });
 
@@ -553,8 +571,88 @@ router.put('/requests/:id', verifyAuth, requireRole(['manager', 'company_admin',
   });
 
   transaction();
+
+  // Realtime Firebase sync for approval/rejection and updated balances
+  try {
+    const { syncLeaveRequest, syncLeaveBalance } = require('../services/firebase');
+    if (syncLeaveRequest) {
+      syncLeaveRequest({ ...request, status, rejection_reason });
+    }
+    if (syncLeaveBalance && status === 'approved') {
+      const updatedBal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+        .get(request.employee_id, request.leave_type_id, currentYear);
+      if (updatedBal) syncLeaveBalance(updatedBal);
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: `Leave request ${status} successfully.` });
 });
+
+// Cancel Pending Leave Request (Employee who applied, or Manager / Admin)
+const handleCancelLeave = (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const companyId = getTenantCompanyId(req);
+
+  const request = db.prepare(`
+    SELECT lr.*, e.user_id, e.full_name
+    FROM leave_requests lr
+    JOIN employees e ON lr.employee_id = e.id
+    WHERE lr.id = ?
+  `).get(requestId);
+
+  if (!request) {
+    return res.status(404).json({ error: 'Leave request not found.' });
+  }
+
+  // Authorization check: Employee can cancel own request, manager/admin can cancel within company
+  if (req.user.role_name === 'employee' && request.employee_id !== req.user.employee_id) {
+    return res.status(403).json({ error: 'You are not authorized to cancel this leave request.' });
+  }
+  if (req.user.role_name !== 'super_admin' && request.company_id !== companyId) {
+    return res.status(403).json({ error: 'Unauthorized company access.' });
+  }
+
+  if (request.status !== 'pending') {
+    return res.status(400).json({ error: `Cannot cancel leave request that is already ${request.status}. Only pending requests can be cancelled.` });
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE leave_requests SET
+        status = 'cancelled',
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(requestId);
+
+    logAudit({
+      companyId: request.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Leave Management',
+      action: 'LEAVE_CANCELLED',
+      targetEntity: 'leave_requests',
+      targetId: requestId,
+      newValues: { status: 'cancelled' },
+      reason: `Pending leave request cancelled by ${req.user.username}`
+    });
+  });
+
+  transaction();
+
+  // Realtime Firebase sync
+  try {
+    const { syncLeaveRequest } = require('../services/firebase');
+    if (syncLeaveRequest) {
+      syncLeaveRequest({ ...request, status: 'cancelled' });
+    }
+  } catch (e) {}
+
+  res.json({ success: true, message: 'Leave request cancelled successfully.' });
+};
+
+router.post('/requests/:id/cancel', verifyAuth, handleCancelLeave);
+router.put('/requests/:id/cancel', verifyAuth, handleCancelLeave);
 
 // Run Monthly Accrual for Earned Leave (Company Admin, Super Admin)
 router.post('/accrual/monthly', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {

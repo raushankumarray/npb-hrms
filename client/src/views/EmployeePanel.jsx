@@ -93,6 +93,8 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
   const [todayOnLeave, setTodayOnLeave] = useState(null);
   const [leaveHistoryTab, setLeaveHistoryTab] = useState('pending'); // 'pending' | 'approved'
   const [insufficientLeaveError, setInsufficientLeaveError] = useState('');
+  const [cancellingLeaveId, setCancellingLeaveId] = useState(null);
+  const [cancellingCorrectionId, setCancellingCorrectionId] = useState(null);
   const [history, setHistory] = useState([]);
   const [calendarData, setCalendarData] = useState({ records: [], holidays: [], offDays: ['Sunday'] });
   const [leaveBalances, setLeaveBalances] = useState([]);
@@ -1017,6 +1019,44 @@ Please deregister this device in Support Panel so I can register and log in on m
       } else {
         setError(err.message);
       }
+    }
+  };
+
+  const handleCancelLeave = async (leaveId) => {
+    if (!window.confirm('Are you sure you want to cancel this pending leave request?')) return;
+    setCancellingLeaveId(leaveId);
+    setError('');
+    try {
+      const res = await apiRequest(`/leave/requests/${leaveId}/cancel`, {
+        method: 'POST'
+      });
+      setSuccess(res.message || 'Leave request cancelled successfully.');
+      const balRes = await apiRequest('/leave/balances');
+      setLeaveBalances(balRes.balances || []);
+      const reqRes = await apiRequest('/leave/requests');
+      setLeaveRequests(reqRes.requests || []);
+    } catch (err) {
+      setError(err.message || 'Failed to cancel leave request.');
+    } finally {
+      setCancellingLeaveId(null);
+    }
+  };
+
+  const handleCancelCorrection = async (correctionId) => {
+    if (!window.confirm('Are you sure you want to cancel this pending attendance correction request?')) return;
+    setCancellingCorrectionId(correctionId);
+    setError('');
+    try {
+      const res = await apiRequest(`/attendance/correction-requests/${correctionId}/cancel`, {
+        method: 'POST'
+      });
+      setSuccess(res.message || 'Attendance correction request cancelled successfully.');
+      const corrRes = await apiRequest('/attendance/correction-requests');
+      setCorrectionRequests(corrRes.requests || []);
+    } catch (err) {
+      setError(err.message || 'Failed to cancel attendance correction request.');
+    } finally {
+      setCancellingCorrectionId(null);
     }
   };
 
@@ -2536,6 +2576,7 @@ Please deregister this device in Support Panel so I can register and log in on m
                       <th className="p-3">Working Days (Excl. WO)</th>
                       <th className="p-3">Reason</th>
                       <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -2548,16 +2589,31 @@ Please deregister this device in Support Panel so I can register and log in on m
                         <td className="p-3">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                             r.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                            r.status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
+                            r.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                            r.status === 'cancelled' ? 'bg-slate-100 text-slate-600' : 'bg-amber-100 text-amber-700'
                           }`}>
                             {r.status}
                           </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          {r.status === 'pending' && (
+                            <button
+                              type="button"
+                              onClick={() => handleCancelLeave(r.id)}
+                              disabled={cancellingLeaveId === r.id}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors disabled:opacity-50"
+                              title="Cancel this pending leave request"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                              <span>{cancellingLeaveId === r.id ? 'Cancelling...' : 'Cancel Leave'}</span>
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
                     {displayedLeaves.length === 0 && (
                       <tr>
-                        <td colSpan="5" className="p-8 text-center text-slate-400">
+                        <td colSpan="6" className="p-8 text-center text-slate-400">
                           {leaveHistoryTab === 'pending'
                             ? 'No pending leave applications awaiting approval.'
                             : 'No approved or archived leave records found.'}
@@ -2801,7 +2857,8 @@ Please deregister this device in Support Panel so I can register and log in on m
                         <th className="p-3">Justification</th>
                         <th className="p-3">Approval Status</th>
                         <th className="p-3">Reviewer Notes</th>
-                        <th className="p-3 text-right">Submitted</th>
+                        <th className="p-3">Submitted</th>
+                        <th className="p-3 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2822,22 +2879,37 @@ Please deregister this device in Support Panel so I can register and log in on m
                             <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                               cr.status === 'approved' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
                               cr.status === 'rejected' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
+                              cr.status === 'cancelled' ? 'bg-slate-100 text-slate-700 border border-slate-300' :
                               'bg-amber-100 text-amber-800 border border-amber-300'
                             }`}>
-                              {cr.status === 'approved' ? 'Approved (Present)' : cr.status === 'rejected' ? 'Rejected (Absent)' : 'Pending Review'}
+                              {cr.status === 'approved' ? 'Approved (Present)' : cr.status === 'rejected' ? 'Rejected (Absent)' : cr.status === 'cancelled' ? 'Cancelled' : 'Pending Review'}
                             </span>
                           </td>
                           <td className="p-3 text-slate-500 italic text-[11px]">
                             {cr.review_notes || '--'}
                           </td>
-                          <td className="p-3 text-right font-mono text-slate-400 text-[11px]">
+                          <td className="p-3 font-mono text-slate-400 text-[11px]">
                             {new Date(cr.created_at).toLocaleDateString()}
+                          </td>
+                          <td className="p-3 text-right">
+                            {cr.status === 'pending' && (
+                              <button
+                                type="button"
+                                onClick={() => handleCancelCorrection(cr.id)}
+                                disabled={cancellingCorrectionId === cr.id}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors disabled:opacity-50"
+                                title="Cancel this pending correction request"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                                <span>{cancellingCorrectionId === cr.id ? 'Cancelling...' : 'Cancel'}</span>
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
                       {displayedCorrections.length === 0 && (
                         <tr>
-                          <td colSpan="8" className="p-8 text-center text-slate-400">
+                          <td colSpan="9" className="p-8 text-center text-slate-400">
                             {correctionHistoryTab === 'pending'
                               ? 'No pending attendance correction requests awaiting approval.'
                               : 'No approved or archived attendance correction requests found.'}

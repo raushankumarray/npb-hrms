@@ -4,6 +4,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { syncGeofence, deleteFromFirebase, syncCompanySettings, syncCompanyModules } = require('../services/firebase');
 
 // List Geofences, Employee Assignments & Company Policy
 router.get('/', verifyAuth, (req, res) => {
@@ -129,6 +130,12 @@ router.put('/company-policy', verifyAuth, requireRole(['company_admin', 'super_a
 
   transaction();
 
+  try {
+    const sRow = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(companyId);
+    if (sRow) syncCompanySettings(companyId, sRow);
+    syncCompanyModules(companyId, { geofencing: policy !== 'anywhere' });
+  } catch (e) {}
+
   res.json({
     success: true,
     policy,
@@ -247,6 +254,12 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req
   });
 
   const createdId = transaction();
+
+  try {
+    const gfRow = db.prepare('SELECT * FROM geofences WHERE id = ?').get(createdId);
+    if (gfRow) syncGeofence(gfRow);
+  } catch (e) {}
+
   res.status(201).json({ success: true, geofenceId: createdId, message: 'Geofence location created successfully.' });
 });
 
@@ -302,6 +315,12 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (r
   });
 
   transaction();
+
+  try {
+    const gfRow = db.prepare('SELECT * FROM geofences WHERE id = ?').get(gfId);
+    if (gfRow) syncGeofence(gfRow);
+  } catch (e) {}
+
   res.json({ success: true, message: 'Geofence updated successfully.' });
 });
 
@@ -323,6 +342,10 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
     targetId: gfId,
     reason: 'Deleted geofence boundary'
   });
+
+  try {
+    deleteFromFirebase('geofences', gfId);
+  } catch (e) {}
 
   res.json({ success: true, message: 'Geofence deleted successfully.' });
 });

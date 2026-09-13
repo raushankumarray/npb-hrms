@@ -2717,6 +2717,28 @@ router.post('/correction-request', verifyAuth, (req, res) => {
     );
   }
 
+  // Realtime Firebase sync
+  try {
+    const { syncAttendanceCorrection } = require('../services/firebase');
+    if (syncAttendanceCorrection) {
+      syncAttendanceCorrection({
+        id: result.lastInsertRowid,
+        company_id: companyId,
+        employee_id: employeeId,
+        date,
+        current_punch_in: currentPunchIn,
+        current_punch_out: currentPunchOut,
+        current_status: currentStatus,
+        requested_punch_in: reqInVal,
+        requested_punch_out: reqOutVal,
+        requested_status: finalRequestedStatus,
+        reason: reason.trim(),
+        status: 'pending',
+        correction_type
+      });
+    }
+  } catch (e) {}
+
   res.status(201).json({
     success: true,
     requestId: result.lastInsertRowid,
@@ -2935,11 +2957,92 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
 
   transaction();
 
+  // Realtime Firebase sync
+  try {
+    const { syncAttendanceCorrection, syncAttendancePunch } = require('../services/firebase');
+    if (syncAttendanceCorrection) {
+      syncAttendanceCorrection({ ...request, status, review_notes });
+    }
+    if (syncAttendancePunch) {
+      const updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?')
+        .get(request.company_id, request.employee_id, request.date);
+      if (updatedAtt) {
+        syncAttendancePunch(request.company_id, request.employee_id, updatedAtt);
+      }
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     message: `Attendance correction request #${requestId} has been ${status === 'approved' ? 'approved (status set to Present)' : 'rejected (status marked as Absent)'}.`
   });
 });
+
+// Cancel Pending Attendance Correction Request (Employee who submitted, or Manager / Admin)
+const handleCancelCorrection = (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const companyId = getTenantCompanyId(req);
+
+  const request = db.prepare(`
+    SELECT cr.*, e.user_id, e.full_name
+    FROM attendance_correction_requests cr
+    JOIN employees e ON cr.employee_id = e.id
+    WHERE cr.id = ?
+  `).get(requestId);
+
+  if (!request) {
+    return res.status(404).json({ error: 'Attendance correction request not found.' });
+  }
+
+  // Authorization check: Employee can cancel own request, manager/admin can cancel within company
+  if (req.user.role_name === 'employee' && request.employee_id !== req.user.employee_id) {
+    return res.status(403).json({ error: 'You are not authorized to cancel this attendance correction request.' });
+  }
+  if (req.user.role_name !== 'super_admin' && request.company_id !== companyId) {
+    return res.status(403).json({ error: 'Unauthorized company access.' });
+  }
+
+  if (request.status !== 'pending') {
+    return res.status(400).json({ error: `Cannot cancel correction request that is already ${request.status}. Only pending requests can be cancelled.` });
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      UPDATE attendance_correction_requests SET
+        status = 'cancelled',
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(requestId);
+
+    logAudit({
+      companyId: request.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Attendance Correction',
+      action: 'ATTENDANCE_CORRECTION_CANCELLED',
+      targetEntity: 'attendance_correction_requests',
+      targetId: requestId,
+      newValues: { status: 'cancelled' },
+      reason: `Pending attendance correction request cancelled by ${req.user.username}`
+    });
+  });
+
+  transaction();
+
+  // Realtime Firebase sync
+  try {
+    const { syncAttendanceCorrection } = require('../services/firebase');
+    if (syncAttendanceCorrection) {
+      syncAttendanceCorrection({ ...request, status: 'cancelled' });
+    }
+  } catch (e) {}
+
+  res.json({ success: true, message: 'Attendance correction request cancelled successfully.' });
+};
+
+router.post('/correction-requests/:id/cancel', verifyAuth, handleCancelCorrection);
+router.put('/correction-requests/:id/cancel', verifyAuth, handleCancelCorrection);
 
 module.exports = router;
 

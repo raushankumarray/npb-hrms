@@ -8,8 +8,10 @@ const { seedDatabase } = require('./seed');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Ensure database is initialized
+// Ensure database is initialized & clean of orphaned data
 seedDatabase();
+const { sanitizeDatabase } = require('./services/sanitize');
+sanitizeDatabase();
 
 // Middlewares
 app.use(cors());

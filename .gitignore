@@ -9,7 +9,9 @@ client/dist/
 # Scratch temporary test files
 scratch/
 
-# SQLite WAL & SHM temporary files
+# SQLite database and temporary files
+server/data/*.db
+*.db
 server/data/*.db-wal
 server/data/*.db-shm
 

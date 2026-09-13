@@ -5,7 +5,7 @@ const { verifyAuth } = require('../middleware/auth');
 const { getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { unbindUserDevice } = require('../services/deviceBinding');
-const { syncTicketMessage } = require('../services/firebase');
+const { syncTicketMessage, syncSupportTicket } = require('../services/firebase');
 
 // Helper to auto-archive resolved/old tickets based on company retention setting (default 1 day)
 function autoArchiveExpiredRequests(companyId) {
@@ -126,6 +126,20 @@ router.post('/service-request', verifyAuth, (req, res) => {
         VALUES (?, ?, 'New Support Ticket', ?, 'ticket', '/support')
       `).run(su.id, companyId, `${senderRoleLabel} ${senderDisplayName} submitted support ticket #${reqId}: "${title.trim()}" (${request_type})`);
     }
+  } catch (e) {}
+
+  try {
+    syncSupportTicket({
+      id: reqId,
+      ticket_number: `TKT-${reqId}`,
+      company_id: companyId,
+      user_id: req.user.id,
+      title: title.trim(),
+      description: description || '',
+      category: sanitizedRequestType,
+      priority: 'medium',
+      status: 'pending'
+    });
   } catch (e) {}
 
   res.status(201).json({ success: true, requestId: reqId, assigned_role: assignedRole, message: 'Service ticket submitted directly to Technical Support Team.' });

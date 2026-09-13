@@ -4,6 +4,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { syncShift, syncWeeklyOff, deleteFromFirebase } = require('../services/firebase');
 
 // List Shifts, Employee Assignments & Weekly Offs for Company
 router.get('/', verifyAuth, (req, res) => {
@@ -85,6 +86,11 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req
     reason: 'Created new company shift schedule'
   });
 
+  try {
+    const sRow = db.prepare('SELECT * FROM shifts WHERE id = ?').get(result.lastInsertRowid);
+    if (sRow) syncShift(sRow);
+  } catch (e) {}
+
   res.status(201).json({ success: true, shiftId: result.lastInsertRowid, message: `Shift "${name}" created successfully.` });
 });
 
@@ -137,6 +143,11 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (r
     reason: `Updated shift "${name || existing.name}" timings and grace period`
   });
 
+  try {
+    const sRow = db.prepare('SELECT * FROM shifts WHERE id = ?').get(shiftId);
+    if (sRow) syncShift(sRow);
+  } catch (e) {}
+
   res.json({ success: true, message: `Shift "${name || existing.name}" updated successfully.` });
 });
 
@@ -171,6 +182,11 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
   });
 
   transaction();
+
+  try {
+    deleteFromFirebase('shifts', shiftId);
+  } catch (e) {}
+
   res.json({ success: true, message: `Shift "${existing.name}" deleted successfully.` });
 });
 
@@ -432,6 +448,12 @@ router.post('/weekly-off', verifyAuth, requireRole(['company_admin', 'super_admi
   });
 
   const id = transaction();
+
+  try {
+    const wRow = db.prepare('SELECT * FROM weekly_off_settings WHERE id = ?').get(id);
+    if (wRow) syncWeeklyOff(wRow);
+  } catch (e) {}
+
   res.json({ success: true, weeklyOffId: id, message: 'Weekly off configured successfully.' });
 });
 

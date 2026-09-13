@@ -569,11 +569,21 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
     const today = punchData.date || new Date().toISOString().split('T')[0];
     const payload = {
       companyId,
+      company_id: companyId,
       employeeId,
+      employee_id: employeeId,
       date: today,
-      punchInTime: punchData.punch_in_time || null,
-      punchOutTime: punchData.punch_out_time || null,
+      punchInTime: punchData.punch_in_time || punchData.punchInTime || null,
+      punchOutTime: punchData.punch_out_time || punchData.punchOutTime || null,
+      punchInLat: punchData.punch_in_lat ?? punchData.punchInLat ?? null,
+      punchInLng: punchData.punch_in_lng ?? punchData.punchInLng ?? null,
+      punchInLocation: punchData.punch_in_location || punchData.punchInLocation || null,
+      punchOutLat: punchData.punch_out_lat ?? punchData.punchOutLat ?? null,
+      punchOutLng: punchData.punch_out_lng ?? punchData.punchOutLng ?? null,
+      punchOutLocation: punchData.punch_out_location || punchData.punchOutLocation || null,
+      totalHours: punchData.total_hours ?? punchData.totalHours ?? 0.0,
       status: punchData.status || 'Present',
+      remarks: punchData.remarks || null,
       syncedAt: new Date().toISOString()
     };
 
@@ -593,6 +603,448 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
     return true;
   } catch (err) {
     console.warn('Firebase syncAttendancePunch error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Attendance Correction Request
+ */
+async function syncAttendanceCorrection(correction) {
+  if (!firebaseStatus.connected || !correction) return null;
+  try {
+    const compId = correction.company_id || correction.companyId;
+    const corrId = correction.id;
+    const payload = {
+      id: corrId,
+      companyId: compId,
+      company_id: compId,
+      employeeId: correction.employee_id || correction.employeeId,
+      employee_id: correction.employee_id || correction.employeeId,
+      date: correction.date,
+      currentPunchIn: correction.current_punch_in || null,
+      currentPunchOut: correction.current_punch_out || null,
+      currentStatus: correction.current_status || 'Absent',
+      requestedPunchIn: correction.requested_punch_in || null,
+      requestedPunchOut: correction.requested_punch_out || null,
+      requestedStatus: correction.requested_status || 'Present',
+      reason: correction.reason || '',
+      status: correction.status || 'pending',
+      correctionType: correction.correction_type || 'both',
+      reviewedBy: correction.reviewed_by || null,
+      reviewNotes: correction.review_notes || null,
+      syncedAt: new Date().toISOString()
+    };
+
+    if (firestoreDb) {
+      await firestoreDb.collection('attendance_corrections').doc(String(corrId)).set(payload, { merge: true });
+      if (compId) {
+        await firestoreDb.collection('companies').doc(String(compId)).collection('attendance_corrections').doc(String(corrId)).set(payload, { merge: true });
+      }
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`attendance_corrections/${compId}/${corrId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncAttendanceCorrection error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Employee Manager/HR Mapping
+ */
+async function syncEmployeeMapping(mapping) {
+  if (!firebaseStatus.connected || !mapping) return null;
+  try {
+    const compId = mapping.company_id || mapping.companyId;
+    const mgrId = mapping.manager_id || mapping.managerId;
+    const empId = mapping.employee_id || mapping.employeeId;
+    const key = `${compId}_${mgrId}_${empId}`;
+    const payload = {
+      id: mapping.id || key,
+      companyId: compId,
+      company_id: compId,
+      managerId: mgrId,
+      manager_id: mgrId,
+      employeeId: empId,
+      employee_id: empId,
+      mappingType: mapping.mapping_type || 'manager',
+      assignedBy: mapping.assigned_by || null,
+      syncedAt: new Date().toISOString()
+    };
+
+    if (firestoreDb) {
+      await firestoreDb.collection('employee_mappings').doc(key).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`employee_mappings/${compId}/${mgrId}_${empId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncEmployeeMapping error:', err.message);
+    return false;
+  }
+}
+
+async function deleteEmployeeMapping(mappingId, companyId, managerId, employeeId) {
+  if (!firebaseStatus.connected) return null;
+  try {
+    const key = `${companyId}_${managerId}_${employeeId}`;
+    if (firestoreDb) {
+      await firestoreDb.collection('employee_mappings').doc(key).delete().catch(() => {});
+      if (mappingId) await firestoreDb.collection('employee_mappings').doc(String(mappingId)).delete().catch(() => {});
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`employee_mappings/${companyId}/${managerId}_${employeeId}`).remove().catch(() => {});
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Leave Management (Type, Balance, Request)
+ */
+async function syncLeaveType(leaveType) {
+  if (!firebaseStatus.connected || !leaveType) return null;
+  try {
+    const compId = leaveType.company_id || leaveType.companyId;
+    const payload = {
+      id: leaveType.id,
+      companyId: compId,
+      company_id: compId,
+      name: leaveType.name,
+      defaultYearlyQuota: leaveType.default_yearly_quota || 12.0,
+      monthlyAccrualRate: leaveType.monthly_accrual_rate || 1.0,
+      isCarryForward: leaveType.is_carry_forward ? 1 : 0,
+      maxCarryForward: leaveType.max_carry_forward || 0.0,
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('leave_types').doc(`${compId}_${leaveType.id}`).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`leave_types/${compId}/${leaveType.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncLeaveType error:', err.message);
+    return false;
+  }
+}
+
+async function syncLeaveBalance(balance) {
+  if (!firebaseStatus.connected || !balance) return null;
+  try {
+    const empId = balance.employee_id || balance.employeeId;
+    const ltId = balance.leave_type_id || balance.leaveTypeId;
+    const yr = balance.year;
+    const key = `${empId}_${ltId}_${yr}`;
+    const payload = {
+      id: balance.id || key,
+      employeeId: empId,
+      employee_id: empId,
+      leaveTypeId: ltId,
+      leave_type_id: ltId,
+      year: yr,
+      openingBalance: balance.opening_balance || 0.0,
+      accrued: balance.accrued || 0.0,
+      used: balance.used || 0.0,
+      balance: balance.balance || 0.0,
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('leave_balances').doc(key).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`leave_balances/${empId}/${ltId}_${yr}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncLeaveBalance error:', err.message);
+    return false;
+  }
+}
+
+async function syncLeaveRequest(request) {
+  if (!firebaseStatus.connected || !request) return null;
+  try {
+    const compId = request.company_id || request.companyId;
+    const reqId = request.id;
+    const payload = {
+      id: reqId,
+      companyId: compId,
+      company_id: compId,
+      employeeId: request.employee_id || request.employeeId,
+      employee_id: request.employee_id || request.employeeId,
+      leaveTypeId: request.leave_type_id || request.leaveTypeId,
+      leave_type_id: request.leave_type_id || request.leaveTypeId,
+      startDate: request.start_date || request.startDate,
+      start_date: request.start_date || request.startDate,
+      endDate: request.end_date || request.endDate,
+      end_date: request.end_date || request.endDate,
+      totalDays: request.total_days || request.totalDays || 1,
+      total_days: request.total_days || request.totalDays || 1,
+      reason: request.reason || '',
+      status: request.status || 'pending',
+      approvedBy: request.approved_by || request.approvedBy || null,
+      rejectionReason: request.rejection_reason || request.rejectionReason || null,
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('leave_requests').doc(String(reqId)).set(payload, { merge: true });
+      if (compId) {
+        await firestoreDb.collection('companies').doc(String(compId)).collection('leave_requests').doc(String(reqId)).set(payload, { merge: true });
+      }
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`leave_requests/${compId}/${reqId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncLeaveRequest error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Company Calendar, Holidays, Weekly Offs, Shifts
+ */
+async function syncHoliday(holiday) {
+  if (!firebaseStatus.connected || !holiday) return null;
+  try {
+    const compId = holiday.company_id || holiday.companyId;
+    const payload = {
+      id: holiday.id,
+      companyId: compId,
+      company_id: compId,
+      name: holiday.name,
+      holidayDate: holiday.holiday_date || holiday.holidayDate,
+      holiday_date: holiday.holiday_date || holiday.holidayDate,
+      isOptional: holiday.is_optional ? 1 : 0,
+      appliesTo: holiday.applies_to || 'all',
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('holidays').doc(String(holiday.id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`holidays/${compId}/${holiday.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncHoliday error:', err.message);
+    return false;
+  }
+}
+
+async function syncWeeklyOff(weeklyOff) {
+  if (!firebaseStatus.connected || !weeklyOff) return null;
+  try {
+    const compId = weeklyOff.company_id || weeklyOff.companyId;
+    const payload = {
+      id: weeklyOff.id,
+      companyId: compId,
+      company_id: compId,
+      name: weeklyOff.name,
+      offDaysJson: weeklyOff.off_days_json || weeklyOff.offDaysJson || '["Sunday"]',
+      isDefault: weeklyOff.is_default ? 1 : 0,
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('weekly_off_settings').doc(String(weeklyOff.id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`weekly_off_settings/${compId}/${weeklyOff.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncWeeklyOff error:', err.message);
+    return false;
+  }
+}
+
+async function syncShift(shift) {
+  if (!firebaseStatus.connected || !shift) return null;
+  try {
+    const compId = shift.company_id || shift.companyId;
+    const payload = {
+      id: shift.id,
+      companyId: compId,
+      company_id: compId,
+      name: shift.name,
+      startTime: shift.start_time || shift.startTime,
+      endTime: shift.end_time || shift.endTime,
+      workingHours: shift.working_hours || shift.workingHours || 8.0,
+      graceTimeMins: shift.grace_time_mins || shift.graceTimeMins || 15,
+      breakTimeMins: shift.break_time_mins || shift.breakTimeMins || 60,
+      status: shift.status || 'active',
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('shifts').doc(String(shift.id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`shifts/${compId}/${shift.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncShift error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Geofencing Data
+ */
+async function syncGeofence(geofence) {
+  if (!firebaseStatus.connected || !geofence) return null;
+  try {
+    const compId = geofence.company_id || geofence.companyId;
+    const payload = {
+      id: geofence.id,
+      companyId: compId,
+      company_id: compId,
+      name: geofence.location_name || geofence.name,
+      locationName: geofence.location_name || geofence.name,
+      latitude: geofence.latitude,
+      longitude: geofence.longitude,
+      radius: geofence.radius || 100,
+      address: geofence.address || '',
+      status: geofence.status || 'active',
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('geofences').doc(String(geofence.id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`geofences/${compId}/${geofence.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncGeofence error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Company Settings & Modules
+ */
+async function syncCompanySettings(companyId, settings) {
+  if (!firebaseStatus.connected || !companyId || !settings) return null;
+  try {
+    const payload = {
+      companyId,
+      timezone: settings.timezone || 'Asia/Kolkata',
+      workingHoursPerDay: settings.working_hours_per_day || 8.0,
+      halfDayMinHours: settings.half_day_min_hours || 4.0,
+      fullDayMinHours: settings.full_day_min_hours || 8.0,
+      showBrandingMode: settings.show_branding_mode || 'both',
+      geofencePolicy: settings.geofence_policy || 'strict',
+      websiteTitle: settings.website_title || '',
+      contactInfo: settings.contact_info || '',
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('company_settings').doc(String(companyId)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`company_settings/${companyId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncCompanySettings error:', err.message);
+    return false;
+  }
+}
+
+async function syncCompanyModules(companyId, modules) {
+  if (!firebaseStatus.connected || !companyId) return null;
+  try {
+    const payload = {
+      companyId,
+      modules: modules || {},
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('company_modules').doc(String(companyId)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`company_modules/${companyId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncCompanyModules error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Helpdesk / Support Ticket
+ */
+async function syncSupportTicket(ticket) {
+  if (!firebaseStatus.connected || !ticket) return null;
+  try {
+    const compId = ticket.company_id || ticket.companyId;
+    const payload = {
+      id: ticket.id,
+      ticketNumber: ticket.ticket_number || ticket.ticketNumber || `TKT-${ticket.id}`,
+      companyId: compId,
+      company_id: compId,
+      userId: ticket.user_id || ticket.userId,
+      title: ticket.title,
+      description: ticket.description,
+      category: ticket.category || 'General',
+      priority: ticket.priority || 'medium',
+      status: ticket.status || 'open',
+      createdAt: ticket.created_at || new Date().toISOString(),
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('support_tickets').doc(String(ticket.id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`support_tickets/${ticket.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncSupportTicket error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Audit Logs
+ */
+async function syncAuditLog(log) {
+  if (!firebaseStatus.connected || !log) return null;
+  try {
+    const id = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const payload = {
+      id,
+      companyId: log.companyId || log.company_id || null,
+      userId: log.userId || log.user_id,
+      userName: log.userName || log.user_name || 'System',
+      role: log.role || 'system',
+      panel: log.panel || 'General',
+      action: log.action,
+      targetEntity: log.targetEntity || log.target_entity || '',
+      targetId: log.targetId || log.target_id || null,
+      reason: log.reason || '',
+      ipAddress: log.ipAddress || log.ip_address || '127.0.0.1',
+      createdAt: log.createdAt || new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('audit_logs').doc(id).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`audit_logs/${id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
     return false;
   }
 }
@@ -704,12 +1156,22 @@ async function syncAllDatabaseToFirebase() {
   }
 
   try {
-    // 1. Sync all active companies
+    // 1. Sync all active companies, their settings and modules
     const companies = db.prepare('SELECT * FROM companies WHERE is_deleted = 0').all();
     let companiesCount = 0;
     for (const c of companies) {
       const adminUser = db.prepare("SELECT username, email FROM users WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1").get(c.id);
       await syncCompany(c, adminUser);
+      
+      const settings = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(c.id);
+      if (settings) await syncCompanySettings(c.id, settings);
+
+      const modules = db.prepare('SELECT module_name, is_enabled FROM company_modules WHERE company_id = ?').all(c.id);
+      if (modules && modules.length > 0) {
+        const modMap = {};
+        modules.forEach(m => modMap[m.module_name] = !!m.is_enabled);
+        await syncCompanyModules(c.id, modMap);
+      }
       companiesCount++;
     }
 
@@ -721,7 +1183,36 @@ async function syncAllDatabaseToFirebase() {
       usersCount++;
     }
 
-    // 3. Sync all active employees
+    // 3. Sync all shifts, weekly offs, holidays, and geofences
+    let shiftsCount = 0;
+    const shifts = db.prepare('SELECT * FROM shifts').all();
+    for (const s of shifts) {
+      await syncShift(s);
+      shiftsCount++;
+    }
+
+    let weeklyOffsCount = 0;
+    const weeklyOffs = db.prepare('SELECT * FROM weekly_off_settings').all();
+    for (const w of weeklyOffs) {
+      await syncWeeklyOff(w);
+      weeklyOffsCount++;
+    }
+
+    let holidaysCount = 0;
+    const holidays = db.prepare('SELECT * FROM holidays').all();
+    for (const h of holidays) {
+      await syncHoliday(h);
+      holidaysCount++;
+    }
+
+    let geofencesCount = 0;
+    const geofences = db.prepare('SELECT * FROM geofences').all();
+    for (const g of geofences) {
+      await syncGeofence(g);
+      geofencesCount++;
+    }
+
+    // 4. Sync all active employees
     const employees = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.is_deleted = 0').all();
     let employeesCount = 0;
     for (const emp of employees) {
@@ -729,7 +1220,39 @@ async function syncAllDatabaseToFirebase() {
       employeesCount++;
     }
 
-    // 4. Sync recent attendance punches (past 30 days)
+    // 5. Sync employee mappings
+    let mappingsCount = 0;
+    const mappings = db.prepare('SELECT * FROM employee_mappings').all();
+    for (const m of mappings) {
+      await syncEmployeeMapping(m);
+      mappingsCount++;
+    }
+
+    // 6. Sync leave types, balances, and requests
+    let leavesCount = 0;
+    const leaveTypes = db.prepare('SELECT * FROM leave_types').all();
+    for (const lt of leaveTypes) {
+      await syncLeaveType(lt);
+    }
+    const leaveBalances = db.prepare('SELECT * FROM leave_balances').all();
+    for (const lb of leaveBalances) {
+      await syncLeaveBalance(lb.employee_id, lb.leave_type_id);
+    }
+    const leaveRequests = db.prepare('SELECT * FROM leave_requests').all();
+    for (const lr of leaveRequests) {
+      await syncLeaveRequest(lr);
+      leavesCount++;
+    }
+
+    // 7. Sync attendance corrections
+    let correctionsCount = 0;
+    const corrections = db.prepare('SELECT * FROM attendance_correction_requests').all();
+    for (const cr of corrections) {
+      await syncAttendanceCorrection(cr);
+      correctionsCount++;
+    }
+
+    // 8. Sync recent attendance punches (past 30 days)
     const recentAttendances = db.prepare("SELECT * FROM attendance_records WHERE date >= date('now', '-30 days')").all();
     let attendancesCount = 0;
     for (const att of recentAttendances) {
@@ -737,12 +1260,28 @@ async function syncAllDatabaseToFirebase() {
         date: att.date,
         punch_in_time: att.punch_in_time,
         punch_out_time: att.punch_out_time,
-        status: att.status
+        punch_in_lat: att.punch_in_lat,
+        punch_in_lng: att.punch_in_lng,
+        punch_in_location: att.punch_in_location,
+        punch_out_lat: att.punch_out_lat,
+        punch_out_lng: att.punch_out_lng,
+        punch_out_location: att.punch_out_location,
+        total_hours: att.total_hours,
+        status: att.status,
+        remarks: att.remarks
       });
       attendancesCount++;
     }
 
-    // 5. Sync company attendance summary reports
+    // 9. Sync support / service tickets
+    let ticketsCount = 0;
+    const tickets = db.prepare('SELECT * FROM support_tickets').all();
+    for (const t of tickets) {
+      await syncSupportTicket(t);
+      ticketsCount++;
+    }
+
+    // 10. Sync company attendance summary reports
     let reportsCount = 0;
     for (const c of companies) {
       await syncCompanyReports(c.id);
@@ -756,7 +1295,15 @@ async function syncAllDatabaseToFirebase() {
       employeesCount,
       attendancesCount,
       reportsCount,
-      message: `Successfully synchronized ${companiesCount} companies, ${employeesCount} employees, ${usersCount} user accounts, ${attendancesCount} attendance records, and ${reportsCount} reports to Firebase!`
+      shiftsCount,
+      weeklyOffsCount,
+      holidaysCount,
+      geofencesCount,
+      mappingsCount,
+      leavesCount,
+      correctionsCount,
+      ticketsCount,
+      message: `Successfully synchronized ${companiesCount} companies, ${employeesCount} employees, ${usersCount} user accounts, ${attendancesCount} attendance records, ${leavesCount} leave requests, ${correctionsCount} corrections, ${shiftsCount} shifts, ${geofencesCount} geofences, and ${reportsCount} reports to Firebase!`
     };
   } catch (err) {
     console.error('syncAllDatabaseToFirebase error:', err);
@@ -966,6 +1513,20 @@ async function wipeAllCompanyDataFromDb({ syncToFirebase = true } = {}) {
           locSnap.forEach(d => batch.delete(d.ref));
           await batch.commit();
         } catch (e) {}
+
+        const extraCollections = [
+          'attendance_corrections', 'employee_mappings', 'leave_types', 'leave_balances',
+          'leave_requests', 'holidays', 'weekly_off_settings', 'shifts', 'geofences',
+          'company_settings', 'company_modules', 'support_tickets'
+        ];
+        for (const colName of extraCollections) {
+          try {
+            const snap = await firestoreDb.collection(colName).limit(500).get();
+            const batch = firestoreDb.batch();
+            snap.forEach(d => batch.delete(d.ref));
+            await batch.commit();
+          } catch (e) {}
+        }
       }
 
       if (realtimeDb) {
@@ -976,6 +1537,18 @@ async function wipeAllCompanyDataFromDb({ syncToFirebase = true } = {}) {
           await realtimeDb.ref('company_attendance').remove();
           await realtimeDb.ref('attendance_punches').remove();
           await realtimeDb.ref('live_locations').remove();
+          await realtimeDb.ref('shifts').remove();
+          await realtimeDb.ref('weekly_off_settings').remove();
+          await realtimeDb.ref('holidays').remove();
+          await realtimeDb.ref('geofences').remove();
+          await realtimeDb.ref('employee_mappings').remove();
+          await realtimeDb.ref('leave_types').remove();
+          await realtimeDb.ref('leave_balances').remove();
+          await realtimeDb.ref('leave_requests').remove();
+          await realtimeDb.ref('attendance_corrections').remove();
+          await realtimeDb.ref('support_tickets').remove();
+          await realtimeDb.ref('company_settings').remove();
+          await realtimeDb.ref('company_modules').remove();
         } catch (e) {
           console.warn('Realtime DB wipe notice:', e.message);
         }
@@ -1075,38 +1648,44 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     let usersMap = new Map();
     let employeesMap = new Map();
     let attendanceMap = new Map();
+    let shiftsMap = new Map();
+    let weeklyOffsMap = new Map();
+    let holidaysMap = new Map();
+    let geofencesMap = new Map();
+    let mappingsMap = new Map();
+    let leaveTypesMap = new Map();
+    let leaveBalancesMap = new Map();
+    let leaveRequestsMap = new Map();
+    let correctionsMap = new Map();
+    let ticketsMap = new Map();
 
     // 1. Fetch from Firestore if available
     if (firestoreDb) {
-      try {
-        const snap = await firestoreDb.collection('companies').get();
-        snap.forEach(doc => {
-          const d = doc.data();
-          companiesMap.set(String(d.id || doc.id), { id: Number(d.id || doc.id), ...d });
-        });
-      } catch (e) {
-        console.warn('Firestore fetch companies notice:', e.message);
-      }
+      const fetchFsCollection = async (collName, targetMap) => {
+        try {
+          const snap = await firestoreDb.collection(collName).limit(1000).get();
+          snap.forEach(doc => {
+            const d = doc.data();
+            targetMap.set(String(d.id || doc.id), { id: d.id || doc.id, ...d });
+          });
+        } catch (e) {
+          console.warn(`Firestore fetch ${collName} notice:`, e.message);
+        }
+      };
 
-      try {
-        const snap = await firestoreDb.collection('users').get();
-        snap.forEach(doc => {
-          const d = doc.data();
-          usersMap.set(String(d.id || doc.id), { id: Number(d.id || doc.id), ...d });
-        });
-      } catch (e) {
-        console.warn('Firestore fetch users notice:', e.message);
-      }
-
-      try {
-        const snap = await firestoreDb.collection('employees').get();
-        snap.forEach(doc => {
-          const d = doc.data();
-          employeesMap.set(String(d.id || doc.id), { id: Number(d.id || doc.id), ...d });
-        });
-      } catch (e) {
-        console.warn('Firestore fetch employees notice:', e.message);
-      }
+      await fetchFsCollection('companies', companiesMap);
+      await fetchFsCollection('users', usersMap);
+      await fetchFsCollection('employees', employeesMap);
+      await fetchFsCollection('shifts', shiftsMap);
+      await fetchFsCollection('weekly_off_settings', weeklyOffsMap);
+      await fetchFsCollection('holidays', holidaysMap);
+      await fetchFsCollection('geofences', geofencesMap);
+      await fetchFsCollection('employee_mappings', mappingsMap);
+      await fetchFsCollection('leave_types', leaveTypesMap);
+      await fetchFsCollection('leave_balances', leaveBalancesMap);
+      await fetchFsCollection('leave_requests', leaveRequestsMap);
+      await fetchFsCollection('attendance_corrections', correctionsMap);
+      await fetchFsCollection('support_tickets', ticketsMap);
 
       try {
         const snap = await firestoreDb.collection('attendance_punches').limit(1000).get();
@@ -1122,50 +1701,44 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
     // 2. Also check Realtime Database for any additional data
     if (realtimeDb) {
-      try {
-        const compSnap = await realtimeDb.ref('companies').once('value');
-        const compVal = compSnap.val();
-        if (compVal) {
-          Object.entries(compVal).forEach(([k, v]) => {
-            if (v && typeof v === 'object') {
-              const id = String(v.id || k);
-              if (!companiesMap.has(id)) {
-                companiesMap.set(id, { id: Number(id), ...v });
+      const fetchRtDbCollection = async (refPath, targetMap) => {
+        try {
+          const snap = await realtimeDb.ref(refPath).once('value');
+          const val = snap.val();
+          if (val && typeof val === 'object') {
+            Object.entries(val).forEach(([k, v]) => {
+              if (v && typeof v === 'object') {
+                if (v.id) {
+                  const id = String(v.id);
+                  if (!targetMap.has(id)) targetMap.set(id, { id: v.id, ...v });
+                } else {
+                  // Might be companyId -> itemId map
+                  Object.entries(v).forEach(([subK, subV]) => {
+                    if (subV && typeof subV === 'object') {
+                      const id = String(subV.id || subK);
+                      if (!targetMap.has(id)) targetMap.set(id, { id: subV.id || subK, ...subV });
+                    }
+                  });
+                }
               }
-            }
-          });
-        }
-      } catch (e) {}
+            });
+          }
+        } catch (e) {}
+      };
 
-      try {
-        const userSnap = await realtimeDb.ref('users').once('value');
-        const userVal = userSnap.val();
-        if (userVal) {
-          Object.entries(userVal).forEach(([k, v]) => {
-            if (v && typeof v === 'object') {
-              const id = String(v.id || k);
-              if (!usersMap.has(id)) {
-                usersMap.set(id, { id: Number(id), ...v });
-              }
-            }
-          });
-        }
-      } catch (e) {}
-
-      try {
-        const empSnap = await realtimeDb.ref('employees').once('value');
-        const empVal = empSnap.val();
-        if (empVal) {
-          Object.entries(empVal).forEach(([k, v]) => {
-            if (v && typeof v === 'object') {
-              const id = String(v.id || k);
-              if (!employeesMap.has(id)) {
-                employeesMap.set(id, { id: Number(id), ...v });
-              }
-            }
-          });
-        }
-      } catch (e) {}
+      await fetchRtDbCollection('companies', companiesMap);
+      await fetchRtDbCollection('users', usersMap);
+      await fetchRtDbCollection('employees', employeesMap);
+      await fetchRtDbCollection('shifts', shiftsMap);
+      await fetchRtDbCollection('weekly_off_settings', weeklyOffsMap);
+      await fetchRtDbCollection('holidays', holidaysMap);
+      await fetchRtDbCollection('geofences', geofencesMap);
+      await fetchRtDbCollection('employee_mappings', mappingsMap);
+      await fetchRtDbCollection('leave_types', leaveTypesMap);
+      await fetchRtDbCollection('leave_balances', leaveBalancesMap);
+      await fetchRtDbCollection('leave_requests', leaveRequestsMap);
+      await fetchRtDbCollection('attendance_corrections', correctionsMap);
+      await fetchRtDbCollection('support_tickets', ticketsMap);
     }
 
     // 3. Upsert into SQLite in transaction
@@ -1625,7 +2198,194 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         restoredEmployees++;
       }
 
-      // D. Restore Attendance Records
+      // D. Restore Shifts, Weekly Offs, Holidays, Geofences
+      for (const [_, s] of shiftsMap) {
+        let compId = s.companyId || s.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        if (compId && s.name) {
+          db.prepare(`
+            INSERT INTO shifts (company_id, name, start_time, end_time, working_hours, grace_time_mins, break_time_mins, is_rotational, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(company_id, name) DO UPDATE SET
+              start_time = excluded.start_time,
+              end_time = excluded.end_time,
+              working_hours = excluded.working_hours,
+              grace_time_mins = excluded.grace_time_mins,
+              break_time_mins = excluded.break_time_mins,
+              status = excluded.status
+          `).run(compId, s.name, s.startTime || s.start_time || '09:00', s.endTime || s.end_time || '18:00', s.workingHours || s.working_hours || 8.0, s.graceTimeMins || s.grace_time_mins || 15, s.breakTimeMins || s.break_time_mins || 60, s.isRotational ? 1 : 0, s.status || 'active');
+        }
+      }
+
+      for (const [_, w] of weeklyOffsMap) {
+        let compId = w.companyId || w.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        if (compId && w.name) {
+          db.prepare(`
+            INSERT INTO weekly_off_settings (company_id, name, off_days_json, is_default)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(company_id, name) DO UPDATE SET
+              off_days_json = excluded.off_days_json,
+              is_default = excluded.is_default
+          `).run(compId, w.name, w.offDaysJson || w.off_days_json || '["Sunday"]', w.isDefault ? 1 : 0);
+        }
+      }
+
+      for (const [_, h] of holidaysMap) {
+        let compId = h.companyId || h.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        const hDate = h.holidayDate || h.holiday_date;
+        if (compId && h.name && hDate) {
+          db.prepare(`
+            INSERT INTO holidays (company_id, name, holiday_date, is_optional, applies_to)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(company_id, holiday_date) DO UPDATE SET
+              name = excluded.name,
+              is_optional = excluded.is_optional,
+              applies_to = excluded.applies_to
+          `).run(compId, h.name, hDate, h.isOptional ? 1 : 0, h.appliesTo || h.applies_to || 'all');
+        }
+      }
+
+      for (const [_, g] of geofencesMap) {
+        let compId = g.companyId || g.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        const locName = g.locationName || g.location_name || g.name;
+        if (compId && locName && g.latitude !== undefined && g.longitude !== undefined) {
+          db.prepare(`
+            INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, address, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(company_id, location_name) DO UPDATE SET
+              latitude = excluded.latitude,
+              longitude = excluded.longitude,
+              radius = excluded.radius,
+              address = excluded.address,
+              status = excluded.status
+          `).run(compId, locName, parseFloat(g.latitude), parseFloat(g.longitude), parseFloat(g.radius || 100), g.address || '', g.status || 'active');
+        }
+      }
+
+      // E. Restore Employee Mappings
+      for (const [_, m] of mappingsMap) {
+        let compId = m.companyId || m.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        let mgrId = m.managerId || m.manager_id || m.supervisorId || m.supervisor_id;
+        if (mgrId) mgrId = employeeIdMap.get(String(mgrId)) || Number(mgrId);
+        let empId = m.employeeId || m.employee_id;
+        if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
+
+        if (compId && mgrId && empId && mgrId !== empId) {
+          const mgrExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(mgrId);
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+          if (mgrExists && empExists) {
+            db.prepare(`
+              INSERT INTO employee_mappings (company_id, manager_id, employee_id, mapping_type, assigned_by)
+              VALUES (?, ?, ?, ?, NULL)
+              ON CONFLICT(company_id, manager_id, employee_id) DO NOTHING
+            `).run(compId, mgrId, empId, m.mappingType || m.mapping_type || 'manager');
+            db.prepare('UPDATE employees SET manager_id = ? WHERE id = ?').run(mgrId, empId);
+          }
+        }
+      }
+
+      // F. Restore Leave Types, Balances, and Requests
+      for (const [_, lt] of leaveTypesMap) {
+        let compId = lt.companyId || lt.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        if (compId && lt.name) {
+          db.prepare(`
+            INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(company_id, name) DO UPDATE SET
+              default_yearly_quota = excluded.default_yearly_quota,
+              monthly_accrual_rate = excluded.monthly_accrual_rate
+          `).run(compId, lt.name, lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0, lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
+        }
+      }
+
+      for (const [_, lb] of leaveBalancesMap) {
+        let compId = lb.companyId || lb.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        let empId = lb.employeeId || lb.employee_id;
+        if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
+        let ltId = lb.leaveTypeId || lb.leave_type_id;
+
+        if (compId && empId && ltId) {
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+          const ltExists = db.prepare('SELECT id FROM leave_types WHERE id = ?').get(ltId);
+          if (empExists && ltExists) {
+            db.prepare(`
+              INSERT INTO leave_balances (company_id, employee_id, leave_type_id, allocated, used, balance)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(employee_id, leave_type_id) DO UPDATE SET
+                allocated = excluded.allocated,
+                used = excluded.used,
+                balance = excluded.balance
+            `).run(compId, empId, ltId, lb.allocated || 0, lb.used || 0, lb.balance || 0);
+          }
+        }
+      }
+
+      for (const [_, lr] of leaveRequestsMap) {
+        let compId = lr.companyId || lr.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        let empId = lr.employeeId || lr.employee_id;
+        if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
+        let ltId = lr.leaveTypeId || lr.leave_type_id;
+
+        if (compId && empId && (lr.startDate || lr.start_date)) {
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+          if (empExists) {
+            let finalLtId = ltId;
+            const ltExists = finalLtId ? db.prepare('SELECT id FROM leave_types WHERE id = ?').get(finalLtId) : null;
+            if (!ltExists) {
+              const defLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? LIMIT 1').get(compId);
+              if (defLt) finalLtId = defLt.id;
+            }
+            if (finalLtId) {
+              const sDate = lr.startDate || lr.start_date;
+              const eDate = lr.endDate || lr.end_date || sDate;
+              let lrStatus = lr.status || 'pending';
+              if (!['pending', 'approved', 'rejected', 'cancelled'].includes(lrStatus)) lrStatus = 'pending';
+              db.prepare(`
+                INSERT INTO leave_requests (company_id, employee_id, leave_type_id, start_date, end_date, total_days, reason, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(compId, empId, finalLtId, sDate, eDate, lr.totalDays || lr.total_days || 1.0, lr.reason || 'Leave application', lrStatus);
+            }
+          }
+        }
+      }
+
+      // G. Restore Attendance Corrections
+      for (const [_, cr] of correctionsMap) {
+        let compId = cr.companyId || cr.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        if (!compId) compId = firstValidCompanyId;
+        let empId = cr.employeeId || cr.employee_id;
+        if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
+
+        if (compId && empId && cr.date) {
+          const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+          if (empExists) {
+            let crStatus = cr.status || 'pending';
+            if (!['pending', 'approved', 'rejected', 'cancelled'].includes(crStatus)) crStatus = 'pending';
+            db.prepare(`
+              INSERT INTO attendance_correction_requests (company_id, employee_id, date, correction_type, requested_punch_in, requested_punch_out, requested_status, reason, status, reviewer_notes)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(compId, empId, cr.date, cr.correctionType || cr.correction_type || 'both', cr.requestedPunchIn || cr.requested_punch_in || null, cr.requestedPunchOut || cr.requested_punch_out || null, cr.requestedStatus || cr.requested_status || 'Present', cr.reason || 'Attendance punch correction', crStatus, cr.reviewerNotes || cr.reviewer_notes || null);
+          }
+        }
+      }
+
+      // H. Restore Attendance Records
       for (const [_, att] of attendanceMap) {
         let rawCompId = att.companyId || att.company_id;
         let rawEmpId = att.employeeId || att.employee_id;
@@ -1660,9 +2420,38 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
       }
+
+      // I. Restore Support Tickets
+      for (const [_, st] of ticketsMap) {
+        let compId = st.companyId || st.company_id;
+        if (compId) compId = companyIdMap.get(String(compId)) || Number(compId);
+        let uId = st.userId || st.user_id;
+        if (uId) uId = userIdMap.get(String(uId)) || Number(uId);
+
+        if (st.title) {
+          const tktNum = st.ticketNumber || st.ticket_number || `TKT-${Math.floor(100000 + Math.random() * 900000)}`;
+          let tktStatus = st.status || 'open';
+          if (!['open', 'in_progress', 'resolved', 'closed'].includes(tktStatus)) tktStatus = 'open';
+          db.prepare(`
+            INSERT INTO support_tickets (ticket_number, company_id, user_id, title, description, category, priority, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ticket_number) DO UPDATE SET
+              status = excluded.status,
+              priority = excluded.priority
+          `).run(tktNum, compId, uId || null, st.title, st.description || '', st.category || 'General', st.priority || 'medium', tktStatus);
+        }
+      }
     });
 
     restoreTransaction();
+
+    // Run database sanitation to guarantee clean relational integrity (safeguards Super Admin and Support)
+    try {
+      const { sanitizeDatabase } = require('./sanitize');
+      sanitizeDatabase();
+    } catch (e) {
+      console.warn('Post-restore database sanitation notice:', e.message);
+    }
 
     return {
       success: true,
@@ -1687,6 +2476,20 @@ module.exports = {
   syncGpsLocation,
   syncTicketMessage,
   syncAttendancePunch,
+  syncAttendanceCorrection,
+  syncEmployeeMapping,
+  deleteEmployeeMapping,
+  syncLeaveType,
+  syncLeaveBalance,
+  syncLeaveRequest,
+  syncHoliday,
+  syncWeeklyOff,
+  syncShift,
+  syncGeofence,
+  syncCompanySettings,
+  syncCompanyModules,
+  syncSupportTicket,
+  syncAuditLog,
   syncCompany,
   syncEmployee,
   syncUser,

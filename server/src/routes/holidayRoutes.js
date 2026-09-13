@@ -4,6 +4,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { syncHoliday, deleteFromFirebase } = require('../services/firebase');
 
 // List Holidays
 router.get('/', verifyAuth, (req, res) => {
@@ -74,6 +75,11 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req
 
   const holidayId = transaction();
 
+  try {
+    const hRow = db.prepare('SELECT * FROM holidays WHERE id = ?').get(holidayId);
+    if (hRow) syncHoliday(hRow);
+  } catch (e) {}
+
   // Send notification to employees
   try {
     const allUsers = db.prepare('SELECT user_id FROM employees WHERE company_id = ? AND is_deleted = 0').all(companyId);
@@ -133,6 +139,11 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (r
     reason: `Updated holiday "${name || existing.name}"`
   });
 
+  try {
+    const hRow = db.prepare('SELECT * FROM holidays WHERE id = ?').get(holidayId);
+    if (hRow) syncHoliday(hRow);
+  } catch (e) {}
+
   res.json({ success: true, message: `Holiday "${name || existing.name}" updated successfully.` });
 });
 
@@ -142,6 +153,11 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
   const companyId = getTenantCompanyId(req);
 
   db.prepare('DELETE FROM holidays WHERE id = ? AND company_id = ?').run(holidayId, companyId);
+
+  try {
+    deleteFromFirebase('holidays', holidayId);
+  } catch (e) {}
+
   res.json({ success: true, message: 'Holiday removed successfully.' });
 });
 

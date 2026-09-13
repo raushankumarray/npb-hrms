@@ -8,7 +8,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { syncCompany, syncUser, deleteFromFirebase } = require('../services/firebase');
+const { syncCompany, syncUser, deleteFromFirebase, syncCompanySettings, syncCompanyModules } = require('../services/firebase');
 
 // Configure disk storage for company logo uploads
 const logoStorage = multer.diskStorage({
@@ -411,6 +411,10 @@ router.put('/:id', verifyAuth, (req, res) => {
     const adminUserRecord = db.prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.company_id = ? AND r.name = 'company_admin' LIMIT 1").get(companyId);
     if (adminUserRecord) {
       syncUser(adminUserRecord).catch(() => {});
+    }
+    const settingsRecord = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(companyId);
+    if (settingsRecord) {
+      syncCompanySettings(companyId, settingsRecord).catch(() => {});
     }
   } catch (e) {}
 
@@ -844,6 +848,11 @@ router.put('/:id/modules', verifyAuth, requireRole(['super_admin']), (req, res) 
   });
 
   transaction();
+
+  try {
+    syncCompanyModules(companyId, modules).catch(() => {});
+  } catch (e) {}
+
   res.json({ success: true, message: 'Company modules updated successfully.' });
 });
 

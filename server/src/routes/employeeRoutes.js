@@ -13,7 +13,7 @@ const {
   commitEmployeeDiffUpdate
 } = require('../services/excelService');
 const { logAudit } = require('../services/audit');
-const { syncEmployee, syncUser, deleteFromFirebase } = require('../services/firebase');
+const { syncEmployee, syncUser, deleteFromFirebase, syncEmployeeMapping, deleteEmployeeMapping } = require('../services/firebase');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -1001,6 +1001,19 @@ router.post('/mapping', verifyAuth, requireRole(['company_admin', 'manager', 'su
   });
 
   transaction();
+
+  // Real-time Firebase Sync for mappings and updated employees
+  try {
+    for (const eId of employee_ids) {
+      const mRow = db.prepare('SELECT * FROM employee_mappings WHERE company_id = ? AND employee_id = ? AND mapping_type = ?').get(companyId, eId, role_type);
+      if (mRow) syncEmployeeMapping(mRow);
+      const eRow = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(eId);
+      if (eRow) syncEmployee(eRow);
+    }
+  } catch (e) {
+    console.warn('Firebase syncEmployeeMapping notice:', e.message);
+  }
+
   res.json({ success: true, message: `${employee_ids.length} employees mapped successfully.` });
 });
 
@@ -1031,6 +1044,16 @@ router.delete('/mapping/:id', verifyAuth, requireRole(['company_admin', 'super_a
   });
 
   transaction();
+
+  // Real-time Firebase Sync deletion
+  try {
+    deleteEmployeeMapping(mapping.company_id, mappingId);
+    const eRow = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(mapping.employee_id);
+    if (eRow) syncEmployee(eRow);
+  } catch (e) {
+    console.warn('Firebase deleteEmployeeMapping notice:', e.message);
+  }
+
   res.json({ success: true, message: 'Employee mapping removed successfully.' });
 });
 

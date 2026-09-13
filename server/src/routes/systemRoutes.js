@@ -341,4 +341,29 @@ router.post('/wipe-company-data', verifyAuth, requireRole(['super_admin']), asyn
   }
 });
 
+// 11. POST /api/system/sanitize-db - Sanitize database and purge all orphaned records (Super Admin only)
+router.post('/sanitize-db', verifyAuth, requireRole(['super_admin']), (req, res) => {
+  try {
+    const { sanitizeDatabase } = require('../services/sanitize');
+    const result = sanitizeDatabase();
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: 'super_admin',
+      panel: 'Super Admin Data Management',
+      action: 'DATABASE_SANITIZED',
+      targetEntity: 'system',
+      reason: 'Super Admin executed complete database sanitation to clean unassigned/orphaned records',
+      newValues: result.stats
+    });
+    res.json({
+      success: true,
+      message: 'Database sanitized successfully. All unassigned/orphaned records have been removed.',
+      stats: result.stats
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

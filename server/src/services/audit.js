@@ -36,6 +36,25 @@ function logAudit({
       reason,
       ipAddress
     );
+
+    // Sync to Firebase for real-time support monitoring
+    try {
+      const { syncAuditLog } = require('./firebase');
+      if (syncAuditLog) {
+        syncAuditLog({
+          companyId,
+          userId,
+          userName: userName || 'Unknown User',
+          role: role || 'system',
+          panel: panel || 'General',
+          action,
+          targetEntity,
+          targetId: targetId ? String(targetId) : null,
+          reason,
+          ipAddress
+        });
+      }
+    } catch (e) {}
   } catch (err) {
     console.error('Failed to write audit log:', err.message);
   }
