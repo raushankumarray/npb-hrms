@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, User, KeyRound, AlertCircle, CheckCircle2, ArrowRight, Laptop, ShieldAlert, Copy } from 'lucide-react';
+import { Lock, User, KeyRound, AlertCircle, CheckCircle2, ArrowRight, Laptop, ShieldAlert, Copy, Search, Ticket, Phone, Mail, Building2, X } from 'lucide-react';
 import { apiRequest, setToken } from '../api';
 
 function getDeviceHardwareIdentity() {
@@ -66,6 +66,66 @@ export default function LoginView({ onLoginSuccess }) {
   const [forgotDesc, setForgotDesc] = useState('');
   const [forgotMessage, setForgotMessage] = useState('');
   const [forgotLoading, setForgotLoading] = useState(false);
+
+  // Device Deregistration Ticket Modal States
+  const [showDeviceTicketModal, setShowDeviceTicketModal] = useState(false);
+  const [deviceSearchQuery, setDeviceSearchQuery] = useState('');
+  const [searchingDeviceAccount, setSearchingDeviceAccount] = useState(false);
+  const [deviceAccountResult, setDeviceAccountResult] = useState(null);
+  const [deviceSearchError, setDeviceSearchError] = useState('');
+  const [deviceReason, setDeviceReason] = useState('');
+  const [raisingDeviceTicket, setRaisingDeviceTicket] = useState(false);
+  const [deviceTicketSuccess, setDeviceTicketSuccess] = useState(null);
+
+  const handleSearchDeviceAccount = async (e) => {
+    if (e) e.preventDefault();
+    if (!deviceSearchQuery.trim()) {
+      setDeviceSearchError('Please enter a username, email, or phone number to search.');
+      return;
+    }
+    setSearchingDeviceAccount(true);
+    setDeviceSearchError('');
+    setDeviceAccountResult(null);
+    try {
+      const res = await apiRequest('/auth/search-account', {
+        method: 'POST',
+        body: { query: deviceSearchQuery.trim() }
+      });
+      if (res.found && res.account) {
+        setDeviceAccountResult(res.account);
+      } else {
+        setDeviceSearchError(res.message || 'No active account found matching this username, email, or phone number.');
+      }
+    } catch (err) {
+      setDeviceSearchError(err.message || 'Failed to search account.');
+    } finally {
+      setSearchingDeviceAccount(false);
+    }
+  };
+
+  const handleRaiseDeviceTicket = async (e) => {
+    if (e) e.preventDefault();
+    if (!deviceAccountResult) return;
+    setRaisingDeviceTicket(true);
+    setDeviceSearchError('');
+    try {
+      const { macAddress } = getDeviceHardwareIdentity();
+      const res = await apiRequest('/auth/raise-device-ticket', {
+        method: 'POST',
+        body: {
+          userId: deviceAccountResult.id,
+          currentMac: macAddress,
+          deviceName: navigator.userAgent.includes('Mobile') ? 'Registered Smartphone' : `Workstation (${macAddress})`,
+          reason: deviceReason
+        }
+      });
+      setDeviceTicketSuccess(res);
+    } catch (err) {
+      setDeviceSearchError(err.message || 'Failed to generate device ticket.');
+    } finally {
+      setRaisingDeviceTicket(false);
+    }
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -193,19 +253,47 @@ export default function LoginView({ onLoginSuccess }) {
               </button>
             </div>
 
-            {/* Support Instructions */}
-            <div className="p-2.5 bg-rose-900/40 rounded-lg border border-rose-800/50 text-[11px] text-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <span>To switch devices, contact Support to deregister your device via this MAC address.</span>
+            {/* Support Instructions & Create Deregistration Ticket Button */}
+            <div className="p-3 bg-rose-900/50 rounded-xl border border-rose-800/60 text-xs text-rose-200 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span>Account is locked to another phone or workstation.</span>
+                <span className="text-[10px] uppercase font-bold text-rose-300 bg-rose-950/80 px-2 py-0.5 rounded border border-rose-800">1 Device Rule</span>
+              </div>
               <button
                 type="button"
                 onClick={() => {
-                  setShowForgotModal(true);
-                  setForgotUsername(username.trim());
-                  setForgotDesc(`Device Deregistration Request: Please deregister my old locked device so I can register my new device. My current device MAC address is: ${deviceLockError.currentMac}`);
+                  setShowDeviceTicketModal(true);
+                  const initialQuery = username.trim();
+                  setDeviceSearchQuery(initialQuery);
+                  setDeviceSearchError('');
+                  setDeviceTicketSuccess(null);
+                  setDeviceAccountResult(null);
+                  setDeviceReason('Switching to a new device/phone. Requesting to deregister previous device.');
+                  if (initialQuery) {
+                    (async () => {
+                      setSearchingDeviceAccount(true);
+                      try {
+                        const res = await apiRequest('/auth/search-account', {
+                          method: 'POST',
+                          body: { query: initialQuery }
+                        });
+                        if (res.found && res.account) {
+                          setDeviceAccountResult(res.account);
+                        } else {
+                          setDeviceSearchError(res.message || 'No account found matching this username/email/phone.');
+                        }
+                      } catch (e) {
+                        setDeviceSearchError(e.message || 'Failed to search account.');
+                      } finally {
+                        setSearchingDeviceAccount(false);
+                      }
+                    })();
+                  }
                 }}
-                className="underline hover:text-white font-bold text-sky-300 text-left whitespace-nowrap shrink-0"
+                className="w-full py-2.5 px-4 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-rose-950/50 flex items-center justify-center gap-2 transition-all transform active:scale-[0.99]"
               >
-                Submit Helpdesk Request →
+                <Ticket className="w-4 h-4" />
+                <span>Create Ticket to Deregister Device →</span>
               </button>
             </div>
           </div>
@@ -271,6 +359,34 @@ export default function LoginView({ onLoginSuccess }) {
               </>
             )}
           </button>
+
+          <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setShowForgotModal(true);
+                setForgotUsername(username.trim());
+              }}
+              className="hover:text-sky-400 transition-colors"
+            >
+              Forgot Password?
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowDeviceTicketModal(true);
+                setDeviceSearchQuery(username.trim());
+                setDeviceSearchError('');
+                setDeviceTicketSuccess(null);
+                setDeviceAccountResult(null);
+                setDeviceReason('Switching to a new device/phone. Requesting to deregister previous device.');
+              }}
+              className="text-rose-400 hover:text-rose-300 transition-colors font-medium flex items-center gap-1"
+            >
+              <Ticket className="w-3.5 h-3.5" />
+              <span>Deregister Device Ticket</span>
+            </button>
+          </div>
         </form>
 
         <div className="text-center text-xs text-slate-500">
@@ -347,6 +463,216 @@ export default function LoginView({ onLoginSuccess }) {
                 >
                   Close
                 </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Device Deregistration Ticket Modal */}
+      {showDeviceTicketModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 text-white my-8">
+            <div className="flex items-center justify-between border-b border-slate-700/80 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400">
+                  <Ticket className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Device Deregistration Request</h3>
+                  <p className="text-xs text-slate-400">Submit ticket to unlink previous registered device</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeviceTicketModal(false);
+                  setDeviceTicketSuccess(null);
+                  setDeviceAccountResult(null);
+                }}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {deviceTicketSuccess ? (
+              <div className="space-y-4 py-2">
+                <div className="p-4 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 space-y-2">
+                  <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>Deregistration Ticket Raised Successfully!</span>
+                  </div>
+                  <p className="text-xs text-emerald-200/90 leading-relaxed">
+                    Ticket Number: <strong className="font-mono text-emerald-300 text-sm">{deviceTicketSuccess.ticketNumber || deviceTicketSuccess.ticket_number}</strong>
+                  </p>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {deviceTicketSuccess.message || 'Your device deregistration request has been queued. Once approved by Support or Admin, previous device binding will be removed.'}
+                  </p>
+                </div>
+
+                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-700/60 text-xs space-y-1.5 text-slate-300">
+                  <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">What happens next?</div>
+                  <p className="text-slate-400">
+                    1. Support or Company Admin will review and approve the deregistration.
+                  </p>
+                  <p className="text-slate-400">
+                    2. This ticket will appear under your <strong>Employee Tickets</strong> console.
+                  </p>
+                  <p className="text-slate-400">
+                    3. After deregistration, login again from this device to automatically register it as your new authorized device.
+                  </p>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDeviceTicketModal(false);
+                      setDeviceTicketSuccess(null);
+                      setDeviceAccountResult(null);
+                    }}
+                    className="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold shadow transition-colors"
+                  >
+                    Done / Return to Login
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Search Account Form */}
+                <form onSubmit={handleSearchDeviceAccount} className="space-y-3">
+                  <label className="block text-xs font-medium text-slate-300">
+                    Search Account (Username, Email, or Phone Number)
+                  </label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                      <input
+                        type="text"
+                        value={deviceSearchQuery}
+                        onChange={(e) => setDeviceSearchQuery(e.target.value)}
+                        placeholder="Enter username, email, or mobile..."
+                        className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
+                        required
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={searchingDeviceAccount || !deviceSearchQuery.trim()}
+                      className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0"
+                    >
+                      {searchingDeviceAccount ? (
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Search className="w-3.5 h-3.5" />
+                      )}
+                      <span>Search</span>
+                    </button>
+                  </div>
+                </form>
+
+                {deviceSearchError && (
+                  <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <span>{deviceSearchError}</span>
+                  </div>
+                )}
+
+                {/* Account Details Found */}
+                {deviceAccountResult && (
+                  <div className="bg-slate-900/90 rounded-xl p-4 border border-slate-700 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                      <div>
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <User className="w-4 h-4 text-sky-400" />
+                          <span>{deviceAccountResult.fullName || deviceAccountResult.full_name || deviceAccountResult.username}</span>
+                        </h4>
+                        <span className="text-[11px] text-slate-400 font-mono">@{deviceAccountResult.username} ({deviceAccountResult.role})</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-400 bg-sky-950/80 px-2.5 py-1 rounded-lg border border-sky-800">
+                          <Building2 className="w-3 h-3" />
+                          <span>{deviceAccountResult.companyName || deviceAccountResult.company_name || 'Organization'}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs text-slate-300">
+                      <div>
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Registered Phone</span>
+                        <span className="font-mono text-slate-200">{deviceAccountResult.maskedMobile || deviceAccountResult.mobile || 'Not set'}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Registered Email</span>
+                        <span className="font-mono text-slate-200">{deviceAccountResult.maskedEmail || deviceAccountResult.email || 'Not set'}</span>
+                      </div>
+                      <div className="col-span-2 pt-1">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Currently Bound Device MAC</span>
+                        <span className="font-mono text-amber-300 font-semibold text-xs">
+                          {deviceAccountResult.boundDevice?.macAddress || deviceAccountResult.current_bound_mac || 'None / Not bound'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* New Device Information */}
+                    <div className="pt-2 border-t border-slate-800">
+                      <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <Laptop className="w-4 h-4 text-emerald-400" />
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase tracking-wider block">This Device MAC</span>
+                            <span className="font-mono text-emerald-400 font-bold">{getDeviceHardwareIdentity().macAddress}</span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded font-semibold">
+                          Target New Device
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Ticket Reason & Submit */}
+                    <form onSubmit={handleRaiseDeviceTicket} className="space-y-3 pt-2">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-300 mb-1">
+                          Reason for Device Deregistration *
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={deviceReason}
+                          onChange={(e) => setDeviceReason(e.target.value)}
+                          placeholder="e.g. Purchased new phone / old laptop reformatted. Please deregister old MAC address."
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeviceAccountResult(null);
+                            setDeviceSearchError('');
+                          }}
+                          className="px-3 py-2 text-xs text-slate-400 hover:text-white"
+                        >
+                          Cancel Search
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={raisingDeviceTicket}
+                          className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-lg shadow-rose-950/50 flex items-center gap-1.5 transition-all"
+                        >
+                          {raisingDeviceTicket ? (
+                            <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            <Ticket className="w-3.5 h-3.5" />
+                          )}
+                          <span>{raisingDeviceTicket ? 'Submitting Ticket...' : 'Raise Deregistration Ticket'}</span>
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
               </div>
             )}
           </div>

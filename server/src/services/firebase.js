@@ -800,7 +800,167 @@ async function testFirebaseConnection() {
 }
 
 /**
+ * Wipe all company data from local database while strictly preserving Super Admin (adminn / Admin@88)
+ * Optionally also wipes company data from Firebase Cloud Firestore & Realtime DB so it shows zero.
+ */
+async function wipeAllCompanyDataFromDb({ syncToFirebase = true } = {}) {
+  try {
+    const runWipe = db.transaction(() => {
+      const safeDelete = (tableName) => {
+        try {
+          db.prepare(`DELETE FROM ${tableName}`).run();
+        } catch (e) {}
+      };
+
+      // 1. Delete all transactional, module, attendance, and ticket tables
+      safeDelete('attendance_correction_requests');
+      safeDelete('attendance_records');
+      safeDelete('attendance_edit_logs');
+      safeDelete('attendance_import_logs');
+      safeDelete('attendance_export_logs');
+      safeDelete('employee_mappings');
+      safeDelete('employee_devices');
+      safeDelete('device_bindings');
+      safeDelete('device_binding_logs');
+      safeDelete('leave_transactions');
+      safeDelete('leave_balances');
+      safeDelete('leave_requests');
+      safeDelete('leave_types');
+      safeDelete('leave_accrual_logs');
+      safeDelete('shift_assignments');
+      safeDelete('rotational_shifts');
+      safeDelete('shifts');
+      safeDelete('weekly_off_settings');
+      safeDelete('employee_weekly_offs');
+      safeDelete('geofence_assignments');
+      safeDelete('geofences');
+      safeDelete('holidays');
+      safeDelete('location_tracking_logs');
+      safeDelete('route_tracking_logs');
+      safeDelete('service_request_messages');
+      safeDelete('service_requests');
+      safeDelete('support_ticket_messages');
+      safeDelete('support_tickets');
+      safeDelete('ticket_messages');
+      safeDelete('report_exports');
+      safeDelete('excel_import_jobs');
+      safeDelete('excel_update_jobs');
+      safeDelete('employee_profiles');
+      safeDelete('employees');
+      safeDelete('company_settings');
+      safeDelete('company_modules');
+      safeDelete('companies');
+      safeDelete('support_users');
+
+      // Clean notifications except super admin
+      db.prepare(`
+        DELETE FROM notifications 
+        WHERE user_id NOT IN (SELECT id FROM users WHERE role_id = (SELECT id FROM roles WHERE name = 'super_admin'))
+      `).run();
+
+      // Delete all users EXCEPT super_admin
+      db.prepare(`
+        DELETE FROM users 
+        WHERE role_id != (SELECT id FROM roles WHERE name = 'super_admin')
+      `).run();
+    });
+
+    runWipe();
+
+    // Ensure super_admin adminn is active with correct credentials
+    const superAdminRole = db.prepare("SELECT id FROM roles WHERE name = 'super_admin'").get();
+    if (superAdminRole) {
+      const existingAdmin = db.prepare("SELECT id FROM users WHERE username = 'adminn'").get();
+      if (!existingAdmin) {
+        const passHash = bcrypt.hashSync('Admin@88', 10);
+        const resU = db.prepare(`
+          INSERT INTO users (username, password_hash, email, role_id, company_id, status)
+          VALUES ('adminn', ?, 'superadmin@npbhrms.com', ?, NULL, 'active')
+        `).run(passHash, superAdminRole.id);
+        db.prepare('INSERT INTO super_admins (user_id, full_name) VALUES (?, ?) ON CONFLICT(user_id) DO NOTHING').run(resU.lastInsertRowid, 'Global Super Administrator');
+      }
+    }
+
+    // If syncToFirebase is requested and connected, also wipe from Firebase
+    if (syncToFirebase && firebaseStatus.connected) {
+      if (firestoreDb) {
+        try {
+          const compSnap = await firestoreDb.collection('companies').get();
+          const batch = firestoreDb.batch();
+          compSnap.forEach(d => batch.delete(d.ref));
+          await batch.commit();
+        } catch (e) {
+          console.warn('Firestore wipe companies notice:', e.message);
+        }
+
+        try {
+          const empSnap = await firestoreDb.collection('employees').get();
+          const batch = firestoreDb.batch();
+          empSnap.forEach(d => batch.delete(d.ref));
+          await batch.commit();
+        } catch (e) {
+          console.warn('Firestore wipe employees notice:', e.message);
+        }
+
+        try {
+          const userSnap = await firestoreDb.collection('users').get();
+          const batch = firestoreDb.batch();
+          userSnap.forEach(d => {
+            const data = d.data();
+            if (data.role !== 'super_admin' && data.username !== 'adminn') {
+              batch.delete(d.ref);
+            }
+          });
+          await batch.commit();
+        } catch (e) {
+          console.warn('Firestore wipe users notice:', e.message);
+        }
+
+        try {
+          const attSnap = await firestoreDb.collection('attendance_punches').limit(500).get();
+          const batch = firestoreDb.batch();
+          attSnap.forEach(d => batch.delete(d.ref));
+          await batch.commit();
+        } catch (e) {}
+
+        try {
+          const locSnap = await firestoreDb.collection('live_locations').limit(500).get();
+          const batch = firestoreDb.batch();
+          locSnap.forEach(d => batch.delete(d.ref));
+          await batch.commit();
+        } catch (e) {}
+      }
+
+      if (realtimeDb) {
+        try {
+          await realtimeDb.ref('companies').remove();
+          await realtimeDb.ref('employees').remove();
+          await realtimeDb.ref('company_employees').remove();
+          await realtimeDb.ref('company_attendance').remove();
+          await realtimeDb.ref('attendance_punches').remove();
+          await realtimeDb.ref('live_locations').remove();
+        } catch (e) {
+          console.warn('Realtime DB wipe notice:', e.message);
+        }
+      }
+    }
+
+    return {
+      success: true,
+      message: 'All company data has been wiped from database and reset to 0. Super Admin account is completely preserved.'
+    };
+  } catch (err) {
+    console.error('wipeAllCompanyDataFromDb error:', err);
+    return {
+      success: false,
+      error: `Failed to wipe company data: ${err.message}`
+    };
+  }
+}
+
+/**
  * Reset / Disconnect Firebase credentials from database to allow switching to another account
+ * Auto-cleans local company data from database while preserving Super Admin account
  */
 async function resetFirebaseConfig() {
   try {
@@ -830,9 +990,12 @@ async function resetFirebaseConfig() {
       lastError: null
     };
 
+    // Auto remove all company data from local database upon disconnecting Firebase (preserving Super Admin)
+    await wipeAllCompanyDataFromDb({ syncToFirebase: false });
+
     return {
       success: true,
-      message: 'Firebase account disconnected successfully. You can now connect a new Firebase project.'
+      message: 'Firebase account disconnected and all local company data cleared from database. Super Admin account is preserved. You can now connect another Firebase project and restore data.'
     };
   } catch (err) {
     return {
@@ -1180,6 +1343,7 @@ module.exports = {
   syncAllDatabaseToFirebase,
   fetchAllFromFirebaseAndRestoreToDb,
   resetFirebaseConfig,
+  wipeAllCompanyDataFromDb,
   testFirebaseConnection,
   saveFirebaseConfig: ({ projectId, serviceAccountJson, databaseUrl }) => {
     if (projectId !== undefined) {

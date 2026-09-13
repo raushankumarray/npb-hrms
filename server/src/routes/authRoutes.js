@@ -459,4 +459,142 @@ router.post('/forgot-password', (req, res) => {
   });
 });
 
+// Search Account by username, email, or phone number (for Device Deregistration / Support)
+router.post('/search-account', (req, res) => {
+  const { query } = req.body;
+  if (!query || !query.trim()) {
+    return res.status(400).json({ error: 'Please enter a username, email address, or phone number to search.' });
+  }
+  const clean = query.trim();
+
+  const account = db.prepare(`
+    SELECT u.id, u.username, 
+           COALESCE(e.email, u.email) as email, 
+           COALESCE(e.mobile, u.mobile) as mobile, 
+           u.company_id, u.status,
+           r.name as role_name, c.name as company_name,
+           e.id as employee_id, e.employee_id as employee_code, e.full_name,
+           e.department, e.designation
+    FROM users u
+    JOIN roles r ON u.role_id = r.id
+    LEFT JOIN companies c ON u.company_id = c.id
+    LEFT JOIN employees e ON u.id = e.user_id
+    WHERE u.is_deleted = 0
+      AND (
+        LOWER(u.username) = LOWER(?)
+        OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
+        OR (u.mobile IS NOT NULL AND u.mobile = ?)
+        OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
+        OR (e.mobile IS NOT NULL AND e.mobile = ?)
+      )
+    LIMIT 1
+  `).get(clean, clean, clean, clean, clean);
+
+  if (!account) {
+    return res.json({
+      found: false,
+      message: 'No active account found matching this username, email, or phone number.'
+    });
+  }
+
+  let boundDevice = null;
+  try {
+    boundDevice = db.prepare('SELECT device_id, mac_address, device_name, device_type, last_login_at FROM employee_devices WHERE user_id = ?').get(account.id);
+  } catch (e) {}
+
+  const maskEmail = (email) => {
+    if (!email || !email.includes('@')) return '';
+    const [name, dom] = email.split('@');
+    return name.slice(0, 2) + '***@' + dom;
+  };
+  const maskMobile = (mobile) => {
+    if (!mobile || mobile.length < 5) return mobile || '';
+    return mobile.slice(0, 3) + '****' + mobile.slice(-2);
+  };
+
+  res.json({
+    found: true,
+    account: {
+      id: account.id,
+      username: account.username,
+      fullName: account.full_name || account.username,
+      employeeCode: account.employee_code || '',
+      role: account.role_name,
+      companyId: account.company_id,
+      companyName: account.company_name || 'General',
+      department: account.department || '',
+      designation: account.designation || '',
+      maskedEmail: maskEmail(account.email),
+      maskedMobile: maskMobile(account.mobile),
+      hasBoundDevice: !!boundDevice,
+      boundDevice: boundDevice ? {
+        macAddress: boundDevice.mac_address,
+        deviceType: boundDevice.device_type,
+        deviceName: boundDevice.device_name
+      } : null
+    }
+  });
+});
+
+// Raise Device Deregistration Ticket from Login page
+router.post('/raise-device-ticket', (req, res) => {
+  const { userId, currentMac, deviceName, reason } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required to raise a ticket.' });
+  }
+
+  const user = db.prepare(`
+    SELECT u.id, u.username, u.company_id, e.id as emp_id, e.full_name, e.employee_id as emp_code
+    FROM users u
+    LEFT JOIN employees e ON u.id = e.user_id
+    WHERE u.id = ? AND u.is_deleted = 0
+  `).get(userId);
+
+  if (!user) {
+    return res.status(404).json({ error: 'Account not found.' });
+  }
+
+  const ticketNo = `TKT-DEV-${Date.now().toString().slice(-6)}`;
+  const empName = user.full_name || user.username;
+  const macInfo = currentMac ? ` Current Device MAC: ${currentMac}.` : '';
+  const devInfo = deviceName ? ` Device: ${deviceName}.` : '';
+  const reasonInfo = reason ? ` Reason: ${reason}.` : ' Reason: Device switch / upgrade.';
+
+  const desc = `Device Deregistration Request for ${empName} (${user.username}, Code: ${user.emp_code || 'N/A'}).${macInfo}${devInfo}${reasonInfo} Please deregister previous bound device so employee can log in from this device.`;
+
+  db.prepare(`
+    INSERT INTO support_tickets (
+      ticket_number, company_id, created_by_user_id, category, subject, description, priority, status
+    ) VALUES (?, ?, ?, 'Device Deregistration', ?, ?, 'high', 'open')
+  `).run(
+    ticketNo,
+    user.company_id,
+    user.id,
+    `Device Deregistration Request - ${empName}`,
+    desc
+  );
+
+  // Sync to Firebase if connected
+  try {
+    const { syncTicketMessage } = require('../services/firebase');
+    syncTicketMessage(ticketNo, {
+      ticketNo,
+      companyId: user.company_id,
+      userId: user.id,
+      userName: user.username,
+      category: 'Device Deregistration',
+      subject: `Device Deregistration Request - ${empName}`,
+      description: desc,
+      status: 'open',
+      createdAt: new Date().toISOString()
+    }).catch(() => {});
+  } catch (e) {}
+
+  res.json({
+    success: true,
+    ticketNumber: ticketNo,
+    message: `Device deregistration request submitted successfully! Ticket #${ticketNo} has been generated and sent to Support and your Company Admin. It is also recorded in your Employee Tickets page.`
+  });
+});
+
 module.exports = router;

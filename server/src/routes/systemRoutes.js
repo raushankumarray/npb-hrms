@@ -5,7 +5,7 @@ const db = require('../db');
 const { verifyAuth, generateToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase, fetchAllFromFirebaseAndRestoreToDb, resetFirebaseConfig } = require('../services/firebase');
+const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase, fetchAllFromFirebaseAndRestoreToDb, resetFirebaseConfig, wipeAllCompanyDataFromDb } = require('../services/firebase');
 
 // Helper to get or insert an application setting
 function getSetting(key, defaultValue = '') {
@@ -312,6 +312,28 @@ router.post('/firebase-reset', verifyAuth, requireRole(['super_admin']), async (
       action: 'FIREBASE_CONFIG_RESET',
       targetEntity: 'application_settings',
       reason: 'Super Admin disconnected Firebase to configure another account'
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 10. POST /api/system/wipe-company-data - Wipe all company data & sync zero to database/Firebase (Super Admin only)
+router.post('/wipe-company-data', verifyAuth, requireRole(['super_admin']), async (req, res) => {
+  try {
+    const result = await wipeAllCompanyDataFromDb({ syncToFirebase: true });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: 'super_admin',
+      panel: 'Super Admin Data Management',
+      action: 'ALL_COMPANY_DATA_WIPED',
+      targetEntity: 'companies',
+      reason: 'Super Admin wiped all company and employee data from database and synced zero to Firebase'
     });
     res.json(result);
   } catch (err) {
