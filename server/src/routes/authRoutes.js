@@ -132,6 +132,25 @@ router.post('/login', (req, res) => {
     ipAddress
   });
 
+  // Auto-restore company data from Firebase if local database has 0 companies
+  if (user.role_name === 'super_admin') {
+    try {
+      const { getFirebaseStatus, fetchAllFromFirebaseAndRestoreToDb } = require('../services/firebase');
+      const fbStatus = getFirebaseStatus();
+      if (fbStatus && fbStatus.connected) {
+        const compCount = db.prepare('SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0').get()?.count || 0;
+        if (compCount === 0) {
+          console.log('[Auth] Super admin logged in with 0 companies locally. Triggering auto-restore from Firebase in background...');
+          fetchAllFromFirebaseAndRestoreToDb().then(r => {
+            if (r.success) {
+              console.log(`[Auth] Auto-restore on login finished: ${r.restoredCompanies} companies restored.`);
+            }
+          }).catch(e => console.error('[Auth] Auto-restore on login error:', e.message));
+        }
+      }
+    } catch (e) {}
+  }
+
   let boundDevice = null;
   if (user.role_name === 'employee') {
     boundDevice = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(user.id) || null;

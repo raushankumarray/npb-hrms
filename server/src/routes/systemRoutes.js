@@ -214,11 +214,11 @@ router.get('/firebase-status', (req, res) => {
 });
 
 // 5. POST /api/system/firebase-config - Update Firebase project credentials (Super Admin only)
-router.post('/firebase-config', verifyAuth, requireRole(['super_admin']), (req, res) => {
+router.post('/firebase-config', verifyAuth, requireRole(['super_admin']), async (req, res) => {
   const { projectId, serviceAccountJson, databaseUrl } = req.body;
 
   try {
-    const success = saveFirebaseConfig({ projectId, serviceAccountJson, databaseUrl });
+    const success = await saveFirebaseConfig({ projectId, serviceAccountJson, databaseUrl });
     const status = getFirebaseStatus();
 
     logAudit({
@@ -235,7 +235,7 @@ router.post('/firebase-config', verifyAuth, requireRole(['super_admin']), (req, 
     res.json({
       success,
       message: status.connected
-        ? `Firebase successfully connected to project "${status.projectId}".`
+        ? `Firebase successfully connected to project "${status.projectId}". All data auto-synced.`
         : 'Firebase credentials saved. Awaiting valid project keys.',
       status
     });
