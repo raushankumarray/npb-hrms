@@ -15,6 +15,9 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.is_deleted = 0
+      AND LOWER(u.username) != 'support_rahul'
+      AND LOWER(COALESCE(u.email, '')) != 'rahul.support@npbhrms.com'
+      AND LOWER(s.full_name) NOT LIKE '%rahul verma%'
     ORDER BY u.created_at DESC
   `).all();
 

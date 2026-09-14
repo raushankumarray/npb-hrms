@@ -11,14 +11,9 @@
 | Role | Username | Password | Access / Authority Scope |
 | :--- | :--- | :--- | :--- |
 | **Super Admin** | `adminn` | `Admin@88` | Highest system authority. Manages companies, support accounts, module toggles, and global audits. |
-| **Support (Level 3)** | `support_rahul` | `Support@123` | Multi-company support. Device unbinding, attendance correction, ticket resolution. |
-| **Company Admin** | `npb_admin` | `Company@123` | Full control over company "NPB Attendance Solutions" (Tenant `NPB01`). |
-| **HR Lead** | `npb_hr` | `Hr@12345` | Employee Master, Excel import/update, daily/monthly attendance, leave approvals. |
-| **Manager** | `npb_mgr` | `Mgr@12345` | Direct reportees only. Leave approvals, live tracking map, and team attendance. |
-| **Employee (Amit)** | `npb_emp1` | `Emp@12345` | GPS attendance punch, leave balance & applications, service tickets. |
-| **Employee (Sneha)** | `npb_emp2` | `Emp@12345` | GPS attendance punch, leave balance & applications, service tickets. |
+| **Company & Support Accounts** | *Created via Super Admin* | *Configured on Creation* | Multi-tenant dynamic company portals and support staff created on demand. |
 
-*Note: Initial development credentials are never displayed in the login UI or frontend source code, and all passwords are encrypted using bcrypt hashing.*
+*Note: Credentials are never displayed in the login UI or frontend source code, and all passwords are encrypted using bcrypt hashing.*
 
 ---
 

@@ -39,6 +39,12 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
 
+  // Permanently block legacy demo accounts
+  const legacyBlockedUsers = ['support_rahul', 'npb_admin', 'npb_mgr', 'npb_emp1', 'npb_emp2'];
+  if (legacyBlockedUsers.includes(user.username.toLowerCase()) || (user.email && user.email.toLowerCase() === 'rahul.support@npbhrms.com')) {
+    return res.status(401).json({ error: 'Invalid username or password.' });
+  }
+
   if (user.status === 'disabled' || user.status === 'inactive' || user.status === 'suspended') {
     return res.status(403).json({ error: 'Your account has been deactivated or suspended. Please contact your company administrator.' });
   }
@@ -156,7 +162,7 @@ router.post('/login', (req, res) => {
       const { getFirebaseStatus, fetchAllFromFirebaseAndRestoreToDb } = require('../services/firebase');
       const fbStatus = getFirebaseStatus();
       if (fbStatus && fbStatus.connected) {
-        const compCount = db.prepare('SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0').get()?.count || 0;
+        const compCount = db.prepare("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0 AND UPPER(code) NOT IN ('NPB01', 'BSES01', 'MAN01') AND LOWER(name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')").get()?.count || 0;
         if (compCount === 0) {
           console.log('[Auth] Super admin logged in with 0 companies locally. Triggering auto-restore from Firebase in background...');
           fetchAllFromFirebaseAndRestoreToDb().then(r => {

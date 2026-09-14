@@ -51,6 +51,11 @@ router.get('/', verifyAuth, (req, res) => {
     LEFT JOIN employees m ON e.manager_id = m.id
     WHERE e.is_deleted = 0
       AND r.name NOT IN ('super_admin', 'company_admin')
+      AND e.company_id NOT IN (
+        SELECT id FROM companies
+        WHERE UPPER(code) IN ('NPB01', 'BSES01', 'MAN01')
+           OR LOWER(name) IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')
+      )
   `;
   const params = [];
 

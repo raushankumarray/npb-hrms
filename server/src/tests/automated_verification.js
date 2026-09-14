@@ -16,101 +16,133 @@ async function runTests() {
   assert(passMatches, 'Password hash must verify "Admin@88"');
   console.log('✔ PASS: Super Admin (adminn / Admin@88) properly seeded and securely hashed.\n');
 
-  // Test 2: Haversine Geofence Distance Calculation
-  console.log('Test 2: Verifying Haversine distance & geofence validation...');
-  // Cyber City Office: 28.4950, 77.0890, radius 250m
-  // Point A: very close (inside ~20m): 28.4951, 77.0891
-  const distInside = calculateDistanceMeters(28.4950, 77.0890, 28.4951, 77.0891);
-  assert(distInside < 250, `Distance ${distInside} should be inside 250m radius`);
+  // Setup temporary test fixture
+  console.log('Setting up isolated test tenant...');
+  const testComp = db.prepare(`
+    INSERT INTO companies (name, portal_name, code, email, phone, address, status)
+    VALUES ('Automated Test Corp', 'Test Portal', 'TEST99', 'test@testcorp.com', '9999999999', 'Test Address', 'active')
+  `).run();
+  const testCompId = testComp.lastInsertRowid;
 
-  // Point B: outside (Connaught Place ~20km away): 28.6304, 77.2177
-  const distOutside = calculateDistanceMeters(28.4950, 77.0890, 28.6304, 77.2177);
-  assert(distOutside > 15000, `Distance ${distOutside} should be > 15km away`);
+  const roleEmp = db.prepare("SELECT id FROM roles WHERE name = 'employee'").get();
+  const testUser = db.prepare(`
+    INSERT INTO users (username, password_hash, email, role_id, company_id, status)
+    VALUES ('test_emp_autoverif', 'hash', 'testemp@testcorp.com', ?, ?, 'active')
+  `).run(roleEmp.id, testCompId);
 
-  const emp = db.prepare("SELECT id, company_id FROM employees WHERE employee_id = 'NPB101'").get();
-  const insideValidation = validateGeofence({
-    companyId: emp.company_id,
-    employeeId: emp.id,
-    latitude: 28.4951,
-    longitude: 77.0891,
-    accuracy: 10
-  });
-  assert(insideValidation.allowed === true, 'Geofence inside point should be allowed');
+  const testGeofence = db.prepare(`
+    INSERT INTO geofences (company_id, location_name, latitude, longitude, radius, status)
+    VALUES (?, 'Test Office', 28.4950, 77.0890, 250.0, 'active')
+  `).run(testCompId);
 
-  const outsideValidation = validateGeofence({
-    companyId: emp.company_id,
-    employeeId: emp.id,
-    latitude: 28.6304,
-    longitude: 77.2177,
-    accuracy: 10
-  });
-  assert(outsideValidation.allowed === false, 'Geofence outside point should be blocked');
-  console.log(`✔ PASS: Geofencing correctly allows within radius and blocks outside (${Math.round(distOutside)}m).\n`);
+  const testEmp = db.prepare(`
+    INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, geofence_id, geofence_mode, status)
+    VALUES (?, ?, 'EMP_TEST_99', 'Test Auto Employee', '9998887776', 'testemp@testcorp.com', ?, 'company', 'active')
+  `).run(testCompId, testUser.lastInsertRowid, testGeofence.lastInsertRowid);
 
-  // Test 3: Device Binding & Support Unbinding
-  console.log('Test 3: Verifying Device Binding & Support Unbinding Workflow...');
-  const testEmpUser = db.prepare("SELECT u.id FROM users u JOIN roles r ON u.role_id = r.id WHERE r.name = 'employee' LIMIT 1").get();
-  // Clear any existing binding for this test
-  db.prepare("DELETE FROM employee_devices WHERE user_id = ?").run(testEmpUser.id);
+  try {
+    // Test 2: Haversine Geofence Distance Calculation
+    console.log('Test 2: Verifying Haversine distance & geofence validation...');
+    // Office: 28.4950, 77.0890, radius 250m
+    // Point A: very close (inside ~20m): 28.4951, 77.0891
+    const distInside = calculateDistanceMeters(28.4950, 77.0890, 28.4951, 77.0891);
+    assert(distInside < 250, `Distance ${distInside} should be inside 250m radius`);
 
-  // Device 1 login -> should bind
-  const bind1 = checkAndBindDevice({
-    userId: testEmpUser.id,
-    roleName: 'employee',
-    deviceId: 'test_device_alpha_123',
-    deviceType: 'Chrome on Windows',
-    deviceName: 'Primary Work Laptop',
-    ipAddress: '192.168.1.50'
-  });
-  assert(bind1.allowed === true, 'First device should be bound successfully');
+    // Point B: outside (Connaught Place ~20km away): 28.6304, 77.2177
+    const distOutside = calculateDistanceMeters(28.4950, 77.0890, 28.6304, 77.2177);
+    assert(distOutside > 15000, `Distance ${distOutside} should be > 15km away`);
 
-  // Device 2 login -> should be blocked!
-  const bind2 = checkAndBindDevice({
-    userId: testEmpUser.id,
-    roleName: 'employee',
-    deviceId: 'test_device_beta_999',
-    deviceType: 'Safari on iPhone',
-    deviceName: 'Secondary Phone',
-    ipAddress: '192.168.1.51'
-  });
-  assert(bind2.allowed === false, 'Second device should be BLOCKED');
-  assert(bind2.message.includes('already bound'), 'Blocked message should explain device lock');
+    const insideValidation = validateGeofence({
+      companyId: testCompId,
+      employeeId: testEmp.lastInsertRowid,
+      latitude: 28.4951,
+      longitude: 77.0891,
+      accuracy: 10
+    });
+    assert(insideValidation.allowed === true, 'Geofence inside point should be allowed');
 
-  // Support unbinds device
-  const unbindRes = unbindUserDevice({
-    userId: testEmpUser.id,
-    authorizedUserId: adminUser.id,
-    authorizerName: 'adminn',
-    authorizerRole: 'super_admin',
-    reason: 'Employee changed phone'
-  });
-  assert(unbindRes.success === true, 'Support should successfully unbind device');
+    const outsideValidation = validateGeofence({
+      companyId: testCompId,
+      employeeId: testEmp.lastInsertRowid,
+      latitude: 28.6304,
+      longitude: 77.2177,
+      accuracy: 10
+    });
+    assert(outsideValidation.allowed === false, 'Geofence outside point should be blocked');
+    console.log(`✔ PASS: Geofencing correctly allows within radius and blocks outside (${Math.round(distOutside)}m).\n`);
 
-  // Device 2 login again -> now allowed!
-  const bind3 = checkAndBindDevice({
-    userId: testEmpUser.id,
-    roleName: 'employee',
-    deviceId: 'test_device_beta_999',
-    deviceType: 'Safari on iPhone',
-    deviceName: 'Secondary Phone',
-    ipAddress: '192.168.1.51'
-  });
-  assert(bind3.allowed === true, 'Device 2 should be allowed after Support unbinds');
-  console.log('✔ PASS: Single-device lock, secondary device blocking, and support unbinding verified.\n');
+    // Test 3: Device Binding & Support Unbinding
+    console.log('Test 3: Verifying Device Binding & Support Unbinding Workflow...');
+    const testEmpUser = { id: testUser.lastInsertRowid };
+    // Clear any existing binding for this test
+    db.prepare("DELETE FROM employee_devices WHERE user_id = ?").run(testEmpUser.id);
 
-  // Test 4: Excel Template Generation & Validation
-  console.log('Test 4: Verifying Excel Template generation and validation...');
-  const templateBuffer = generateEmployeeTemplate();
-  assert(templateBuffer && templateBuffer.length > 100, 'Excel template buffer should be generated');
+    // Device 1 login -> should bind
+    const bind1 = checkAndBindDevice({
+      userId: testEmpUser.id,
+      roleName: 'employee',
+      deviceId: 'test_device_alpha_123',
+      deviceType: 'Chrome on Windows',
+      deviceName: 'Primary Work Laptop',
+      ipAddress: '192.168.1.50'
+    });
+    assert(bind1.allowed === true, 'First device should be bound successfully');
 
-  const validationRes = validateEmployeeImport(templateBuffer, emp.company_id);
-  assert(validationRes.summary.totalRows >= 2, 'Template sample rows should be parsed');
-  assert(validationRes.summary.validRows >= 2, 'Template rows should be valid format');
-  console.log(`✔ PASS: Excel template generated (${templateBuffer.length} bytes) and validated ${validationRes.summary.validRows} rows.\n`);
+    // Device 2 login -> should be blocked!
+    const bind2 = checkAndBindDevice({
+      userId: testEmpUser.id,
+      roleName: 'employee',
+      deviceId: 'test_device_beta_999',
+      deviceType: 'Safari on iPhone',
+      deviceName: 'Secondary Phone',
+      ipAddress: '192.168.1.51'
+    });
+    assert(bind2.allowed === false, 'Second device should be BLOCKED');
+    assert(bind2.message.includes('locked to another') || bind2.message.includes('Device Lock'), 'Blocked message should explain device lock');
 
-  console.log('====================================================');
-  console.log('ALL AUTOMATED BACKEND VERIFICATION TESTS PASSED (4/4)!');
-  console.log('====================================================');
+    // Support unbinds device
+    const unbindRes = unbindUserDevice({
+      userId: testEmpUser.id,
+      authorizedUserId: adminUser.id,
+      authorizerName: 'adminn',
+      authorizerRole: 'super_admin',
+      reason: 'Employee changed phone'
+    });
+    assert(unbindRes.success === true, 'Support should successfully unbind device');
+
+    // Device 2 login again -> now allowed!
+    const bind3 = checkAndBindDevice({
+      userId: testEmpUser.id,
+      roleName: 'employee',
+      deviceId: 'test_device_beta_999',
+      deviceType: 'Safari on iPhone',
+      deviceName: 'Secondary Phone',
+      ipAddress: '192.168.1.51'
+    });
+    assert(bind3.allowed === true, 'Device 2 should be allowed after Support unbinds');
+    console.log('✔ PASS: Single-device lock, secondary device blocking, and support unbinding verified.\n');
+
+    // Test 4: Excel Template Generation & Validation
+    console.log('Test 4: Verifying Excel Template generation and validation...');
+    const templateBuffer = generateEmployeeTemplate();
+    assert(templateBuffer && templateBuffer.length > 100, 'Excel template buffer should be generated');
+
+    const validationRes = validateEmployeeImport(templateBuffer, testCompId);
+    assert(validationRes.summary.totalRows >= 2, 'Template sample rows should be parsed');
+    assert(validationRes.summary.validRows >= 2, 'Template rows should be valid format');
+    console.log(`✔ PASS: Excel template generated (${templateBuffer.length} bytes) and validated ${validationRes.summary.validRows} rows.\n`);
+
+    console.log('====================================================');
+    console.log('ALL AUTOMATED BACKEND VERIFICATION TESTS PASSED (4/4)!');
+    console.log('====================================================');
+  } finally {
+    // Cleanup isolated fixture
+    db.prepare('DELETE FROM employee_devices WHERE user_id = ?').run(testUser.lastInsertRowid);
+    db.prepare('DELETE FROM employees WHERE id = ?').run(testEmp.lastInsertRowid);
+    db.prepare('DELETE FROM users WHERE id = ?').run(testUser.lastInsertRowid);
+    db.prepare('DELETE FROM geofences WHERE id = ?').run(testGeofence.lastInsertRowid);
+    db.prepare('DELETE FROM companies WHERE id = ?').run(testCompId);
+  }
 }
 
 runTests().catch(err => {

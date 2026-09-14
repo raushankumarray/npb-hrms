@@ -1811,6 +1811,15 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         const rawCode = (c.code || (!isNaN(rawId) && rawId > 0 ? `COMP${rawId}` : `COMP_${Date.now()}_${Math.floor(Math.random() * 1000)}`)).trim().toUpperCase();
         const name = (c.name || c.portalName || c.portal_name || rawCode || 'Company').trim();
         const portalName = (c.portal_name || c.portalName || name || 'Portal').trim();
+
+        // Permanent Exclusion for legacy demo companies requested by user
+        const isLegacyExcluded =
+          ['NPB01', 'BSES01', 'MAN01'].includes(rawCode) ||
+          ['npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies'].includes(name.toLowerCase());
+        if (isLegacyExcluded) {
+          continue;
+        }
+
         const email = c.email || '';
         const phone = c.phone || '';
         const address = c.address || '';
@@ -1959,7 +1968,13 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           baseUsername = (u.email ? u.email.split('@')[0] : (u.mobile ? `user_${u.mobile}` : `user_${docKey}`)).trim();
         }
         const originalUsername = baseUsername;
-        const email = u.email || '';
+        const email = (u.email || '').trim().toLowerCase();
+
+        // Permanent Exclusion for legacy support_rahul requested by user
+        if (baseUsername.toLowerCase() === 'support_rahul' || email === 'rahul.support@npbhrms.com') {
+          continue;
+        }
+
         const mobile = u.mobile || '';
         const roleName = (u.role || u.role_name || 'employee').toLowerCase().trim();
         const roleId = roleMap[roleName] || roleMap['employee'];

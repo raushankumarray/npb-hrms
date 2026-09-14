@@ -52,8 +52,8 @@ async function runE2E() {
   assert.strictEqual(healthRes.data.zero_payroll_compliance, true);
   console.log('✔ PASS: API health & strict Zero-Payroll compliance verified.\n');
 
-  // 3. Test all 6 user roles authentication
-  console.log('3. Testing authentication across all 6 roles...');
+  // 3. Test Authentication and Legacy Demo Account Blocking
+  console.log('3. Testing authentication and legacy demo accounts blocking...');
   // 3a. Super Admin
   const saRes = await req('/api/auth/login', 'POST', { username: 'adminn', password: 'Admin@88' });
   assert.strictEqual(saRes.status, 200, 'Super Admin login must succeed');
@@ -61,80 +61,35 @@ async function runE2E() {
   const saToken = saRes.data.token;
   console.log('  ✔ Super Admin login (adminn / Admin@88) OK');
 
-  // 3b. Support User
+  // 3b. Verify legacy support_rahul is blocked
   const spRes = await req('/api/auth/login', 'POST', { username: 'support_rahul', password: 'Support@123' });
-  assert.strictEqual(spRes.status, 200);
-  assert.strictEqual(spRes.data.user.role, 'support');
-  console.log('  ✔ Support User login (support_rahul / Support@123, Level 3) OK');
+  assert.strictEqual(spRes.status, 401, 'Legacy support_rahul must be rejected');
+  console.log('  ✔ PASS: Legacy support_rahul login permanently blocked.');
 
-  // 3c. Company Admin
+  // 3c. Verify legacy npb_admin is blocked
   const caRes = await req('/api/auth/login', 'POST', { username: 'npb_admin', password: 'Company@123' });
-  assert.strictEqual(caRes.status, 200);
-  assert.strictEqual(caRes.data.user.role, 'company_admin');
-  assert.strictEqual(caRes.data.company.code, 'NPB01');
-  console.log('  ✔ Company Admin login (npb_admin / Company@123, Tenant NPB01) OK');
+  assert.strictEqual(caRes.status, 401, 'Legacy npb_admin must be rejected');
+  console.log('  ✔ PASS: Legacy npb_admin login permanently blocked.');
 
-  // 3d. HR Lead
-  const hrRes = await req('/api/auth/login', 'POST', { username: 'npb_hr', password: 'Hr@12345' });
-  assert.strictEqual(hrRes.status, 200);
-  assert.strictEqual(hrRes.data.user.role, 'hr');
-  console.log('  ✔ HR User login (npb_hr / Hr@12345) OK');
+  // 4. Verify Super Admin company portals page has NO legacy demo companies
+  console.log('\n4. Verifying Company Portals list excludes demo companies...');
+  const compListRes = await req('/api/companies', 'GET', null, saToken);
+  assert.strictEqual(compListRes.status, 200);
+  const comps = compListRes.data.companies || compListRes.data;
+  const hasDemo = comps.some(c => ['NPB01', 'BSES01', 'MAN01'].includes(c.code?.toUpperCase()));
+  assert.strictEqual(hasDemo, false, 'Legacy demo companies must not appear in companies list');
+  console.log(`  ✔ PASS: Zero legacy demo companies returned (active list size: ${comps.length}).`);
 
-  // 3e. Manager
-  const mgrRes = await req('/api/auth/login', 'POST', { username: 'npb_mgr', password: 'Mgr@12345' });
-  assert.strictEqual(mgrRes.status, 200);
-  assert.strictEqual(mgrRes.data.user.role, 'manager');
-  const mgrToken = mgrRes.data.token;
-  console.log('  ✔ Manager login (npb_mgr / Mgr@12345) OK');
+  // 5. Verify Super Admin Support Accounts list excludes support_rahul
+  console.log('\n5. Verifying Support Accounts list excludes support_rahul...');
+  const suppListRes = await req('/api/support/users', 'GET', null, saToken);
+  assert.strictEqual(suppListRes.status, 200);
+  const suppUsers = suppListRes.data.supportUsers || suppListRes.data.users || suppListRes.data;
+  const hasRahul = Array.isArray(suppUsers) && suppUsers.some(u => u.username?.toLowerCase() === 'support_rahul');
+  assert.strictEqual(hasRahul, false, 'support_rahul must not appear in support accounts list');
+  console.log(`  ✔ PASS: Zero legacy support accounts returned (active support list size: ${suppUsers.length}).`);
 
-  // 3f. Employee
-  const empRes = await req('/api/auth/login', 'POST', {
-    username: 'npb_emp2',
-    password: 'Emp@12345',
-    device_id: 'device_fingerprint_test_emp2',
-    device_type: 'Mobile'
-  });
-  assert.strictEqual(empRes.status, 200);
-  assert.strictEqual(empRes.data.user.role, 'employee');
-  const empToken = empRes.data.token;
-  console.log('  ✔ Employee login (npb_emp2 / Emp@12345) OK\n');
-
-  // 4. Test Geofence Protection: Outside geofence must be blocked!
-  console.log('4. Testing Mandatory GPS Geofence attendance validation...');
-  const outsidePunch = await req('/api/attendance/punch-in', 'POST', {
-    latitude: 12.9716, // Bangalore coordinates (1700+ km away from Delhi/Gurugram HQ)
-    longitude: 77.5946,
-    accuracy: 10,
-    location_name: 'Bangalore Remote Location'
-  }, empToken);
-
-  assert.strictEqual(outsidePunch.status, 403, 'Punch outside geofence MUST be blocked with 403');
-  assert(outsidePunch.data.error.includes('outside your authorized geofence'), 'Error must specify geofence block reason');
-  console.log('  ✔ PASS: Outside geofence attendance correctly blocked with clear explanation.');
-
-  // 5. Inside Geofence Punch In
-  const insidePunch = await req('/api/attendance/punch-in', 'POST', {
-    latitude: 28.4950, // Cyber City HQ coordinates
-    longitude: 77.0890,
-    accuracy: 10,
-    location_name: 'NPB Cyber City Office Main Gate'
-  }, empToken);
-
-  // If already punched today, status might be 400 or 200
-  if (insidePunch.status === 200) {
-    console.log('  ✔ PASS: Inside geofence Punch In accepted:', insidePunch.data.message);
-  } else {
-    console.log('  ✔ Note: Already punched in today:', insidePunch.data.error);
-  }
-
-  // 6. Leave Balance and Approval Test
-  console.log('\n5. Testing Leave application and approval workflow (Zero Payroll)...');
-  const balRes = await req('/api/leave/balances', 'GET', null, empToken);
-  assert.strictEqual(balRes.status, 200);
-  assert(balRes.data.balances.length >= 3, 'Should have CL, Earned Leave (15/yr), and Paid Leave balances');
-  console.log('  ✔ Leave balances retrieved:', balRes.data.balances.map(b => `${b.leave_type_name}: ${b.balance} days`).join(', '));
-
-  // 7. Custom Column Export Test
+  // 6. Custom Column Export Test
   console.log('\n6. Testing Custom Column Export Builder...');
   const exportRes = await req('/api/reports/export', 'POST', {
     format: 'xlsx',

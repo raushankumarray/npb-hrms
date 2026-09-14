@@ -54,6 +54,8 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
     FROM companies c
     LEFT JOIN company_settings s ON c.id = s.company_id
     WHERE c.is_deleted = 0
+      AND UPPER(c.code) NOT IN ('NPB01', 'BSES01', 'MAN01')
+      AND LOWER(c.name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')
   `;
   const params = [];
 
@@ -107,7 +109,12 @@ router.get('/:id', verifyAuth, (req, res) => {
     }
   }
 
-  const company = db.prepare('SELECT * FROM companies WHERE id = ? AND is_deleted = 0').get(companyId);
+  const company = db.prepare(`
+    SELECT * FROM companies
+    WHERE id = ? AND is_deleted = 0
+      AND UPPER(code) NOT IN ('NPB01', 'BSES01', 'MAN01')
+      AND LOWER(name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')
+  `).get(companyId);
   if (!company) {
     return res.status(404).json({ error: 'Company not found.' });
   }

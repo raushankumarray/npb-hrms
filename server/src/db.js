@@ -91,4 +91,49 @@ try {
   console.warn('Migration error for attendance_correction_requests:', e.message);
 }
 
+// Permanent purge routine for legacy demo companies and support accounts
+try {
+  const legacyComps = db.prepare(`
+    SELECT id FROM companies
+    WHERE UPPER(code) IN ('NPB01', 'BSES01', 'MAN01')
+       OR LOWER(name) IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')
+  `).all();
+
+  for (const c of legacyComps) {
+    db.prepare('DELETE FROM service_request_messages WHERE request_id IN (SELECT id FROM service_requests WHERE company_id = ?)').run(c.id);
+    db.prepare('DELETE FROM service_requests WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM support_tickets WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM device_bindings WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)').run(c.id);
+    db.prepare('DELETE FROM employee_devices WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)').run(c.id);
+    db.prepare('DELETE FROM audit_logs WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM notifications WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM attendance_correction_requests WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM attendance_records WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM leave_balances WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)').run(c.id);
+    db.prepare('DELETE FROM leave_requests WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM leave_types WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM employee_mappings WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM geofences WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM rotational_shifts WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM shifts WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM holidays WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM weekly_off_settings WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM company_modules WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM company_settings WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM employees WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM users WHERE company_id = ?').run(c.id);
+    db.prepare('DELETE FROM companies WHERE id = ?').run(c.id);
+  }
+
+  // Purge Rahul Verma (Support)
+  const rahulUser = db.prepare("SELECT id FROM users WHERE LOWER(username) = 'support_rahul' OR LOWER(email) = 'rahul.support@npbhrms.com'").get();
+  if (rahulUser) {
+    db.prepare('DELETE FROM support_permissions WHERE support_user_id IN (SELECT id FROM support_users WHERE user_id = ?)').run(rahulUser.id);
+    db.prepare('DELETE FROM support_users WHERE user_id = ?').run(rahulUser.id);
+    db.prepare('DELETE FROM users WHERE id = ?').run(rahulUser.id);
+  }
+} catch (e) {
+  console.warn('Permanent demo purge notice:', e.message);
+}
+
 module.exports = db;

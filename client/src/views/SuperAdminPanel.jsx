@@ -2972,7 +2972,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   required
                   value={newSupport.full_name}
                   onChange={(e) => setNewSupport({ ...newSupport, full_name: e.target.value })}
-                  placeholder="e.g. Rahul Verma"
+                  placeholder="e.g. Support Specialist"
                   className="w-full px-3 py-2 border rounded-lg"
                 />
               </div>
@@ -2984,7 +2984,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   required
                   value={newSupport.username}
                   onChange={(e) => setNewSupport({ ...newSupport, username: e.target.value })}
-                  placeholder="e.g. support_rahul"
+                  placeholder="e.g. support_agent"
                   className="w-full px-3 py-2 border rounded-lg"
                 />
               </div>
