@@ -403,6 +403,8 @@ async function syncCompany(company, extra = {}) {
       phone: company.phone || '',
       address: company.address || '',
       status: company.status || 'active',
+      plan_expiry_date: company.plan_expiry_date || null,
+      planExpiryDate: company.plan_expiry_date || null,
       adminUsername: adminUsername,
       adminEmail: adminEmail,
       updatedAt: new Date().toISOString(),
@@ -472,6 +474,10 @@ async function syncEmployee(employee, extra = {}) {
       manager_id: employee.manager_id || null,
       reportsToAdmin: employee.reports_to_admin ? 1 : 0,
       reports_to_admin: employee.reports_to_admin ? 1 : 0,
+      employment_start_date: employee.employment_start_date || null,
+      employmentStartDate: employee.employment_start_date || null,
+      employment_end_date: employee.employment_end_date || null,
+      employmentEndDate: employee.employment_end_date || null,
       status: employee.status || 'active',
       shiftId: employee.shift_id || null,
       shift_id: employee.shift_id || null,
@@ -1829,18 +1835,20 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
 
+        const planExpiryDate = c.plan_expiry_date || c.planExpiryDate || null;
+
         if (existing && claimedCompanyIds.has(existing.id)) {
           // Already claimed/restored in this cycle - update company details and keep existing id
           db.prepare(`
-            UPDATE companies SET name = ?, portal_name = ?, email = ?, phone = ?, address = ?, logo = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
+            UPDATE companies SET name = ?, portal_name = ?, email = ?, phone = ?, address = ?, logo = ?, plan_expiry_date = COALESCE(?, plan_expiry_date), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(name, portalName, email, phone, address, logo, status, existing.id);
+          `).run(name, portalName, email, phone, address, logo, planExpiryDate, status, existing.id);
           targetCompId = existing.id;
         } else if (existing) {
           db.prepare(`
-            UPDATE companies SET name = ?, portal_name = ?, code = ?, email = ?, phone = ?, address = ?, logo = ?, status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
+            UPDATE companies SET name = ?, portal_name = ?, code = ?, email = ?, phone = ?, address = ?, logo = ?, plan_expiry_date = COALESCE(?, plan_expiry_date), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(name, portalName, rawCode, email, phone, address, logo, status, existing.id);
+          `).run(name, portalName, rawCode, email, phone, address, logo, planExpiryDate, status, existing.id);
           targetCompId = existing.id;
         } else {
           // Guarantee unique code
@@ -1861,21 +1869,21 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (canUseCompId) {
             try {
               db.prepare(`
-                INSERT INTO companies (id, name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              `).run(targetCompId, name, portalName, finalCode, email, phone, address, logo, status);
+                INSERT INTO companies (id, name, portal_name, code, email, phone, address, logo, plan_expiry_date, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(targetCompId, name, portalName, finalCode, email, phone, address, logo, planExpiryDate, status);
             } catch (err) {
               const insRes = db.prepare(`
-                INSERT INTO companies (name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              `).run(name, portalName, finalCode, email, phone, address, logo, status);
+                INSERT INTO companies (name, portal_name, code, email, phone, address, logo, plan_expiry_date, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(name, portalName, finalCode, email, phone, address, logo, planExpiryDate, status);
               targetCompId = insRes.lastInsertRowid;
             }
           } else {
             const insRes = db.prepare(`
-              INSERT INTO companies (name, portal_name, code, email, phone, address, logo, status, is_deleted, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `).run(name, portalName, finalCode, email, phone, address, logo, status);
+              INSERT INTO companies (name, portal_name, code, email, phone, address, logo, plan_expiry_date, status, is_deleted, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(name, portalName, finalCode, email, phone, address, logo, planExpiryDate, status);
             targetCompId = insRes.lastInsertRowid;
           }
         }
@@ -2491,11 +2499,14 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           empCodeConflict = db.prepare('SELECT id FROM employees WHERE company_id = ? AND LOWER(employee_id) = LOWER(?) AND (? IS NULL OR id != ?)').get(compId, finalEmpCode, existingEmp?.id, existingEmp?.id);
         }
 
+        const empStartDate = emp.employment_start_date || emp.employmentStartDate || null;
+        const empEndDate = emp.employment_end_date || emp.employmentEndDate || null;
+
         if (existingEmp) {
           db.prepare(`
-            UPDATE employees SET company_id = ?, user_id = ?, employee_id = ?, full_name = ?, mobile = ?, email = ?, department = ?, designation = ?, city = ?, manager_id = ?, shift_id = ?, weekly_off_id = ?, geofence_id = ?, geofence_mode = ?, status = ?, is_deleted = 0, reports_to_admin = ?
+            UPDATE employees SET company_id = ?, user_id = ?, employee_id = ?, full_name = ?, mobile = ?, email = ?, department = ?, designation = ?, city = ?, manager_id = ?, shift_id = ?, weekly_off_id = ?, geofence_id = ?, geofence_mode = ?, employment_start_date = COALESCE(?, employment_start_date), employment_end_date = COALESCE(?, employment_end_date), status = ?, is_deleted = 0, reports_to_admin = ?
             WHERE id = ?
-          `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin, existingEmp.id);
+          `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, empStartDate, empEndDate, status, reportsToAdmin, existingEmp.id);
           targetEmpId = existingEmp.id;
         } else {
           let canUseEmpId = (!isNaN(targetEmpId) && targetEmpId > 0 && !claimedEmployeeIds.has(targetEmpId));
@@ -2507,21 +2518,21 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (canUseEmpId) {
             try {
               db.prepare(`
-                INSERT INTO employees (id, company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, status, is_deleted, reports_to_admin)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-              `).run(targetEmpId, compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin);
+                INSERT INTO employees (id, company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, employment_start_date, employment_end_date, status, is_deleted, reports_to_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+              `).run(targetEmpId, compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, empStartDate, empEndDate, status, reportsToAdmin);
             } catch (err) {
               const insE = db.prepare(`
-                INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, status, is_deleted, reports_to_admin)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-              `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin);
+                INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, employment_start_date, employment_end_date, status, is_deleted, reports_to_admin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+              `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, empStartDate, empEndDate, status, reportsToAdmin);
               targetEmpId = insE.lastInsertRowid;
             }
           } else {
             const insE = db.prepare(`
-              INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, status, is_deleted, reports_to_admin)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-            `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, status, reportsToAdmin);
+              INSERT INTO employees (company_id, user_id, employee_id, full_name, mobile, email, department, designation, city, manager_id, shift_id, weekly_off_id, geofence_id, geofence_mode, employment_start_date, employment_end_date, status, is_deleted, reports_to_admin)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            `).run(compId, linkedUserId, finalEmpCode, fullName, mobile, email, department, designation, city, managerId, shiftId, weeklyOffId, geofenceId, geoMode, empStartDate, empEndDate, status, reportsToAdmin);
             targetEmpId = insE.lastInsertRowid;
           }
         }

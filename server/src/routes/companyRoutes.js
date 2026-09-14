@@ -137,7 +137,7 @@ router.get('/:id', verifyAuth, (req, res) => {
 // Create Company (Super Admin only)
 router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const {
-    name, portal_name, code, email, phone, address, logo,
+    name, portal_name, code, email, phone, address, logo, plan_expiry_date,
     admin_username, admin_password, admin_email,
     timezone, working_hours_per_day, half_day_min_hours, full_day_min_hours,
     show_branding_mode
@@ -174,11 +174,11 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const roleCompAdmin = db.prepare("SELECT id FROM roles WHERE name = 'company_admin'").get();
 
   const transaction = db.transaction(() => {
-    // 1. Insert Company
+    // 1. Insert Company with Plan Expiry Date
     const compRes = db.prepare(`
-      INSERT INTO companies (name, portal_name, code, email, phone, address, logo, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(cleanName, finalPortalName, cleanCode, email || '', phone || '', address || '', logo || null);
+      INSERT INTO companies (name, portal_name, code, email, phone, address, logo, plan_expiry_date, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(cleanName, finalPortalName, cleanCode, email || '', phone || '', address || '', logo || null, plan_expiry_date || null);
 
     const newCompanyId = compRes.lastInsertRowid;
 
@@ -198,12 +198,13 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
       `${name} HRMS Portal`
     );
 
-    // 3. Enable standard modules
+    // 3. Enable standard modules (all 14 modules + aliases)
     const modules = [
-      'gps_attendance', 'geofencing', 'live_tracking', 'route_tracking',
-      'leave_management', 'holiday_management', 'weekly_off',
-      'shift_management', 'rotational_shift', 'excel_update',
-      'custom_reports', 'service_requests'
+      'employees', 'mapping', 'attendance_punch', 'manager_punch',
+      'corrections', 'leave_management', 'geofencing', 'shift_management',
+      'holidays', 'live_tracking', 'tickets', 'calendar', 'reports', 'payroll',
+      'gps_attendance', 'holiday_management', 'weekly_off', 'rotational_shift',
+      'excel_update', 'custom_reports', 'service_requests'
     ];
     const insertMod = db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled) VALUES (?, ?, 1)');
     modules.forEach(m => insertMod.run(newCompanyId, m));
@@ -293,7 +294,7 @@ router.put('/:id', verifyAuth, (req, res) => {
   }
 
   const {
-    name, portal_name, code, email, phone, address, logo, status,
+    name, portal_name, code, email, phone, address, logo, status, plan_expiry_date,
     admin_username, admin_password, admin_email,
     timezone, working_hours_per_day, half_day_min_hours, full_day_min_hours,
     show_branding_mode, auto_archive_days
@@ -337,6 +338,12 @@ router.put('/:id', verifyAuth, (req, res) => {
       newStatus = status;
     }
 
+    // Only Super Admin can change company plan expiry date
+    let newPlanExpiry = currentComp.plan_expiry_date;
+    if (req.user.role_name === 'super_admin' && plan_expiry_date !== undefined) {
+      newPlanExpiry = plan_expiry_date ? plan_expiry_date : null;
+    }
+
     const newName = (name && name.trim()) ? name.trim() : currentComp.name;
     const newPortalName = portal_name ? portal_name.trim() : newName;
     const newCode = (code && code.trim()) ? code.trim().toUpperCase() : currentComp.code;
@@ -350,6 +357,7 @@ router.put('/:id', verifyAuth, (req, res) => {
         phone = ?,
         address = COALESCE(?, address),
         logo = COALESCE(?, logo),
+        plan_expiry_date = ?,
         status = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -361,6 +369,7 @@ router.put('/:id', verifyAuth, (req, res) => {
       phone !== undefined ? phone : currentComp.phone,
       address,
       logo,
+      newPlanExpiry,
       newStatus,
       companyId
     );

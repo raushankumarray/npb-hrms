@@ -59,8 +59,45 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
 
   const branding = getBranding();
 
+  // Helper to check if a navigation tab's corresponding module is enabled
+  const isTabEnabled = (tabId, modules) => {
+    if (!modules || typeof modules !== 'object') return true;
+    switch (tabId) {
+      case 'employees':
+      case 'my-employees':
+        return modules.employees !== false;
+      case 'mapping':
+        return modules.mapping !== false;
+      case 'attendance':
+        return modules.attendance_punch !== false;
+      case 'approvals':
+        return (modules.corrections !== false) || (modules.leave_management !== false);
+      case 'calendar':
+        return modules.calendar !== false;
+      case 'leave':
+        return modules.leave_management !== false;
+      case 'geofences':
+        return modules.geofencing !== false;
+      case 'shifts':
+        return modules.shift_management !== false;
+      case 'holidays':
+        return modules.holidays !== false;
+      case 'live-map':
+        return modules.live_tracking !== false;
+      case 'tickets':
+        return modules.tickets !== false;
+      case 'reports':
+        return modules.reports !== false;
+      case 'correction':
+        return modules.corrections !== false;
+      default:
+        return true;
+    }
+  };
+
   // Navigation Items per Role
   const getNavItems = () => {
+    let rawItems = [];
     switch (user.role) {
       case 'super_admin':
         return [
@@ -87,7 +124,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         ];
 
       case 'company_admin':
-        return [
+        rawItems = [
           { id: 'dashboard', label: 'Dashboard', icon: Layers },
           { id: 'employees', label: 'Employees & Staff', icon: Users },
           { id: 'mapping', label: 'Employee Mapping', icon: UserCheck },
@@ -103,9 +140,10 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'reports', label: 'Custom Reports & Export', icon: FileText },
           { id: 'settings', label: 'Company Settings', icon: Settings }
         ];
+        return rawItems.filter(item => isTabEnabled(item.id, company?.modules));
 
       case 'manager':
-        return [
+        rawItems = [
           { id: 'dashboard', label: 'Dashboard', icon: Layers },
           { id: 'my-employees', label: 'My Employees', icon: Users },
           { id: 'attendance', label: 'Daily Attendance Reports', icon: Clock },
@@ -115,9 +153,10 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
           { id: 'reports', label: 'Team Reports', icon: FileText }
         ];
+        return rawItems.filter(item => isTabEnabled(item.id, company?.modules));
 
       case 'employee':
-        return [
+        rawItems = [
           { id: 'punch', label: 'Dashboard', icon: LayoutDashboard },
           { id: 'calendar', label: 'My Calendar & Attendance', icon: Calendar },
           { id: 'history', label: 'Attendance Logs', icon: Clock },
@@ -126,6 +165,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
           { id: 'profile', label: 'My Profile & Security', icon: UserCheck }
         ];
+        return rawItems.filter(item => isTabEnabled(item.id, company?.modules));
 
       default:
         return [];
@@ -189,6 +229,14 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
 
           {/* Header Right Actions */}
           <div className="flex items-center gap-2 sm:gap-3">
+            {/* Subscription Plan Expiry indicator */}
+            {company?.planExpiryDate && (
+              <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border border-slate-200 bg-slate-50 text-slate-700 shadow-2xs" title={`Subscription Plan Expiry: ${company.planExpiryDate}`}>
+                <Clock className="w-3 h-3 text-sky-600 shrink-0" />
+                <span>Plan: {company.planExpiryDate}</span>
+              </div>
+            )}
+
             {/* Master Refresh & Auto-Sync Button */}
             <button
               type="button"

@@ -95,6 +95,8 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     shift_id: '',
     geofence_id: '',
     geofence_mode: 'custom',
+    employment_start_date: '',
+    employment_end_date: '',
     status: 'active',
     password: ''
   });
@@ -161,7 +163,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     reports_to_admin: false,
     shift_id: '',
     geofence_id: '',
-    geofence_mode: 'custom'
+    geofence_mode: 'custom',
+    employment_start_date: new Date().toISOString().split('T')[0],
+    employment_end_date: ''
   });
 
   // Geofence & Shift & Holiday Forms
@@ -311,7 +315,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       city: '',
       shift_id: shifts[0]?.id ? String(shifts[0].id) : '',
       geofence_id: geofences[0]?.id ? String(geofences[0].id) : '',
-      geofence_mode: 'custom'
+      geofence_mode: 'custom',
+      employment_start_date: new Date().toISOString().split('T')[0],
+      employment_end_date: ''
     });
     setShowAddStaffModal(true);
   };
@@ -339,7 +345,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         geofence_id: staffForm.geofence_id || null,
         geofence_mode: staffForm.geofence_id ? 'custom' : 'company',
         manager_id: selectedManagerId,
-        reports_to_admin: isReportingToAdmin ? 1 : 0
+        reports_to_admin: isReportingToAdmin ? 1 : 0,
+        employment_start_date: staffForm.employment_start_date || undefined,
+        employment_end_date: staffForm.employment_end_date || undefined
       };
 
       const res = await apiRequest('/employees', {
@@ -374,6 +382,8 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       shift_id: emp.shift_id ? String(emp.shift_id) : '',
       geofence_id: emp.geofence_id ? String(emp.geofence_id) : '',
       geofence_mode: emp.geofence_id ? 'custom' : (emp.geofence_mode || 'company'),
+      employment_start_date: emp.employment_start_date || '',
+      employment_end_date: emp.employment_end_date || '',
       status: emp.status || 'active',
       password: ''
     });
@@ -401,7 +411,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         manager_id: (editStaffForm.role === 'employee' && editStaffForm.reports_to_manager) ? editStaffForm.manager_id : null,
         hr_id: null,
         reports_to_admin: editStaffForm.role === 'manager' ? 1 : (editStaffForm.reports_to_admin ? 1 : 0),
-        geofence_mode: editStaffForm.geofence_id ? 'custom' : 'company'
+        geofence_mode: editStaffForm.geofence_id ? 'custom' : 'company',
+        employment_start_date: editStaffForm.employment_start_date || null,
+        employment_end_date: editStaffForm.employment_end_date || null
       };
 
       await apiRequest(`/employees/${editingStaffId}`, {
@@ -867,6 +879,39 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
 
   const managersList = employees.filter(e => e.role_name === 'manager');
 
+  const isModuleTabActiveAndAllowed = (tab) => {
+    if (!company?.modules || typeof company.modules !== 'object') return true;
+    switch (tab) {
+      case 'employees':
+        return company.modules.employees !== false;
+      case 'mapping':
+        return company.modules.mapping !== false;
+      case 'attendance':
+        return company.modules.attendance_punch !== false;
+      case 'approvals':
+      case 'corrections':
+        return (company.modules.corrections !== false) || (company.modules.leave_management !== false);
+      case 'calendar':
+        return company.modules.calendar !== false;
+      case 'leave':
+        return company.modules.leave_management !== false;
+      case 'geofences':
+        return company.modules.geofencing !== false;
+      case 'shifts':
+        return company.modules.shift_management !== false;
+      case 'holidays':
+        return company.modules.holidays !== false;
+      case 'live-map':
+        return company.modules.live_tracking !== false;
+      case 'tickets':
+        return company.modules.tickets !== false;
+      case 'reports':
+        return company.modules.reports !== false;
+      default:
+        return true;
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -882,7 +927,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {activeTab === 'employees' && (
+          {activeTab === 'employees' && isModuleTabActiveAndAllowed('employees') && (
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -948,110 +993,137 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         </div>
       )}
 
-      {/* DASHBOARD */}
-      {activeTab === 'dashboard' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">Workforce Total</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">{employees.length}</p>
-              <div className="flex items-center gap-2 mt-2 text-[11px] font-medium text-slate-500">
-                <span className="text-sky-600">{employees.filter(e => e.role_name === 'employee').length} Employees</span>
-                <span>•</span>
-                <span className="text-purple-600">{employees.filter(e => e.role_name === 'manager').length} Managers</span>
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">Geofence Zones</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">{geofences.length}</p>
-              <span className="text-[11px] text-sky-600 font-semibold">GPS Verified Sites</span>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">Active Shifts</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">{shifts.length}</p>
-              <span className="text-[11px] text-purple-600 font-semibold">Morning / Evening / Night</span>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-medium text-slate-500 uppercase">Holidays Scheduled</span>
-              <p className="text-2xl font-black text-slate-900 mt-1">{holidays.length}</p>
-              <span className="text-[11px] text-amber-600 font-semibold">Calendar Synced</span>
-            </div>
+      {!isModuleTabActiveAndAllowed(activeTab) ? (
+        <div className="bg-white rounded-none border border-slate-200 shadow-sm p-12 text-center max-w-xl mx-auto my-8">
+          <div className="w-16 h-16 mx-auto bg-amber-50 rounded-none border border-amber-200 flex items-center justify-center text-amber-600 mb-4">
+            <Ban className="w-8 h-8" />
           </div>
-
-          {/* Workforce Leave Pools Section (Zero-Payroll Operational) */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-sky-600" />
-                  Workforce Leave Pools (Annual CL & Monthly EL)
-                </h3>
-                <p className="text-[11px] text-slate-400">
-                  Two-tier statutory leave policy • Zero-Payroll Compliant: Balances & operational quotas only
-                </p>
-              </div>
-              <div className="text-xs font-semibold text-slate-500">
-                Year: <span className="text-sky-700 font-bold">{leaveSummary.year || new Date().getFullYear()}</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-1">
-              {/* Casual Leave Card */}
-              <div className="p-4 rounded-xl border border-sky-100 bg-gradient-to-br from-sky-50/70 to-white space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-sky-900 uppercase">Casual Leave (CL)</span>
-                  <span className="px-2 py-0.5 bg-sky-100 text-sky-700 rounded-full text-[10px] font-bold">12 Days / Year</span>
-                </div>
-                <div className="text-2xl font-black text-sky-800">
-                  {leaveSummary.cl?.total_balance || 0} <span className="text-xs font-medium text-slate-500">days available</span>
-                </div>
-                <div className="flex items-center gap-3 text-[11px] text-slate-600">
-                  <span>Total Quota: <strong>{leaveSummary.cl?.total_quota || 0}d</strong></span>
-                  <span>•</span>
-                  <span>Total Used: <strong className="text-rose-600">{leaveSummary.cl?.total_used || 0}d</strong></span>
-                </div>
-              </div>
-
-              {/* Earned Leave Card */}
-              <div className="p-4 rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 to-white space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-emerald-900 uppercase">Earned Leave (EL)</span>
-                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-[10px] font-bold">+1.25 / Month</span>
-                </div>
-                <div className="text-2xl font-black text-emerald-800">
-                  {leaveSummary.el?.total_balance || 0} <span className="text-xs font-medium text-slate-500">days available</span>
-                </div>
-                <div className="flex items-center gap-3 text-[11px] text-slate-600">
-                  <span>Accrued: <strong>{leaveSummary.el?.total_accrued || 0}d</strong></span>
-                  <span>•</span>
-                  <span>Total Used: <strong className="text-rose-600">{leaveSummary.el?.total_used || 0}d</strong></span>
-                </div>
-              </div>
-
-              {/* Total Pool & Policy Summary */}
-              <div className="p-4 rounded-xl border border-purple-100 bg-gradient-to-br from-purple-50/70 to-white space-y-1.5 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-purple-900 uppercase">Total Workforce Balance</span>
-                    <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-[10px] font-bold">CL + EL</span>
-                  </div>
-                  <div className="text-2xl font-black text-purple-800 mt-1">
-                    {Number((leaveSummary.cl?.total_balance || 0) + (leaveSummary.el?.total_balance || 0)).toFixed(2)} <span className="text-xs font-medium text-slate-500">days pool</span>
-                  </div>
-                </div>
-                <div className="text-[11px] text-slate-600">
-                  <span>Pending Leave Requests: <strong className="text-amber-700">{leaveSummary.pendingRequests || 0}</strong></span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <LiveTrackingMap companyId={company?.id} />
+          <h3 className="text-base font-bold text-slate-900 mb-2">Service Unavailable</h3>
+          <p className="text-xs text-slate-500 mb-4">
+            This service has been disabled by administration.
+          </p>
+          <p className="text-[11px] text-slate-400">
+            Please contact Super Admin or your account administrator to enable this module in your subscription plan.
+          </p>
         </div>
-      )}
+      ) : (
+        <>
+          {/* DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {company?.modules?.employees !== false && (
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-medium text-slate-500 uppercase">Workforce Total</span>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{employees.length}</p>
+                    <div className="flex items-center gap-2 mt-2 text-[11px] font-medium text-slate-500">
+                      <span className="text-sky-600">{employees.filter(e => e.role_name === 'employee').length} Employees</span>
+                      <span>•</span>
+                      <span className="text-purple-600">{employees.filter(e => e.role_name === 'manager').length} Managers</span>
+                    </div>
+                  </div>
+                )}
+
+                {company?.modules?.geofencing !== false && (
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-medium text-slate-500 uppercase">Geofence Zones</span>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{geofences.length}</p>
+                    <span className="text-[11px] text-sky-600 font-semibold">GPS Verified Sites</span>
+                  </div>
+                )}
+
+                {company?.modules?.shift_management !== false && (
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-medium text-slate-500 uppercase">Active Shifts</span>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{shifts.length}</p>
+                    <span className="text-[11px] text-purple-600 font-semibold">Morning / Evening / Night</span>
+                  </div>
+                )}
+
+                {company?.modules?.holidays !== false && (
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-medium text-slate-500 uppercase">Holidays Scheduled</span>
+                    <p className="text-2xl font-black text-slate-900 mt-1">{holidays.length}</p>
+                    <span className="text-[11px] text-amber-600 font-semibold">Calendar Synced</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Workforce Leave Pools Section (Zero-Payroll Operational) */}
+              {company?.modules?.leave_management !== false && (
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-sky-600" />
+                        Workforce Leave Pools (Annual CL & Monthly EL)
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        Two-tier statutory leave policy • Zero-Payroll Compliant: Balances & operational quotas only
+                      </p>
+                    </div>
+                    <div className="text-xs font-semibold text-slate-500">
+                      Year: <span className="text-sky-700 font-bold">{leaveSummary.year || new Date().getFullYear()}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-1">
+                    {/* Casual Leave Card */}
+                    <div className="p-4 rounded-xl border border-sky-100 bg-gradient-to-br from-sky-50/70 to-white space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-sky-900 uppercase">Casual Leave (CL)</span>
+                        <span className="px-2 py-0.5 bg-sky-100 text-sky-700 rounded-full text-[10px] font-bold">12 Days / Year</span>
+                      </div>
+                      <div className="text-2xl font-black text-sky-800">
+                        {leaveSummary.cl?.total_balance || 0} <span className="text-xs font-medium text-slate-500">days available</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] text-slate-600">
+                        <span>Total Quota: <strong>{leaveSummary.cl?.total_quota || 0}d</strong></span>
+                        <span>•</span>
+                        <span>Total Used: <strong className="text-rose-600">{leaveSummary.cl?.total_used || 0}d</strong></span>
+                      </div>
+                    </div>
+
+                    {/* Earned Leave Card */}
+                    <div className="p-4 rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 to-white space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-900 uppercase">Earned Leave (EL)</span>
+                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-[10px] font-bold">+1.25 / Month</span>
+                      </div>
+                      <div className="text-2xl font-black text-emerald-800">
+                        {leaveSummary.el?.total_balance || 0} <span className="text-xs font-medium text-slate-500">days available</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] text-slate-600">
+                        <span>Accrued: <strong>{leaveSummary.el?.total_accrued || 0}d</strong></span>
+                        <span>•</span>
+                        <span>Total Used: <strong className="text-rose-600">{leaveSummary.el?.total_used || 0}d</strong></span>
+                      </div>
+                    </div>
+
+                    {/* Total Pool & Policy Summary */}
+                    <div className="p-4 rounded-xl border border-purple-100 bg-gradient-to-br from-purple-50/70 to-white space-y-1.5 flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-purple-900 uppercase">Total Workforce Balance</span>
+                          <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-[10px] font-bold">CL + EL</span>
+                        </div>
+                        <div className="text-2xl font-black text-purple-800 mt-1">
+                          {Number((leaveSummary.cl?.total_balance || 0) + (leaveSummary.el?.total_balance || 0)).toFixed(2)} <span className="text-xs font-medium text-slate-500">days pool</span>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-slate-600">
+                        <span>Pending Leave Requests: <strong className="text-amber-700">{leaveSummary.pendingRequests || 0}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {company?.modules?.live_tracking !== false && (
+                <LiveTrackingMap companyId={company?.id} />
+              )}
+            </div>
+          )}
 
       {/* EMPLOYEES / PERSONNEL & STAFF TAB */}
       {activeTab === 'employees' && (
@@ -2615,12 +2687,46 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
               </div>
             </form>
           </div>
+
+          {/* Subscription Plan Expiry Status Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3 lg:col-span-3">
+            <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-sky-600" />
+                <h3 className="text-sm font-bold text-slate-900">Subscription & Enterprise Plan Expiry</h3>
+              </div>
+              <span className="text-[10px] text-slate-400 font-medium">Managed exclusively by Super Admin</span>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-4 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+              <div>
+                <span className="text-xs font-semibold text-slate-500 block">Subscription Plan Expiry Date</span>
+                <span className="text-sm font-mono font-bold text-slate-900">
+                  {company?.planExpiryDate || 'Unlimited / Lifetime Active'}
+                </span>
+              </div>
+              <div>
+                <span className="text-xs font-semibold text-slate-500 block mb-1">Account Status</span>
+                {(() => {
+                  if (!company?.planExpiryDate) {
+                    return <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded">Active (Lifetime)</span>;
+                  }
+                  const todayStr = new Date().toISOString().split('T')[0];
+                  if (todayStr > company.planExpiryDate) {
+                    return <span className="text-xs font-bold text-rose-700 bg-rose-100 px-2.5 py-1 rounded">Expired / Suspended</span>;
+                  }
+                  return <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded">Active</span>;
+                })()}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       {/* CUSTOM REPORTS & EXPORT TAB */}
       {activeTab === 'reports' && (
         <CompanyCustomReportsView user={user} company={company} />
+      )}
+        </>
       )}
 
       {/* MODAL: ADD PERSONNEL / STAFF (EMPLOYEE / MANAGER) */}
@@ -2845,6 +2951,30 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                         <option key={s.id} value={s.id}>{s.name} ({s.start_time} - {s.end_time})</option>
                       ))}
                     </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Employment Start Date (Since Date) *</label>
+                    <input
+                      type="date"
+                      required
+                      value={staffForm.employment_start_date}
+                      onChange={(e) => setStaffForm({ ...staffForm, employment_start_date: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs font-semibold text-slate-800"
+                    />
+                    <span className="text-[10px] text-slate-400">Account data and access valid starting from this date</span>
+                  </div>
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Employment End Date (Last Date)</label>
+                    <input
+                      type="date"
+                      value={staffForm.employment_end_date}
+                      onChange={(e) => setStaffForm({ ...staffForm, employment_end_date: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs font-semibold text-slate-800"
+                    />
+                    <span className="text-[10px] text-slate-400">Optional. Account suspended automatically after this date</span>
                   </div>
                 </div>
               </div>
@@ -3128,6 +3258,29 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     </select>
                     <p className="text-[10px] text-slate-500 mt-1">Governs working hours and attendance window.</p>
                   </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Employment Start Date (Since Date)</label>
+                  <input
+                    type="date"
+                    value={editStaffForm.employment_start_date || ''}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, employment_start_date: e.target.value })}
+                    className="w-full p-2 border rounded-lg font-semibold text-slate-800"
+                  />
+                  <span className="text-[10px] text-slate-400">Account data & access valid starting from this date</span>
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Employment End Date (Last Date)</label>
+                  <input
+                    type="date"
+                    value={editStaffForm.employment_end_date || ''}
+                    onChange={(e) => setEditStaffForm({ ...editStaffForm, employment_end_date: e.target.value })}
+                    className="w-full p-2 border rounded-lg font-semibold text-slate-800"
+                  />
+                  <span className="text-[10px] text-slate-400">Optional. Account suspended automatically after this date</span>
                 </div>
               </div>
 

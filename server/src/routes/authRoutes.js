@@ -47,11 +47,22 @@ router.post('/login', (req, res) => {
     return res.status(403).json({ error: 'Account has been banned. Access denied.' });
   }
 
-  // Check employee-specific status if applicable
+  // Check employee-specific status and employment tenure if applicable
   if (user.employee_id) {
-    const empStatusRow = db.prepare('SELECT status FROM employees WHERE id = ?').get(user.employee_id);
-    if (empStatusRow && (empStatusRow.status === 'disabled' || empStatusRow.status === 'inactive' || empStatusRow.status === 'suspended' || empStatusRow.status === 'terminated')) {
-      return res.status(403).json({ error: `Employee account status is ${empStatusRow.status}. Access denied. Please contact HR/Administrator.` });
+    const empStatusRow = db.prepare('SELECT status, employment_start_date, employment_end_date FROM employees WHERE id = ?').get(user.employee_id);
+    if (empStatusRow) {
+      if (empStatusRow.status === 'disabled' || empStatusRow.status === 'inactive' || empStatusRow.status === 'suspended' || empStatusRow.status === 'terminated') {
+        return res.status(403).json({ error: `Employee account status is ${empStatusRow.status}. Access denied. Please contact HR/Administrator.` });
+      }
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (empStatusRow.employment_end_date && todayStr > empStatusRow.employment_end_date) {
+        return res.status(403).json({ error: `Account suspended. Your employment concluded on ${empStatusRow.employment_end_date}. Please contact your team/administration.` });
+      }
+
+      if (empStatusRow.employment_start_date && todayStr < empStatusRow.employment_start_date) {
+        return res.status(403).json({ error: `Account not yet active. Your employment begins on ${empStatusRow.employment_start_date}. Please contact your team/administration.` });
+      }
     }
   }
 
@@ -60,15 +71,20 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
 
-  // Check company status if user is tied to a company
+  // Check company status and plan expiry if user is tied to a company
   let companyInfo = null;
   if (user.company_id) {
-    const comp = db.prepare('SELECT id, name, portal_name, code, logo, status FROM companies WHERE id = ?').get(user.company_id);
+    const comp = db.prepare('SELECT id, name, portal_name, code, logo, plan_expiry_date, status FROM companies WHERE id = ?').get(user.company_id);
     if (!comp || comp.status === 'deleted') {
       return res.status(403).json({ error: 'Company account does not exist.' });
     }
     if (comp.status === 'disabled' || comp.status === 'banned' || comp.status === 'inactive' || comp.status === 'closed' || comp.status === 'suspended') {
       return res.status(403).json({ error: `Company access is ${comp.status}. Please contact Super Admin.` });
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (comp.plan_expiry_date && todayStr > comp.plan_expiry_date) {
+      return res.status(403).json({ error: `Company subscription plan has expired on ${comp.plan_expiry_date}. Account suspended. Please contact administration.` });
     }
 
     const settings = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(user.company_id);
@@ -80,6 +96,7 @@ router.post('/login', (req, res) => {
       portalName: comp.portal_name,
       code: comp.code,
       logo: comp.logo,
+      planExpiryDate: comp.plan_expiry_date || null,
       settings: settings || {},
       modules: modules.reduce((acc, m) => {
         acc[m.module_name] = !!m.is_enabled;
@@ -179,7 +196,19 @@ router.post('/login', (req, res) => {
 router.get('/me', verifyAuth, (req, res) => {
   let companyInfo = null;
   if (req.user.company_id) {
-    const comp = db.prepare('SELECT id, name, portal_name, code, logo, status FROM companies WHERE id = ?').get(req.user.company_id);
+    const comp = db.prepare('SELECT id, name, portal_name, code, logo, plan_expiry_date, status FROM companies WHERE id = ?').get(req.user.company_id);
+    if (!comp || comp.status === 'deleted') {
+      return res.status(403).json({ error: 'Company account does not exist.' });
+    }
+    if (comp.status === 'disabled' || comp.status === 'banned' || comp.status === 'inactive' || comp.status === 'closed' || comp.status === 'suspended') {
+      return res.status(403).json({ error: `Company access is ${comp.status}. Please contact Super Admin.` });
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    if (comp.plan_expiry_date && todayStr > comp.plan_expiry_date) {
+      return res.status(403).json({ error: `Company subscription plan has expired on ${comp.plan_expiry_date}. Account suspended.` });
+    }
+
     const settings = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(req.user.company_id);
     const modules = db.prepare('SELECT module_name, is_enabled FROM company_modules WHERE company_id = ?').all(req.user.company_id);
 
@@ -189,12 +218,27 @@ router.get('/me', verifyAuth, (req, res) => {
       portalName: comp.portal_name,
       code: comp.code,
       logo: comp.logo,
+      planExpiryDate: comp.plan_expiry_date || null,
       settings: settings || {},
       modules: modules.reduce((acc, m) => {
         acc[m.module_name] = !!m.is_enabled;
         return acc;
       }, {})
     };
+  }
+
+  // Check employee status and employment dates
+  if (req.user.employee_id) {
+    const empRow = db.prepare('SELECT status, employment_start_date, employment_end_date FROM employees WHERE id = ?').get(req.user.employee_id);
+    if (empRow) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (empRow.employment_end_date && todayStr > empRow.employment_end_date) {
+        return res.status(403).json({ error: `Account suspended. Employment tenure concluded on ${empRow.employment_end_date}.` });
+      }
+      if (empRow.employment_start_date && todayStr < empRow.employment_start_date) {
+        return res.status(403).json({ error: `Account not yet active. Employment starts on ${empRow.employment_start_date}.` });
+      }
+    }
   }
 
   let boundDevice = null;

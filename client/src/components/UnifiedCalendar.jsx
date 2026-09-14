@@ -48,7 +48,8 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
         offDays: data.offDays || ['Sunday'],
         isCustomWeeklyOff: !!data.isCustomWeeklyOff,
         weeklyOffName: data.weeklyOffName || (data.isCustomWeeklyOff ? 'Custom Assigned Weekly Off' : 'Company Scheduled Weekly Off'),
-        records: data.records || []
+        records: data.records || [],
+        employeeStartDate: data.employmentStartDate || data.employeeCreatedAt || null
       });
     } catch (err) {
       console.error('Failed to load calendar data:', err);
@@ -130,6 +131,9 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
   // Get attendance records for date
   const getRecordsForDay = (day) => {
     const dateKey = getDateKey(day);
+    if (calendarData.employeeStartDate && dateKey < calendarData.employeeStartDate) {
+      return [];
+    }
     return calendarData.records.filter(r => r.date === dateKey);
   };
 

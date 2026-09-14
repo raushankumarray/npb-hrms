@@ -94,10 +94,10 @@ function getCompanyCurrentTime(companyId) {
   return formatter.format(new Date());
 }
 
-// Get today's attendance status for logged-in employee
+// Get today's attendance status for logged-in employee / manager
 router.get('/today', verifyAuth, (req, res) => {
-  if (req.user.role_name !== 'employee') {
-    return res.status(400).json({ error: 'This endpoint is for employees.' });
+  if (!['employee', 'manager'].includes(req.user.role_name)) {
+    return res.status(400).json({ error: 'This endpoint is for employees and managers.' });
   }
 
   const today = req.query.date || getCompanyToday(req.user.company_id);
@@ -235,11 +235,30 @@ router.get('/calendar', verifyAuth, (req, res) => {
   const records = db.prepare(attQuery).all(...params);
 
   let employeeCreatedAt = null;
+  let employmentStartDate = null;
+  let employmentEndDate = null;
   if (employeeId) {
-    const emp = db.prepare('SELECT created_at FROM employees WHERE id = ?').get(employeeId);
-    if (emp && emp.created_at) {
-      employeeCreatedAt = String(emp.created_at).split('T')[0].split(' ')[0];
+    const emp = db.prepare('SELECT created_at, employment_start_date, employment_end_date FROM employees WHERE id = ?').get(employeeId);
+    if (emp) {
+      if (emp.created_at) {
+        employeeCreatedAt = String(emp.created_at).split('T')[0].split(' ')[0];
+      }
+      if (emp.employment_start_date) {
+        employmentStartDate = emp.employment_start_date;
+      }
+      if (emp.employment_end_date) {
+        employmentEndDate = emp.employment_end_date;
+      }
     }
+  }
+
+  const effectiveStartDate = employmentStartDate || employeeCreatedAt;
+  let filteredRecords = records;
+  if (employeeId && effectiveStartDate) {
+    filteredRecords = filteredRecords.filter(r => r.date >= effectiveStartDate);
+  }
+  if (employeeId && employmentEndDate) {
+    filteredRecords = filteredRecords.filter(r => r.date <= employmentEndDate);
   }
 
   res.json({
@@ -250,7 +269,9 @@ router.get('/calendar', verifyAuth, (req, res) => {
     isCustomWeeklyOff,
     weeklyOffName,
     employeeCreatedAt,
-    records
+    employmentStartDate,
+    employmentEndDate,
+    records: filteredRecords
   });
 });
 
@@ -301,6 +322,22 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     return res.status(403).json({ error: 'Only staff members (employees, managers) can punch attendance.' });
   }
 
+  const companyId = req.user.company_id;
+
+  // Enforce attendance_punch module
+  const punchMod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'attendance_punch'").get(companyId);
+  if (punchMod && punchMod.is_enabled === 0) {
+    return res.status(403).json({ error: 'Attendance punch feature has been disabled by administration.' });
+  }
+
+  // If manager, enforce manager_punch module
+  if (req.user.role_name === 'manager') {
+    const mgrPunchMod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'manager_punch'").get(companyId);
+    if (!mgrPunchMod || mgrPunchMod.is_enabled === 0) {
+      return res.status(403).json({ error: 'Manager attendance punching is not enabled for your organization.' });
+    }
+  }
+
   const { latitude, longitude, accuracy, location_name, punch_time, punch_date } = req.body;
 
   // 1. Mandatory GPS verification & 10m Accuracy Check (desktop & mobile)
@@ -317,7 +354,6 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     });
   }
 
-  const companyId = req.user.company_id;
   const employeeId = req.user.employee_id;
   const today = punch_date || getCompanyToday(companyId);
   const nowTime = punch_time || getCompanyCurrentTime(companyId);
@@ -448,6 +484,22 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     return res.status(403).json({ error: 'Only staff members (employees, managers) can punch attendance.' });
   }
 
+  const companyId = req.user.company_id;
+
+  // Enforce attendance_punch module
+  const punchMod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'attendance_punch'").get(companyId);
+  if (punchMod && punchMod.is_enabled === 0) {
+    return res.status(403).json({ error: 'Attendance punch feature has been disabled by administration.' });
+  }
+
+  // If manager, enforce manager_punch module
+  if (req.user.role_name === 'manager') {
+    const mgrPunchMod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'manager_punch'").get(companyId);
+    if (!mgrPunchMod || mgrPunchMod.is_enabled === 0) {
+      return res.status(403).json({ error: 'Manager attendance punching is not enabled for your organization.' });
+    }
+  }
+
   const { latitude, longitude, accuracy, location_name, punch_time, punch_date } = req.body;
 
   // 1. Mandatory GPS verification & 10m Accuracy Check (desktop & mobile)
@@ -464,7 +516,6 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     });
   }
 
-  const companyId = req.user.company_id;
   const employeeId = req.user.employee_id;
   const today = punch_date || getCompanyToday(companyId);
   const nowTime = punch_time || getCompanyCurrentTime(companyId);
@@ -621,8 +672,10 @@ router.get('/list', verifyAuth, (req, res) => {
       LEFT JOIN leave_requests lr ON lr.employee_id = e.id AND lr.status = 'approved' AND ? BETWEEN lr.start_date AND lr.end_date
       LEFT JOIN holidays hol ON hol.company_id = e.company_id AND hol.holiday_date = ?
       WHERE e.is_deleted = 0 AND e.status = 'active'
+        AND (e.employment_start_date IS NULL OR ? >= e.employment_start_date)
+        AND (e.employment_end_date IS NULL OR ? <= e.employment_end_date)
     `;
-    const singleParams = [effectiveDate, effectiveDate, effectiveDate];
+    const singleParams = [effectiveDate, effectiveDate, effectiveDate, effectiveDate, effectiveDate];
 
     if (companyId) {
       singleBaseQuery += ' AND e.company_id = ?';
@@ -775,6 +828,8 @@ router.get('/list', verifyAuth, (req, res) => {
     LEFT JOIN shifts s ON a.shift_id = s.id
     LEFT JOIN employees m ON e.manager_id = m.id
     WHERE e.is_deleted = 0
+      AND (e.employment_start_date IS NULL OR a.date >= e.employment_start_date)
+      AND (e.employment_end_date IS NULL OR a.date <= e.employment_end_date)
   `;
   const params = [];
 

@@ -430,13 +430,18 @@ Please deregister this device in Support Panel so I can register and log in on m
           listUrl += `&month=${filterMonth}&year=${filterYear}`;
         }
         const listRes = await apiRequest(listUrl);
-        setHistory(listRes.records || []);
+        const userStartDate = user?.employment_start_date || user?.employmentStartDate;
+        let listRecords = listRes.records || [];
+        if (userStartDate) {
+          listRecords = listRecords.filter(r => r.date >= userStartDate);
+        }
+        setHistory(listRecords);
 
         // Also fetch calendar data to compute exact monthly summary for active employee
         if (activeTab === 'history' || activeTab === 'punch') {
           try {
             const calRes = await apiRequest(`/attendance/calendar?month=${filterMonth}&year=${filterYear}`);
-            const empCreatedDate = calRes.employeeCreatedAt || (user?.created_at ? user.created_at.split('T')[0] : null);
+            const empCreatedDate = user?.employment_start_date || user?.employmentStartDate || calRes.employmentStartDate || calRes.employeeCreatedAt || (user?.created_at ? user.created_at.split('T')[0] : null);
             setCalendarData({
               records: calRes.records || [],
               holidays: calRes.holidays || [],
@@ -455,11 +460,18 @@ Please deregister this device in Support Panel so I can register and log in on m
             const offDays = calRes.offDays || ['Sunday'];
 
             let pCount = 0, hdCount = 0, woCount = 0, hoCount = 0, lCount = 0, aCount = 0;
+            let activeDaysCount = 0;
 
             for (let d = 1; d <= daysInMonth; d++) {
               const dStr = String(d).padStart(2, '0');
               const dateStr = `${filterYear}-${mStr}-${dStr}`;
               const dayName = dayNamesFull[new Date(filterYear, filterMonth - 1, d).getDay()];
+
+              // Omit days prior to employee employment start date
+              if (empCreatedDate && dateStr < empCreatedDate) {
+                continue;
+              }
+              activeDaysCount++;
 
               const att = attMap[dateStr];
               const hol = holMap[dateStr];
@@ -478,15 +490,13 @@ Please deregister this device in Support Panel so I can register and log in on m
               } else if (isWO) {
                 woCount++;
               } else if (dateStr < todayStr) {
-                if (!empCreatedDate || dateStr >= empCreatedDate) {
-                  aCount++;
-                }
+                aCount++;
               }
             }
 
             const payableDays = Math.round((pCount + (hdCount * 0.5) + woCount + hoCount + lCount) * 100) / 100;
             setMonthlyStats({
-              totalDays: daysInMonth,
+              totalDays: activeDaysCount || daysInMonth,
               present: pCount,
               half_day: hdCount,
               weekly_off: woCount,
@@ -1302,6 +1312,12 @@ Please deregister this device in Support Panel so I can register and log in on m
     for (let d = 1; d <= daysInMonth; d++) {
       const dStr = String(d).padStart(2, '0');
       const dateStr = `${filterYear}-${mStr}-${dStr}`;
+
+      const empStartDate = user?.employment_start_date || user?.employmentStartDate || calendarData?.employeeCreatedAt || (user?.created_at ? user.created_at.split('T')[0] : null);
+      if (empStartDate && dateStr < empStartDate) {
+        continue;
+      }
+
       const dayDate = new Date(filterYear, filterMonth - 1, d);
       const dayName = dayNamesFull[dayDate.getDay()];
       const shortDay = dayName.slice(0, 3);
@@ -1405,6 +1421,26 @@ Please deregister this device in Support Panel so I can register and log in on m
     ? filteredDailyLogs
     : filteredDailyLogs.slice((safeLogPage - 1) * effectivePageSize, safeLogPage * effectivePageSize);
 
+  const isAttendancePunchDisabled = company?.modules?.attendance_punch === false;
+
+  const isModuleTabActiveAndAllowed = (tab) => {
+    if (!company?.modules || typeof company.modules !== 'object') return true;
+    switch (tab) {
+      case 'calendar':
+        return company.modules.calendar !== false;
+      case 'history':
+        return company.modules.attendance_punch !== false;
+      case 'correction':
+        return company.modules.corrections !== false;
+      case 'leave':
+        return company.modules.leave_management !== false;
+      case 'tickets':
+        return company.modules.tickets !== false;
+      default:
+        return true;
+    }
+  };
+
   return (
     <div className="relative space-y-6 max-w-5xl mx-auto">
       {/* Decorative Ambient Glowing Graphics in Background */}
@@ -1428,45 +1464,70 @@ Please deregister this device in Support Panel so I can register and log in on m
         </div>
       )}
 
-      {/* VIEW: GPS ATTENDANCE PUNCH CARD */}
-      {activeTab === 'punch' && (
-        <div className="space-y-6">
-          {/* Welcome & Dashboard Status Header */}
-          <div className="relative overflow-hidden bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white rounded-3xl p-6 sm:p-7 shadow-xl border border-slate-700/80">
-            {/* Ambient Lighting in Header */}
-            <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-sky-500/15 rounded-full blur-3xl pointer-events-none" />
-            <div className="absolute bottom-0 right-1/4 -mb-16 w-56 h-56 bg-purple-500/15 rounded-full blur-3xl pointer-events-none" />
-            <div className="absolute top-1/2 left-0 -ml-16 w-48 h-48 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
-            
-            {/* Modern Subtle Dot Grid */}
-            <div className="absolute inset-0 opacity-10 pointer-events-none bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
+      {!isModuleTabActiveAndAllowed(activeTab) ? (
+        <div className="bg-white rounded-none border border-slate-200 shadow-sm p-12 text-center max-w-xl mx-auto my-8">
+          <div className="w-16 h-16 mx-auto bg-amber-50 rounded-none border border-amber-200 flex items-center justify-center text-amber-600 mb-4">
+            <Ban className="w-8 h-8" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 mb-2">Service Unavailable</h3>
+          <p className="text-xs text-slate-500 mb-4">
+            This service has been disabled by administration.
+          </p>
+          <p className="text-[11px] text-slate-400">
+            Please contact your manager or company administrator to enable this module.
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* VIEW: GPS ATTENDANCE PUNCH CARD */}
+          {activeTab === 'punch' && (
+            <div className="space-y-6">
+              {/* Notice Banner when attendance_punch is disabled */}
+              {isAttendancePunchDisabled && (
+                <div className="p-4 bg-amber-500/20 border border-amber-400/40 rounded-2xl text-amber-200 text-xs flex items-center gap-3">
+                  <Ban className="w-5 h-5 text-amber-400 shrink-0" />
+                  <div>
+                    <span className="font-bold text-sm text-white block">Attendance Punch Disabled</span>
+                    <span className="text-amber-300">Attendance punch feature has been disabled by administration.</span>
+                  </div>
+                </div>
+              )}
 
-            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1.5">
-                <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-                  Welcome, {user.fullName || user.username}
-                  {user.employeeCode && (
-                    <span className="ml-2 text-sm font-mono font-medium text-sky-300">
-                      ({user.employeeCode})
-                    </span>
-                  )}
-                </h2>
-                <p className="text-xs text-slate-300 max-w-xl leading-relaxed">
-                  Live operational panel • Auto-detected GPS attendance punch, leave balances & support.
-                </p>
+              {/* Welcome & Dashboard Status Header */}
+              <div className="relative overflow-hidden bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white rounded-3xl p-6 sm:p-7 shadow-xl border border-slate-700/80">
+                {/* Ambient Lighting in Header */}
+                <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-sky-500/15 rounded-full blur-3xl pointer-events-none" />
+                <div className="absolute bottom-0 right-1/4 -mb-16 w-56 h-56 bg-purple-500/15 rounded-full blur-3xl pointer-events-none" />
+                <div className="absolute top-1/2 left-0 -ml-16 w-48 h-48 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+                
+                {/* Modern Subtle Dot Grid */}
+                <div className="absolute inset-0 opacity-10 pointer-events-none bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
+
+                <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
+                      Welcome, {user.fullName || user.username}
+                      {user.employeeCode && (
+                        <span className="ml-2 text-sm font-mono font-medium text-sky-300">
+                          ({user.employeeCode})
+                        </span>
+                      )}
+                    </h2>
+                    <p className="text-xs text-slate-300 max-w-xl leading-relaxed">
+                      Live operational panel • Auto-detected GPS attendance punch, leave balances & support.
+                    </p>
+                  </div>
+                </div>
               </div>
 
-            </div>
-          </div>
-
-          {/* Punch Hero Card */}
-          <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden border border-slate-700">
-            <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between gap-6">
-              <div className="space-y-2.5 text-center sm:text-left">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-xs font-semibold border border-sky-500/30">
-                  <MapPin className="w-3.5 h-3.5" />
-                  Mandatory GPS Attendance
-                </div>
+              {/* Punch Hero Card */}
+              <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl p-6 sm:p-8 text-white shadow-xl relative overflow-hidden border border-slate-700">
+                <div className="relative z-10 flex flex-col sm:flex-row items-center justify-between gap-6">
+                  <div className="space-y-2.5 text-center sm:text-left">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 text-xs font-semibold border border-sky-500/30">
+                      <MapPin className="w-3.5 h-3.5" />
+                      Mandatory GPS Attendance
+                    </div>
                 <h3 className="text-2xl sm:text-3xl font-black font-mono tracking-tight">
                   {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                 </h3>
@@ -1576,6 +1637,7 @@ Please deregister this device in Support Panel so I can register and log in on m
                       type="button"
                       onClick={handlePunchIn}
                       disabled={
+                        isAttendancePunchDisabled ||
                         punchLoading ||
                         todayOnLeave ||
                         !isAccuracy90To100 ||
@@ -1583,7 +1645,9 @@ Please deregister this device in Support Panel so I can register and log in on m
                         (todayRecord && todayRecord.punch_in_time)
                       }
                       className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
-                        todayOnLeave
+                        isAttendancePunchDisabled
+                          ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-75'
+                          : todayOnLeave
                           ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
                           : !isAccuracy90To100 || !geofenceStatus.allowed
                           ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-75'
@@ -1592,7 +1656,9 @@ Please deregister this device in Support Panel so I can register and log in on m
                           : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/40 hover:scale-105 active:scale-95 cursor-pointer'
                       }`}
                       title={
-                        todayOnLeave
+                        isAttendancePunchDisabled
+                          ? 'Attendance punch feature has been disabled by administration.'
+                          : todayOnLeave
                           ? 'Attendance punch blocked: Currently on approved leave'
                           : !geofenceStatus.allowed
                           ? 'Geofence rule check failed: Outside office boundary'
@@ -1605,7 +1671,9 @@ Please deregister this device in Support Panel so I can register and log in on m
                     >
                       <span>PUNCH IN</span>
                       <span className="text-[11px] font-normal opacity-80">
-                        {todayOnLeave
+                        {isAttendancePunchDisabled
+                          ? 'Disabled'
+                          : todayOnLeave
                           ? 'On Leave'
                           : todayRecord && todayRecord.punch_in_time
                           ? todayRecord.punch_in_time
@@ -1617,6 +1685,7 @@ Please deregister this device in Support Panel so I can register and log in on m
                       type="button"
                       onClick={handlePunchOut}
                       disabled={
+                        isAttendancePunchDisabled ||
                         punchLoading ||
                         todayOnLeave ||
                         !isAccuracy90To100 ||
@@ -1626,7 +1695,9 @@ Please deregister this device in Support Panel so I can register and log in on m
                         todayRecord.punch_out_time
                       }
                       className={`w-full sm:w-40 py-4 px-6 rounded-2xl font-bold text-sm shadow-lg transition-all flex flex-col items-center justify-center gap-1 ${
-                        todayOnLeave
+                        isAttendancePunchDisabled
+                          ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-75'
+                          : todayOnLeave
                           ? 'bg-amber-950/60 text-amber-300 border border-amber-800/70 cursor-not-allowed opacity-80'
                           : !isAccuracy90To100 || !geofenceStatus.allowed
                           ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-75'
@@ -1635,7 +1706,9 @@ Please deregister this device in Support Panel so I can register and log in on m
                           : 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-900/40 hover:scale-105 active:scale-95 cursor-pointer'
                       }`}
                       title={
-                        todayOnLeave
+                        isAttendancePunchDisabled
+                          ? 'Attendance punch feature has been disabled by administration.'
+                          : todayOnLeave
                           ? 'Attendance punch blocked: Currently on approved leave'
                           : !geofenceStatus.allowed
                           ? 'Geofence rule check failed: Outside office boundary'
@@ -1648,7 +1721,9 @@ Please deregister this device in Support Panel so I can register and log in on m
                     >
                       <span>PUNCH OUT</span>
                       <span className="text-[11px] font-normal opacity-80">
-                        {todayOnLeave
+                        {isAttendancePunchDisabled
+                          ? 'Disabled'
+                          : todayOnLeave
                           ? 'On Leave'
                           : todayRecord?.punch_out_time
                           ? todayRecord.punch_out_time
@@ -3446,6 +3521,8 @@ Please deregister this device in Support Panel so I can register and log in on m
             </button>
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* DEVICE DEREGISTRATION REQUEST MODAL */}

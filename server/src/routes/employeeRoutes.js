@@ -358,7 +358,8 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
   const {
     employee_id, full_name, username, password, email, mobile,
     department, designation, city, manager_id, hr_id, shift_id, weekly_off_id,
-    geofence_id, geofence_mode, role, reports_to_admin
+    geofence_id, geofence_mode, role, reports_to_admin,
+    employment_start_date, employment_end_date
   } = req.body;
 
   if (!full_name || !username || !password) {
@@ -397,6 +398,14 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
   // Multi-level reporting resolution
   const finalReportsToAdmin = reports_to_admin ? 1 : 0;
 
+  // Employment Start and End dates (defaults to today's date if not specified)
+  const finalStartDate = (employment_start_date && String(employment_start_date).trim())
+    ? String(employment_start_date).trim()
+    : new Date().toISOString().split('T')[0];
+  const finalEndDate = (employment_end_date && String(employment_end_date).trim())
+    ? String(employment_end_date).trim()
+    : null;
+
   // If created by manager, manager_id strictly auto-maps to that manager's employee_id
   let finalManagerId = null;
   if (isManagerCreator) {
@@ -434,12 +443,14 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
       INSERT INTO employees (
         company_id, user_id, employee_id, full_name, mobile, email,
         department, designation, city, manager_id, hr_id, shift_id, weekly_off_id,
-        geofence_id, geofence_mode, reports_to_admin, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        geofence_id, geofence_mode, reports_to_admin,
+        employment_start_date, employment_end_date, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       companyId, userRes.lastInsertRowid, finalEmpId, full_name.trim(), mobile, email,
       department, designation, city || '', finalManagerId, finalHrId, shift_id || null, finalWeeklyOffId,
-      geofence_id || null, finalGeofenceMode, finalReportsToAdmin
+      geofence_id || null, finalGeofenceMode, finalReportsToAdmin,
+      finalStartDate, finalEndDate
     );
 
     const empDbId = empRes.lastInsertRowid;
@@ -476,7 +487,18 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
       action: 'EMPLOYEE_CREATED',
       targetEntity: 'employees',
       targetId: empDbId,
-      newValues: { employee_id: finalEmpId, full_name, username, department, designation, geofence_id, shift_id, reports_to_admin: finalReportsToAdmin },
+      newValues: {
+        employee_id: finalEmpId,
+        full_name,
+        username,
+        department,
+        designation,
+        geofence_id,
+        shift_id,
+        reports_to_admin: finalReportsToAdmin,
+        employment_start_date: finalStartDate,
+        employment_end_date: finalEndDate
+      },
       reason: 'Created personnel with unified onboarding form'
     });
 
@@ -514,7 +536,8 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
   const {
     employee_id, full_name, username, mobile, email, department, designation, city,
     role, manager_id, hr_id, shift_id, weekly_off_id, geofence_id, geofence_mode,
-    reports_to_admin, status, password
+    reports_to_admin, status, password,
+    employment_start_date, employment_end_date
   } = req.body;
 
   const currentEmp = db.prepare(`
@@ -562,6 +585,18 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
     const existingCode = db.prepare('SELECT id FROM employees WHERE company_id = ? AND employee_id = ? AND id != ?').get(currentEmp.company_id, finalEmpId, empId);
     if (existingCode) {
       return res.status(400).json({ error: `Employee ID "${finalEmpId}" already taken.` });
+    }
+  }
+
+  // Employment Start and End dates: Only Company Admin, Super Admin, and Support can modify
+  let newStartDate = currentEmp.employment_start_date;
+  let newEndDate = currentEmp.employment_end_date;
+  if (['company_admin', 'super_admin', 'support'].includes(req.user.role_name)) {
+    if (employment_start_date !== undefined) {
+      newStartDate = (employment_start_date && String(employment_start_date).trim()) ? String(employment_start_date).trim() : null;
+    }
+    if (employment_end_date !== undefined) {
+      newEndDate = (employment_end_date && String(employment_end_date).trim()) ? String(employment_end_date).trim() : null;
     }
   }
 
@@ -622,6 +657,8 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
         geofence_id = ?,
         geofence_mode = COALESCE(?, geofence_mode),
         reports_to_admin = ?,
+        employment_start_date = ?,
+        employment_end_date = ?,
         status = COALESCE(?, status),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -636,6 +673,8 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
       geofence_id !== undefined ? (geofence_id || null) : currentEmp.geofence_id,
       finalGeofenceMode,
       finalReportsToAdmin,
+      newStartDate,
+      newEndDate,
       status !== undefined ? ((status === 'suspended' || status === 'disabled') ? 'disabled' : status) : null,
       empId
     );

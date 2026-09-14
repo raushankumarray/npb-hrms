@@ -34,6 +34,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [editingCompanyId, setEditingCompanyId] = useState(null);
   const [editCompanyForm, setEditCompanyForm] = useState({
     name: '', code: '', email: '', phone: '', address: '', status: 'active',
+    plan_expiry_date: '',
     admin_username: '', admin_password: '', admin_email: ''
   });
 
@@ -62,6 +63,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   // New Company Form State (Portal Display Name removed as requested)
   const [newComp, setNewComp] = useState({
     name: '', code: '', email: '', phone: '', address: '',
+    plan_expiry_date: '',
     admin_username: '', admin_password: '', admin_email: '',
     timezone: 'Asia/Kolkata', working_hours_per_day: 8.0,
     half_day_min_hours: 4.0, full_day_min_hours: 8.0,
@@ -563,6 +565,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         phone: res.company.phone || '',
         address: res.company.address || '',
         status: res.company.status || 'active',
+        plan_expiry_date: res.company.plan_expiry_date || '',
         admin_username: res.adminUser?.username || '',
         admin_password: '',
         admin_email: res.adminUser?.email || ''
@@ -586,6 +589,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           phone: editCompanyForm.phone ? editCompanyForm.phone.trim() : '',
           address: editCompanyForm.address,
           status: editCompanyForm.status,
+          plan_expiry_date: editCompanyForm.plan_expiry_date ? editCompanyForm.plan_expiry_date : null,
           admin_username: editCompanyForm.admin_username ? editCompanyForm.admin_username.trim() : undefined,
           admin_password: editCompanyForm.admin_password ? editCompanyForm.admin_password.trim() : undefined,
           admin_email: editCompanyForm.admin_email ? editCompanyForm.admin_email.trim() : undefined,
@@ -894,18 +898,67 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     }
   };
 
+  const AVAILABLE_MODULES = [
+    { key: 'employees', label: 'Dynamic Form of Employee & Staff', desc: 'Employee onboarding, dynamic staff profiles, and personnel management' },
+    { key: 'mapping', label: 'Employee Mapping & Supervisors', desc: 'Hierarchy mapping and multi-level manager assignments' },
+    { key: 'attendance_punch', label: 'Attendance Punch Feature', desc: 'GPS mobile & desktop attendance punch clock for general staff' },
+    { key: 'manager_punch', label: 'Manager Attendance Punch', desc: 'Enable attendance punch features directly for team managers' },
+    { key: 'corrections', label: 'Attendance Approvals & Corrections', desc: 'Attendance correction requests, approval workflows, and audit records' },
+    { key: 'leave_management', label: 'Leave Management & Balances', desc: 'Leave requests, quota tracking, and balance deduction' },
+    { key: 'geofencing', label: 'Geofencing Master', desc: 'Office boundary geofencing, radius enforcement, and GPS verification' },
+    { key: 'shift_management', label: 'Shift Management & Rotational', desc: 'Shift scheduling, rotational assignments, and working hours' },
+    { key: 'holidays', label: 'Holidays & Weekly Off', desc: 'Company holiday master calendar, public holidays, and weekly off policies' },
+    { key: 'live_tracking', label: 'Live Tracking & Route Map', desc: 'Real-time location map, staff movement tracking, and breadcrumb trails' },
+    { key: 'tickets', label: 'Helpdesk & Support Tickets', desc: 'Employee issue reporting, service requests, and resolution chat' },
+    { key: 'calendar', label: 'Company Calendar', desc: 'Unified company events, employee milestones, and attendance calendar' },
+    { key: 'reports', label: 'Custom Reports & Export', desc: 'Dynamic Excel, PDF matrix export, and historical attendance reports' },
+    { key: 'payroll', label: 'Payroll Module', desc: 'Salary slip generation, payroll calculation, and compensation data' },
+  ];
+
   const openModulesModal = async (companyId) => {
     try {
       const res = await apiRequest(`/companies/${companyId}`);
+      // Initialize full module map ensuring all available modules have a defined boolean
+      const fullModMap = { ...res.modules };
+      AVAILABLE_MODULES.forEach(m => {
+        if (fullModMap[m.key] === undefined) {
+          fullModMap[m.key] = true;
+        }
+      });
       setSelectedCompanyModules({
         companyId,
         companyName: res.company.name,
-        modules: res.modules
+        modules: fullModMap
       });
       setModulesModalOpen(true);
     } catch (err) {
       setError(err.message);
     }
+  };
+
+  const toggleCompanyModule = (modKey) => {
+    if (!selectedCompanyModules) return;
+    const currentEnabled = selectedCompanyModules.modules[modKey] !== false;
+    const nextVal = !currentEnabled;
+
+    const nextModules = {
+      ...selectedCompanyModules.modules,
+      [modKey]: nextVal
+    };
+
+    if (modKey === 'attendance_punch') nextModules.gps_attendance = nextVal;
+    if (modKey === 'holidays') {
+      nextModules.holiday_management = nextVal;
+      nextModules.weekly_off = nextVal;
+    }
+    if (modKey === 'shift_management') nextModules.rotational_shift = nextVal;
+    if (modKey === 'reports') nextModules.custom_reports = nextVal;
+    if (modKey === 'tickets') nextModules.service_requests = nextVal;
+
+    setSelectedCompanyModules({
+      ...selectedCompanyModules,
+      modules: nextModules
+    });
   };
 
   const saveModules = async () => {
@@ -916,7 +969,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         body: { modules: selectedCompanyModules.modules }
       });
       setModulesModalOpen(false);
-      setSuccess('Modules updated successfully.');
+      setSuccess(`Module configuration for "${selectedCompanyModules.companyName}" updated successfully.`);
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -1343,6 +1396,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <th className="p-3">Admin Login</th>
                     <th className="p-3">Contact & Address</th>
                     <th className="p-3">Workforce Breakdown</th>
+                    <th className="p-3">Plan Expiry</th>
                     <th className="p-3">Modules</th>
                     <th className="p-3 text-right">Actions</th>
                   </tr>
@@ -1350,7 +1404,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 <tbody className="divide-y divide-slate-100">
                   {companies.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="p-8 text-center text-slate-400 text-xs">
+                      <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
                         No company portals found matching the selected filter or search criteria.
                       </td>
                     </tr>
@@ -1445,6 +1499,53 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                                 </span>
                               </div>
                             </div>
+                          </td>
+                          <td className="p-3">
+                            {(() => {
+                              if (!c.plan_expiry_date) {
+                                return (
+                                  <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-bold bg-slate-100 text-slate-600 rounded border border-slate-200">
+                                    Lifetime
+                                  </span>
+                                );
+                              }
+                              const todayStr = new Date().toISOString().split('T')[0];
+                              const expiry = c.plan_expiry_date;
+                              const isExpired = todayStr > expiry;
+                              const daysLeft = Math.ceil((new Date(expiry) - new Date(todayStr)) / (1000 * 60 * 60 * 24));
+                              
+                              if (isExpired) {
+                                return (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 rounded">
+                                      <Ban className="w-3 h-3 text-rose-600" />
+                                      Expired
+                                    </span>
+                                    <p className="text-[10px] font-mono text-rose-600 font-semibold">{expiry}</p>
+                                  </div>
+                                );
+                              }
+                              if (daysLeft <= 30) {
+                                return (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 rounded">
+                                      <Clock className="w-3 h-3 text-amber-600" />
+                                      Expiring ({daysLeft}d)
+                                    </span>
+                                    <p className="text-[10px] font-mono text-amber-700">{expiry}</p>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div className="space-y-0.5">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded">
+                                    <CheckCircle className="w-3 h-3 text-emerald-600" />
+                                    Active ({daysLeft}d)
+                                  </span>
+                                  <p className="text-[10px] font-mono text-slate-500">{expiry}</p>
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="p-3">
                             <button
@@ -2726,15 +2827,27 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 </div>
               </div>
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Company Address (Optional)</label>
-                <input
-                  type="text"
-                  value={newComp.address}
-                  onChange={(e) => setNewComp({ ...newComp, address: e.target.value })}
-                  placeholder="e.g. Tower B, Tech Park, Bangalore"
-                  className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Company Address (Optional)</label>
+                  <input
+                    type="text"
+                    value={newComp.address}
+                    onChange={(e) => setNewComp({ ...newComp, address: e.target.value })}
+                    placeholder="e.g. Tower B, Tech Park, Bangalore"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Plan Expiry Date (Optional)</label>
+                  <input
+                    type="date"
+                    value={newComp.plan_expiry_date}
+                    onChange={(e) => setNewComp({ ...newComp, plan_expiry_date: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500 font-semibold"
+                  />
+                  <span className="text-[10px] text-slate-400">Account auto-suspends after this date</span>
+                </div>
               </div>
 
               <div className="border-t border-slate-100 pt-3">
@@ -3026,6 +3139,19 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <option value="disabled">Disabled (Portal Suspended)</option>
                     <option value="banned">Banned (Restricted)</option>
                   </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Subscription Plan Expiry Date</label>
+                  <input
+                    type="date"
+                    value={editCompanyForm.plan_expiry_date || ''}
+                    onChange={(e) => setEditCompanyForm({ ...editCompanyForm, plan_expiry_date: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500 font-semibold"
+                  />
+                  <span className="text-[10px] text-slate-400">Company & all users suspended after this date</span>
                 </div>
               </div>
 
@@ -3630,6 +3756,106 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: MODULE CONFIGURATION */}
+      {modulesModalOpen && selectedCompanyModules && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-none max-w-4xl w-full p-6 shadow-2xl border-2 border-slate-300 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+            <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-5 h-5 text-sky-600" />
+                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                    Module Configuration: {selectedCompanyModules.companyName}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Enable or disable system modules. Disabled modules are immediately hidden and blocked across Company Admin, Manager, and Employee portals.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModulesModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 font-bold text-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pr-1">
+              {AVAILABLE_MODULES.map((m) => {
+                const isEnabled = selectedCompanyModules.modules[m.key] !== false;
+                return (
+                  <div
+                    key={m.key}
+                    onClick={() => toggleCompanyModule(m.key)}
+                    className={`p-3.5 border rounded-none transition-all cursor-pointer select-none flex items-start justify-between gap-3 ${
+                      isEnabled
+                        ? 'bg-sky-50/50 border-sky-300 shadow-xs'
+                        : 'bg-slate-50 border-slate-200 opacity-75'
+                    }`}
+                  >
+                    <div className="space-y-1 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-xs text-slate-800">{m.label}</span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 uppercase tracking-wider ${
+                          isEnabled
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-200 text-slate-600'
+                        }`}>
+                          {isEnabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">{m.desc}</p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCompanyModule(m.key);
+                      }}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none ${
+                        isEnabled ? 'bg-emerald-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          isEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+              <span className="text-xs text-slate-500">
+                Active Modules: <strong className="text-slate-800">
+                  {AVAILABLE_MODULES.filter(m => selectedCompanyModules.modules[m.key] !== false).length}
+                </strong> of {AVAILABLE_MODULES.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModulesModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 rounded-none text-slate-700 hover:bg-slate-50 font-semibold text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveModules}
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none font-bold text-xs shadow-sm"
+                >
+                  Save Module Settings
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

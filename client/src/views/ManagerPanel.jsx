@@ -79,6 +79,10 @@ export default function ManagerPanel({ user, company, activeTab }) {
     }
   });
 
+  // Manager Attendance Punch state
+  const [managerAttendanceToday, setManagerAttendanceToday] = useState(null);
+  const [punchLoading, setPunchLoading] = useState(false);
+
   // Form states
   const [newEmp, setNewEmp] = useState({
     employee_id: '',
@@ -94,7 +98,8 @@ export default function ManagerPanel({ user, company, activeTab }) {
     geofence_id: '',
     role: 'employee',
     reports_to_manager: true,
-    reports_to_admin: false
+    reports_to_admin: false,
+    employment_start_date: new Date().toISOString().split('T')[0]
   });
 
   const [editEmpForm, setEditEmpForm] = useState({
@@ -111,9 +116,151 @@ export default function ManagerPanel({ user, company, activeTab }) {
     reports_to_admin: false,
     shift_id: '',
     geofence_id: '',
+    employment_start_date: '',
+    employment_end_date: '',
     status: 'active',
     password: ''
   });
+
+  const fetchManagerTodayAttendance = async () => {
+    try {
+      const res = await apiRequest('/attendance/today');
+      setManagerAttendanceToday(res);
+    } catch (e) {
+      console.error('Failed to fetch manager today attendance:', e);
+    }
+  };
+
+  const handleManagerPunchIn = async () => {
+    setError('');
+    setSuccess('');
+    setPunchLoading(true);
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('Geolocation is not supported by your browser.'));
+        } else {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        }
+      });
+
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const acc = pos.coords.accuracy || 10;
+      const now = new Date();
+      const currentPunchTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const currentPunchDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+      let locName = 'Manager Verified GPS Site';
+      try {
+        const geoRes = await apiRequest(`/attendance/reverse-geocode?lat=${lat}&lon=${lon}`);
+        if (geoRes?.location) locName = geoRes.location;
+      } catch (e) {
+        // fallback
+      }
+
+      await apiRequest('/attendance/punch-in', {
+        method: 'POST',
+        body: {
+          latitude: lat,
+          longitude: lon,
+          accuracy: acc,
+          location_name: locName,
+          punch_time: currentPunchTime,
+          punch_date: currentPunchDate
+        }
+      });
+
+      setSuccess('Manager attendance punch-in recorded successfully via verified GPS.');
+      fetchManagerTodayAttendance();
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to record punch-in. Please ensure device GPS is enabled.');
+    } finally {
+      setPunchLoading(false);
+    }
+  };
+
+  const handleManagerPunchOut = async () => {
+    setError('');
+    setSuccess('');
+    setPunchLoading(true);
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('Geolocation is not supported by your browser.'));
+        } else {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        }
+      });
+
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const acc = pos.coords.accuracy || 10;
+      const now = new Date();
+      const currentPunchTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const currentPunchDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+      let locName = 'Manager Verified GPS Site';
+      try {
+        const geoRes = await apiRequest(`/attendance/reverse-geocode?lat=${lat}&lon=${lon}`);
+        if (geoRes?.location) locName = geoRes.location;
+      } catch (e) {
+        // fallback
+      }
+
+      await apiRequest('/attendance/punch-out', {
+        method: 'POST',
+        body: {
+          latitude: lat,
+          longitude: lon,
+          accuracy: acc,
+          location_name: locName,
+          punch_time: currentPunchTime,
+          punch_date: currentPunchDate
+        }
+      });
+
+      setSuccess('Manager attendance punch-out recorded successfully.');
+      fetchManagerTodayAttendance();
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to record punch-out. Please ensure device GPS is enabled.');
+    } finally {
+      setPunchLoading(false);
+    }
+  };
+
+  const isModuleTabActiveAndAllowed = (tab) => {
+    if (!company?.modules || typeof company.modules !== 'object') return true;
+    switch (tab) {
+      case 'my-employees':
+        return company.modules.employees !== false;
+      case 'attendance':
+        return company.modules.attendance_punch !== false;
+      case 'approvals':
+      case 'corrections':
+        return (company.modules.corrections !== false) || (company.modules.leave_management !== false);
+      case 'calendar':
+        return company.modules.calendar !== false;
+      case 'live-map':
+        return company.modules.live_tracking !== false;
+      case 'tickets':
+        return company.modules.tickets !== false;
+      case 'reports':
+        return company.modules.reports !== false;
+      default:
+        return true;
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -122,6 +269,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
       if (activeTab === 'dashboard') {
         const statsRes = await apiRequest('/employees/manager-dashboard-stats');
         setDashboardStats(statsRes);
+        if (company?.modules?.manager_punch === true) {
+          fetchManagerTodayAttendance();
+        }
       }
       if (activeTab === 'my-employees') {
         const queryParams = new URLSearchParams();
@@ -182,6 +332,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
         ...newEmp,
         manager_id: user?.employee_id || user?.id,
         hr_id: null,
+        employment_start_date: newEmp.employment_start_date || new Date().toISOString().split('T')[0],
         reports_to_admin: newEmp.reports_to_admin ? 1 : 0,
         geofence_mode: newEmp.role === 'manager'
           ? (newEmp.geofence_id ? 'custom' : 'none')
@@ -198,7 +349,8 @@ export default function ManagerPanel({ user, company, activeTab }) {
         employee_id: '', full_name: '', username: '', password: 'User@12345',
         email: '', mobile: '', department: 'Operations', designation: 'Associate',
         city: '', shift_id: '', geofence_id: '', role: 'employee',
-        reports_to_manager: true, reports_to_admin: false
+        reports_to_manager: true, reports_to_admin: false,
+        employment_start_date: new Date().toISOString().split('T')[0]
       });
       fetchData();
     } catch (err) {
@@ -223,6 +375,8 @@ export default function ManagerPanel({ user, company, activeTab }) {
       reports_to_admin: !!emp.reports_to_admin,
       shift_id: emp.shift_id ? String(emp.shift_id) : '',
       geofence_id: emp.geofence_id ? String(emp.geofence_id) : '',
+      employment_start_date: emp.employment_start_date || '',
+      employment_end_date: emp.employment_end_date || '',
       status: emp.status || 'active',
       password: ''
     });
@@ -413,111 +567,236 @@ export default function ManagerPanel({ user, company, activeTab }) {
         </div>
       )}
 
-      {/* DASHBOARD */}
-      {activeTab === 'dashboard' && (
-        <div className="space-y-6">
-          {/* 3 Core Metric Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {/* 1. Assigned Team Members */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-              <div>
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Assigned Team Members</span>
-                <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.assigned_members}</p>
-                <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1 mt-1">
-                  <CheckCircle className="w-3.5 h-3.5" /> Total Active Direct Reports
-                </span>
-              </div>
-              <div className="w-12 h-12 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
-                <Users className="w-6 h-6" />
-              </div>
-            </div>
-
-            {/* 2. Pending Leave Approvals */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-              <div>
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Leave Approvals</span>
-                <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.pending_leaves}</p>
-                <span className="text-[11px] text-amber-600 font-semibold flex items-center gap-1 mt-1">
-                  <Clock className="w-3.5 h-3.5" /> Awaiting Manager Review
-                </span>
-              </div>
-              <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-                <Calendar className="w-6 h-6" />
-              </div>
-            </div>
-
-            {/* 3. Pending Attendance Corrections */}
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
-              <div>
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Attendance Corrections</span>
-                <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.pending_corrections}</p>
-                <span className="text-[11px] text-purple-600 font-semibold flex items-center gap-1 mt-1">
-                  <Edit3 className="w-3.5 h-3.5" /> Missing Punch Appeals
-                </span>
-              </div>
-              <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
-                <Edit3 className="w-6 h-6" />
-              </div>
-            </div>
+      {!isModuleTabActiveAndAllowed(activeTab) ? (
+        <div className="bg-white rounded-none border border-slate-200 shadow-sm p-12 text-center max-w-xl mx-auto my-8">
+          <div className="w-16 h-16 mx-auto bg-amber-50 rounded-none border border-amber-200 flex items-center justify-center text-amber-600 mb-4">
+            <Ban className="w-8 h-8" />
           </div>
-
-          {/* 4. Attendance Recorded (Daily Basis - Today) */}
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-sky-600" />
-                  <span>Attendance Recorded (Daily Basis - Today)</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Live daily attendance breakdown for assigned team members ({dashboardStats.today_attendance?.date || new Date().toISOString().split('T')[0]})
-                </p>
-              </div>
-              <div className="text-xs font-semibold text-slate-500 bg-slate-50 px-3 py-1 rounded-xl border border-slate-200">
-                Team Size: <span className="font-bold text-slate-800">{dashboardStats.assigned_members}</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
-              {/* Present */}
-              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200/70 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">Present</span>
-                  <p className="text-3xl font-black text-emerald-700 mt-1">{dashboardStats.today_attendance?.present || 0}</p>
-                  <p className="text-[11px] text-emerald-600 font-medium mt-0.5">Punched In / On Duty</p>
-                </div>
-                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-                  <CheckCircle className="w-5 h-5" />
-                </div>
-              </div>
-
-              {/* Absent */}
-              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200/70 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-rose-800 uppercase tracking-wider">Absent</span>
-                  <p className="text-3xl font-black text-rose-700 mt-1">{dashboardStats.today_attendance?.absent || 0}</p>
-                  <p className="text-[11px] text-rose-600 font-medium mt-0.5">No Punch Recorded</p>
-                </div>
-                <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
-                  <X className="w-5 h-5" />
-                </div>
-              </div>
-
-              {/* Leave */}
-              <div className="p-4 rounded-xl bg-amber-50 border border-amber-200/70 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">On Leave</span>
-                  <p className="text-3xl font-black text-amber-700 mt-1">{dashboardStats.today_attendance?.leave || 0}</p>
-                  <p className="text-[11px] text-amber-600 font-medium mt-0.5">Approved Leave Today</p>
-                </div>
-                <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
-                  <Calendar className="w-5 h-5" />
-                </div>
-              </div>
-            </div>
-          </div>
+          <h3 className="text-base font-bold text-slate-900 mb-2">Service Unavailable</h3>
+          <p className="text-xs text-slate-500 mb-4">
+            This service has been disabled by administration.
+          </p>
+          <p className="text-[11px] text-slate-400">
+            Please contact Company Administration or Super Admin to enable this module for your organization.
+          </p>
         </div>
-      )}
+      ) : (
+        <>
+          {/* DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-6">
+              {/* Manager Attendance Punch Card (Visible strictly when manager_punch module is enabled) */}
+              {company?.modules?.manager_punch === true && (
+                <div className="bg-white p-6 rounded-none border border-slate-200 shadow-sm space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-sky-50 text-sky-600 flex items-center justify-center rounded-none border border-sky-200">
+                        <Clock className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-bold text-slate-900">Manager Attendance Punch</h3>
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-none">
+                            Module Enabled
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Record your daily supervisory attendance via verified GPS coordinates
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs text-slate-500 font-medium">Date: </span>
+                      <span className="text-xs font-bold text-slate-800">{new Date().toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                    </div>
+                  </div>
+
+                  {/* Punch Status Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-none">
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase block">Punch-In Status</span>
+                      <span className="text-base font-bold text-slate-900 mt-1 block">
+                        {managerAttendanceToday?.record?.punch_in_time ? (
+                          <span className="text-emerald-700 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            {managerAttendanceToday.record.punch_in_time}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Not Punched In</span>
+                        )}
+                      </span>
+                      {managerAttendanceToday?.record?.punch_in_location && (
+                        <span className="text-[10px] text-slate-500 block truncate mt-0.5">
+                          {managerAttendanceToday.record.punch_in_location}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-none">
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase block">Punch-Out Status</span>
+                      <span className="text-base font-bold text-slate-900 mt-1 block">
+                        {managerAttendanceToday?.record?.punch_out_time ? (
+                          <span className="text-purple-700 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-4 h-4 text-purple-600" />
+                            {managerAttendanceToday.record.punch_out_time}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Not Punched Out</span>
+                        )}
+                      </span>
+                      {managerAttendanceToday?.record?.punch_out_location && (
+                        <span className="text-[10px] text-slate-500 block truncate mt-0.5">
+                          {managerAttendanceToday.record.punch_out_location}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-none">
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase block">Daily Working Hours</span>
+                      <span className="text-base font-bold text-sky-800 mt-1 block">
+                        {managerAttendanceToday?.record?.working_hours ? `${managerAttendanceToday.record.working_hours} hrs` : '--'}
+                      </span>
+                      <span className="text-[10px] text-slate-500 block mt-0.5">
+                        Shift: {managerAttendanceToday?.shift?.name || 'General Shift'} ({managerAttendanceToday?.shift?.start_time || '09:00'} - {managerAttendanceToday?.shift?.end_time || '18:00'})
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Punch Action Buttons */}
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      disabled={punchLoading || !!managerAttendanceToday?.record?.punch_in_time}
+                      onClick={handleManagerPunchIn}
+                      className={`px-5 py-2.5 rounded-none font-bold text-xs flex items-center gap-2 border transition-all ${
+                        managerAttendanceToday?.record?.punch_in_time
+                          ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-700 shadow-sm'
+                      }`}
+                    >
+                      <Clock className="w-4 h-4" />
+                      <span>{punchLoading ? 'Acquiring GPS...' : managerAttendanceToday?.record?.punch_in_time ? 'Already Punched In' : 'GPS Punch In'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={punchLoading || !managerAttendanceToday?.record?.punch_in_time || !!managerAttendanceToday?.record?.punch_out_time}
+                      onClick={handleManagerPunchOut}
+                      className={`px-5 py-2.5 rounded-none font-bold text-xs flex items-center gap-2 border transition-all ${
+                        !managerAttendanceToday?.record?.punch_in_time || !!managerAttendanceToday?.record?.punch_out_time
+                          ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                          : 'bg-rose-600 hover:bg-rose-500 text-white border-rose-700 shadow-sm'
+                      }`}
+                    >
+                      <Clock className="w-4 h-4" />
+                      <span>{punchLoading ? 'Acquiring GPS...' : managerAttendanceToday?.record?.punch_out_time ? 'Already Punched Out' : 'GPS Punch Out'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 3 Core Metric Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* 1. Assigned Team Members */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Assigned Team Members</span>
+                    <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.assigned_members}</p>
+                    <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1 mt-1">
+                      <CheckCircle className="w-3.5 h-3.5" /> Total Active Direct Reports
+                    </span>
+                  </div>
+                  <div className="w-12 h-12 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
+                    <Users className="w-6 h-6" />
+                  </div>
+                </div>
+
+                {/* 2. Pending Leave Approvals */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Leave Approvals</span>
+                    <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.pending_leaves}</p>
+                    <span className="text-[11px] text-amber-600 font-semibold flex items-center gap-1 mt-1">
+                      <Clock className="w-3.5 h-3.5" /> Awaiting Manager Review
+                    </span>
+                  </div>
+                  <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+                    <Calendar className="w-6 h-6" />
+                  </div>
+                </div>
+
+                {/* 3. Pending Attendance Corrections */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pending Attendance Corrections</span>
+                    <p className="text-3xl font-black text-slate-900 mt-1">{dashboardStats.pending_corrections}</p>
+                    <span className="text-[11px] text-purple-600 font-semibold flex items-center gap-1 mt-1">
+                      <Edit3 className="w-3.5 h-3.5" /> Missing Punch Appeals
+                    </span>
+                  </div>
+                  <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+                    <Edit3 className="w-6 h-6" />
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Attendance Recorded (Daily Basis - Today) */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-sky-600" />
+                      <span>Attendance Recorded (Daily Basis - Today)</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Live daily attendance breakdown for assigned team members ({dashboardStats.today_attendance?.date || new Date().toISOString().split('T')[0]})
+                    </p>
+                  </div>
+                  <div className="text-xs font-semibold text-slate-500 bg-slate-50 px-3 py-1 rounded-xl border border-slate-200">
+                    Team Size: <span className="font-bold text-slate-800">{dashboardStats.assigned_members}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+                  {/* Present */}
+                  <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200/70 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">Present</span>
+                      <p className="text-3xl font-black text-emerald-700 mt-1">{dashboardStats.today_attendance?.present || 0}</p>
+                      <p className="text-[11px] text-emerald-600 font-medium mt-0.5">Punched In / On Duty</p>
+                    </div>
+                    <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                      <CheckCircle className="w-5 h-5" />
+                    </div>
+                  </div>
+
+                  {/* Absent */}
+                  <div className="p-4 rounded-xl bg-rose-50 border border-rose-200/70 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-rose-800 uppercase tracking-wider">Absent</span>
+                      <p className="text-3xl font-black text-rose-700 mt-1">{dashboardStats.today_attendance?.absent || 0}</p>
+                      <p className="text-[11px] text-rose-600 font-medium mt-0.5">No Punch Recorded</p>
+                    </div>
+                    <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                      <X className="w-5 h-5" />
+                    </div>
+                  </div>
+
+                  {/* Leave */}
+                  <div className="p-4 rounded-xl bg-amber-50 border border-amber-200/70 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">On Leave</span>
+                      <p className="text-3xl font-black text-amber-700 mt-1">{dashboardStats.today_attendance?.leave || 0}</p>
+                      <p className="text-[11px] text-amber-600 font-medium mt-0.5">Approved Leave Today</p>
+                    </div>
+                    <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                      <Calendar className="w-5 h-5" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
       {/* MY EMPLOYEES */}
       {activeTab === 'my-employees' && (
@@ -1264,6 +1543,8 @@ export default function ManagerPanel({ user, company, activeTab }) {
       {activeTab === 'reports' && (
         <ManagerMonthlyAttendanceSheetView user={user} company={company} />
       )}
+        </>
+      )}
 
       {/* MODAL: SOLVE TICKET */}
       {showSolveTicketModal && selectedTicket && (
@@ -1667,6 +1948,23 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     </select>
                   </div>
                 </div>
+
+                {/* Employment Tenure / Dates */}
+                <div className="pt-2 border-t border-slate-200">
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Employment Start Date (Since Date) *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={newEmp.employment_start_date || new Date().toISOString().split('T')[0]}
+                    onChange={(e) => setNewEmp({ ...newEmp, employment_start_date: e.target.value })}
+                    className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Employment Start Date determines when the employee's tenure begins. Account End Date is managed strictly by Company Administration.
+                  </p>
+                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
@@ -1902,6 +2200,26 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     className="w-full p-2 border rounded-lg"
                   />
                 </div>
+              </div>
+
+              {/* Employment Tenure Information (Read-only for Manager) */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none space-y-1.5">
+                <span className="font-bold text-slate-700 block text-[11px] uppercase tracking-wider">
+                  Employment Tenure (Admin Managed)
+                </span>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <span className="text-slate-500 block">Since Date:</span>
+                    <span className="font-semibold text-slate-800">{editEmpForm.employment_start_date || 'Account Creation'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Account Expiry / End Date:</span>
+                    <span className="font-semibold text-slate-800">{editEmpForm.employment_end_date || 'Active / Lifetime'}</span>
+                  </div>
+                </div>
+                <p className="text-[10px] text-slate-400 pt-0.5">
+                  Tenure dates can only be updated by Company Administration.
+                </p>
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
