@@ -122,10 +122,10 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-5 max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+      <div className="bg-white rounded-none max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
-            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2 uppercase tracking-wide">
               <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
               Employee Excel Engine
             </h3>
@@ -137,7 +137,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+            className="p-1 rounded-none text-slate-400 hover:text-slate-600 hover:bg-slate-100 border border-transparent"
           >
             <X className="w-5 h-5" />
           </button>
@@ -145,12 +145,12 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
 
         {/* Tab Switcher - only when differential update is permitted */}
         {allowDiff && (
-          <div className="flex bg-slate-100 p-1 rounded-xl">
+          <div className="flex bg-slate-100 p-1 rounded-none border border-slate-200">
             <button
               type="button"
               onClick={() => { setActiveTab('import'); setValidationResult(null); setDiffResult(null); setError(''); }}
-              className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-                activeTab === 'import' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              className={`flex-1 py-2 text-xs font-bold rounded-none transition-all ${
+                activeTab === 'import' ? 'bg-white text-slate-900 shadow-xs border border-slate-300' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
               Import / Create Employees
@@ -158,8 +158,8 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
             <button
               type="button"
               onClick={() => { setActiveTab('diff-update'); setValidationResult(null); setDiffResult(null); setError(''); }}
-              className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-                activeTab === 'diff-update' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              className={`flex-1 py-2 text-xs font-bold rounded-none transition-all ${
+                activeTab === 'diff-update' ? 'bg-white text-slate-900 shadow-xs border border-slate-300' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
               Diff Update Existing (Match ID)
@@ -167,8 +167,37 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
           </div>
         )}
 
+        {/* Template Format Guidance Box in Square Styling */}
+        <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-none text-xs space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-sky-900 flex items-center gap-1.5 uppercase text-[11px] tracking-wide">
+              <FileSpreadsheet className="w-3.5 h-3.5 text-sky-600" />
+              Template Column Specifications
+            </span>
+            <span className="text-[10px] text-sky-700 font-semibold bg-white border border-sky-200 px-2 py-0.5 rounded-none">
+              4 Mandatory Fields
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-700 text-[11px] pt-1">
+            <div className="bg-white p-2 border border-sky-100 rounded-none">
+              <span className="font-bold text-rose-600 block mb-0.5">Mandatory Columns:</span>
+              <p className="font-mono text-slate-800 font-semibold">
+                Full Name *, Username *, Password *, Role *
+              </p>
+              <span className="text-[10px] text-slate-500">Role accepts "Employee" or "Manager".</span>
+            </div>
+            <div className="bg-white p-2 border border-sky-100 rounded-none">
+              <span className="font-bold text-slate-700 block mb-0.5">Optional Columns:</span>
+              <p className="font-mono text-slate-600">
+                Employee ID, Department, Designation, Mobile, Email, City, Shift, Reports To, Status
+              </p>
+              <span className="text-[10px] text-slate-500">Leave Employee ID blank to assign later.</span>
+            </div>
+          </div>
+        </div>
+
         {error && (
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-center gap-2 text-xs text-rose-700">
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-none flex items-center gap-2 text-xs text-rose-700">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             {error}
           </div>
@@ -177,18 +206,18 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
         {/* File Upload Box */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-700">1. Select Excel File</span>
+            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">1. Select Excel File</span>
             <button
               type="button"
               onClick={downloadTemplate}
-              className="text-xs text-sky-600 hover:text-sky-700 font-semibold flex items-center gap-1"
+              className="text-xs text-sky-700 hover:text-sky-800 font-bold flex items-center gap-1 bg-sky-50 px-2.5 py-1 border border-sky-200 rounded-none transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
               Download Template (.xlsx)
             </button>
           </div>
 
-          <div className="border-2 border-dashed border-slate-300 hover:border-sky-500 rounded-xl p-6 text-center transition-colors bg-slate-50/50">
+          <div className="border-2 border-dashed border-slate-300 hover:border-sky-500 rounded-none p-6 text-center transition-colors bg-slate-50/50">
             <input
               type="file"
               accept=".xlsx, .xls"
@@ -210,7 +239,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
               type="button"
               onClick={handleValidate}
               disabled={!file || validating}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium flex items-center gap-2 disabled:opacity-50"
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-none text-xs font-bold flex items-center gap-2 disabled:opacity-50 border border-slate-900 shadow-xs"
             >
               {validating ? (
                 <>
@@ -229,30 +258,30 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
 
         {/* Import Validation Preview */}
         {activeTab === 'import' && validationResult && (
-          <div className="flex-1 overflow-y-auto space-y-3 border-t border-slate-100 pt-3 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto space-y-3 border-t border-slate-200 pt-3 custom-scrollbar">
             <div className="grid grid-cols-4 gap-2">
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-center">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">Total Rows</span>
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none text-center">
+                <span className="text-[10px] text-slate-500 uppercase font-bold">Total Rows</span>
                 <p className="text-lg font-bold text-slate-800">{validationResult.summary.totalRows}</p>
               </div>
-              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center">
-                <span className="text-[10px] text-emerald-600 uppercase font-semibold">Valid</span>
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-none text-center">
+                <span className="text-[10px] text-emerald-600 uppercase font-bold">Valid</span>
                 <p className="text-lg font-bold text-emerald-700">{validationResult.summary.validRows}</p>
               </div>
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-center">
-                <span className="text-[10px] text-rose-600 uppercase font-semibold">Errors</span>
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-none text-center">
+                <span className="text-[10px] text-rose-600 uppercase font-bold">Errors</span>
                 <p className="text-lg font-bold text-rose-700">{validationResult.summary.invalidRows}</p>
               </div>
-              <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl text-center">
-                <span className="text-[10px] text-sky-600 uppercase font-semibold">New Records</span>
+              <div className="p-3 bg-sky-50 border border-sky-200 rounded-none text-center">
+                <span className="text-[10px] text-sky-600 uppercase font-bold">New Records</span>
                 <p className="text-lg font-bold text-sky-700">{validationResult.summary.newEmployees}</p>
               </div>
             </div>
 
             {validationResult.errors.length > 0 && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl max-h-36 overflow-y-auto">
-                <span className="text-xs font-semibold text-rose-800 block mb-1">Validation Errors Found:</span>
-                <ul className="text-xs text-rose-700 space-y-1 list-disc pl-4">
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-none max-h-36 overflow-y-auto">
+                <span className="text-xs font-bold text-rose-800 block mb-1 uppercase tracking-wide">Validation Errors Found:</span>
+                <ul className="text-xs text-rose-700 space-y-1 list-disc pl-4 font-mono">
                   {validationResult.errors.map((e, i) => (
                     <li key={i}>
                       Row {e.row} ({e.employeeId || 'No ID'}): {e.errors.join(', ')}
@@ -266,26 +295,26 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
 
         {/* Diff Update Preview */}
         {activeTab === 'diff-update' && diffResult && (
-          <div className="flex-1 overflow-y-auto space-y-3 border-t border-slate-100 pt-3 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto space-y-3 border-t border-slate-200 pt-3 custom-scrollbar">
             <div className="grid grid-cols-3 gap-2">
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-center">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">Matched Rows</span>
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none text-center">
+                <span className="text-[10px] text-slate-500 uppercase font-bold">Matched Rows</span>
                 <p className="text-lg font-bold text-slate-800">{diffResult.totalRows}</p>
               </div>
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-center">
-                <span className="text-[10px] text-amber-600 uppercase font-semibold">Changes Detected</span>
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-none text-center">
+                <span className="text-[10px] text-amber-600 uppercase font-bold">Changes Detected</span>
                 <p className="text-lg font-bold text-amber-700">{diffResult.changedCount}</p>
               </div>
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-center">
-                <span className="text-[10px] text-slate-500 uppercase font-semibold">Unchanged</span>
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none text-center">
+                <span className="text-[10px] text-slate-500 uppercase font-bold">Unchanged</span>
                 <p className="text-lg font-bold text-slate-600">{diffResult.unchangedCount}</p>
               </div>
             </div>
 
             {diffResult.diffs.length > 0 && (
-              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto">
+              <div className="border border-slate-200 rounded-none overflow-hidden max-h-48 overflow-y-auto">
                 <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
+                  <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200">
                     <tr>
                       <th className="p-2">Employee</th>
                       <th className="p-2">Field</th>
@@ -293,7 +322,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
                       <th className="p-2 text-emerald-600">New Value</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-slate-100 font-mono">
                     {diffResult.diffs.map((d) => (
                       d.changes.map((c, i) => (
                         <tr key={`${d.id}-${i}`} className="hover:bg-slate-50/50">
@@ -312,7 +341,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
         )}
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-between border-t border-slate-100 pt-3">
+        <div className="flex items-center justify-between border-t border-slate-200 pt-3">
           <span className="text-xs text-slate-400">
             Database transactions ensure zero partial writes
           </span>
@@ -320,7 +349,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800"
+              className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 border border-slate-300 rounded-none"
             >
               Cancel
             </button>
@@ -329,7 +358,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
                 type="button"
                 onClick={handleCommitImport}
                 disabled={!validationResult || validationResult.summary.validRows === 0 || committing}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium flex items-center gap-2 shadow-sm disabled:opacity-50"
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-xs font-bold flex items-center gap-2 shadow-xs border border-emerald-700 disabled:opacity-50"
               >
                 {committing ? 'Writing to DB...' : `Commit Import (${validationResult ? validationResult.summary.validRows : 0} Rows)`}
               </button>
@@ -338,7 +367,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
                 type="button"
                 onClick={handleCommitDiff}
                 disabled={!diffResult || diffResult.changedCount === 0 || committing}
-                className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-medium flex items-center gap-2 shadow-sm disabled:opacity-50"
+                className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-2 shadow-xs border border-sky-700 disabled:opacity-50"
               >
                 {committing ? 'Updating Records...' : `Apply Diff Updates (${diffResult ? diffResult.changedCount : 0})`}
               </button>

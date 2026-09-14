@@ -6,32 +6,41 @@ const { logAudit } = require('./audit');
 /**
  * Generates an Employee Import template workbook buffer.
  */
+/**
+ * Generates an Employee/Personnel Import template workbook buffer.
+ * Mandatory fields (4): Full Name *, Username *, Password *, Role *
+ * Optional fields: Employee ID, Department, Designation, Mobile, Email, City, Shift, Reports To, Account Status
+ */
 function generateEmployeeTemplate() {
   const sampleData = [
     {
+      'Full Name *': 'Rohit Sharma',
+      'Username *': 'rohit_sharma',
+      'Password *': 'User@12345',
+      'Role *': 'Employee',
       'Employee ID': 'EMP201',
-      'Full Name': 'Rohit Sharma',
-      'Username': 'rohit_sharma',
-      'Password': 'User@12345',
       'Department': 'Engineering',
       'Designation': 'Software Engineer',
       'Mobile': '9876501234',
       'Email': 'rohit@company.com',
       'City': 'Mumbai',
       'Shift': 'General Morning Shift',
+      'Reports To': 'Admin',
       'Account Status': 'active'
     },
     {
-      'Employee ID': 'EMP202',
-      'Full Name': 'Ananya Roy',
-      'Username': 'ananya_roy',
-      'Password': 'User@12345',
+      'Full Name *': 'Ananya Roy',
+      'Username *': 'ananya_roy',
+      'Password *': 'User@12345',
+      'Role *': 'Manager',
+      'Employee ID': 'MGR101',
       'Department': 'Operations',
       'Designation': 'Operations Lead',
       'Mobile': '9876505678',
       'Email': 'ananya@company.com',
       'City': 'Delhi',
       'Shift': 'General Morning Shift',
+      'Reports To': 'Admin',
       'Account Status': 'active'
     }
   ];
@@ -41,25 +50,29 @@ function generateEmployeeTemplate() {
   
   // Set column widths
   ws['!cols'] = [
-    { wch: 15 }, // Employee ID
-    { wch: 20 }, // Full Name
-    { wch: 18 }, // Username
-    { wch: 15 }, // Password
-    { wch: 18 }, // Department
-    { wch: 22 }, // Designation
-    { wch: 15 }, // Mobile
-    { wch: 25 }, // Email
-    { wch: 16 }, // City
-    { wch: 22 }, // Shift
-    { wch: 15 }  // Account Status
+    { wch: 20 }, // Full Name *
+    { wch: 18 }, // Username *
+    { wch: 15 }, // Password *
+    { wch: 15 }, // Role *
+    { wch: 15 }, // Employee ID (Optional)
+    { wch: 18 }, // Department (Optional)
+    { wch: 22 }, // Designation (Optional)
+    { wch: 15 }, // Mobile (Optional)
+    { wch: 25 }, // Email (Optional)
+    { wch: 16 }, // City (Optional)
+    { wch: 22 }, // Shift (Optional)
+    { wch: 18 }, // Reports To (Optional)
+    { wch: 15 }  // Account Status (Optional)
   ];
 
-  XLSX.utils.book_append_sheet(wb, ws, 'Employees Template');
+  XLSX.utils.book_append_sheet(wb, ws, 'Personnel Template');
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
 /**
- * Validates and previews uploaded employee Excel file.
+ * Validates and previews uploaded personnel Excel file.
+ * Only 4 fields are mandatory: Full Name, Username, Password, Role (Employee/Manager).
+ * All other fields are optional.
  */
 function validateEmployeeImport(buffer, companyId, user = null) {
   const wb = XLSX.read(buffer, { type: 'buffer' });
@@ -81,10 +94,19 @@ function validateEmployeeImport(buffer, companyId, user = null) {
   const seenUsernames = new Set();
 
   // Pre-fetch existing employee codes and usernames in this company
-  const existingEmpRows = db.prepare('SELECT id, employee_id, user_id FROM employees WHERE company_id = ? AND is_deleted = 0').all(companyId);
-  const existingEmpMap = new Map();
+  const existingEmpRows = db.prepare(`
+    SELECT e.id, e.employee_id, e.user_id, u.username, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    LEFT JOIN roles r ON u.role_id = r.id
+    WHERE e.company_id = ? AND e.is_deleted = 0
+  `).all(companyId);
+
+  const existingEmpByCode = new Map();
+  const existingEmpByUsername = new Map();
   existingEmpRows.forEach(e => {
-    if (e.employee_id) existingEmpMap.set(e.employee_id.toUpperCase(), e);
+    if (e.employee_id) existingEmpByCode.set(e.employee_id.toUpperCase(), e);
+    if (e.username) existingEmpByUsername.set(e.username.toUpperCase(), e);
   });
 
   const existingUsers = new Set(db.prepare('SELECT username FROM users WHERE is_deleted = 0').all().map(u => u.username.toUpperCase()));
@@ -96,28 +118,43 @@ function validateEmployeeImport(buffer, companyId, user = null) {
   const defaultWeeklyOff = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(companyId);
   const weeklyOffId = defaultWeeklyOff?.id || null;
 
+  // Active managers in company for "Reports To" lookup
+  const managers = db.prepare(`
+    SELECT e.id, e.employee_id, u.username, e.full_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.company_id = ? AND r.name = 'manager' AND e.is_deleted = 0
+  `).all(companyId);
+  const managerMap = new Map();
+  managers.forEach(m => {
+    if (m.username) managerMap.set(m.username.toLowerCase(), m.id);
+    if (m.employee_id) managerMap.set(m.employee_id.toLowerCase(), m.id);
+    if (m.full_name) managerMap.set(m.full_name.toLowerCase(), m.id);
+  });
+
   rows.forEach((row, index) => {
-    const rowNum = index + 2; // Excel row numbering (1-based, row 1 is header)
+    const rowNum = index + 2;
     const rowErrors = [];
 
-    const empId = String(row['Employee ID *'] || '').trim();
-    const fullName = String(row['Full Name *'] || '').trim();
-    const username = String(row['Username *'] || '').trim();
-    const password = String(row['Password *'] || 'User@12345').trim();
-    const department = String(row['Department'] || 'Operations').trim();
-    const designation = String(row['Designation'] || 'Staff').trim();
-    const mobile = String(row['Mobile'] || '').trim();
-    const email = String(row['Email'] || '').trim();
-    const city = String(row['City'] || '').trim();
-    const shiftName = String(row['Shift'] || '').trim().toLowerCase();
-    const status = (String(row['Account Status'] || 'active').toLowerCase() === 'disabled') ? 'disabled' : 'active';
+    // ONLY 4 MANDATORY FIELDS:
+    const fullName = String(row['Full Name *'] || row['Full Name'] || row['Name *'] || row['Name'] || '').trim();
+    const username = String(row['Username *'] || row['Username'] || '').trim();
+    const password = String(row['Password *'] || row['Password'] || 'User@12345').trim();
+    const rawRole = String(row['Role *'] || row['Role'] || row['Type *'] || row['Type'] || row['Position *'] || row['Position'] || 'Employee').trim();
+    const role = rawRole.toLowerCase().includes('manag') ? 'manager' : 'employee';
 
-    if (!empId) {
-      rowErrors.push('Employee ID is required.');
-    } else if (seenEmployeeIds.has(empId.toUpperCase())) {
-      rowErrors.push(`Duplicate Employee ID "${empId}" in file.`);
-      summary.duplicateRows++;
-    }
+    // OPTIONAL FIELDS:
+    const rawEmpId = String(row['Employee ID'] || row['Employee ID *'] || row['Emp ID'] || '').trim();
+    const department = String(row['Department'] || (role === 'manager' ? 'Management' : 'Operations')).trim();
+    const designation = String(row['Designation'] || (role === 'manager' ? 'Team Manager' : 'Associate')).trim();
+    const mobile = String(row['Mobile'] || row['Phone'] || '').trim();
+    const email = String(row['Email'] || '').trim();
+    const city = String(row['City'] || row['Location'] || '').trim();
+    const shiftName = String(row['Shift'] || '').trim().toLowerCase();
+    const reportsToRaw = String(row['Reports To'] || row['Reporting Manager'] || '').trim().toLowerCase();
+    const statusRaw = String(row['Account Status'] || row['Status'] || 'active').trim().toLowerCase();
+    const status = (statusRaw === 'disabled' || statusRaw === 'suspended' || statusRaw === 'inactive') ? 'disabled' : 'active';
 
     if (!fullName) {
       rowErrors.push('Full Name is required.');
@@ -129,23 +166,43 @@ function validateEmployeeImport(buffer, companyId, user = null) {
       rowErrors.push(`Duplicate Username "${username}" in file.`);
     }
 
-    const isExisting = existingEmpMap.has(empId.toUpperCase());
-
-    // If manager, strictly block updating existing employees via Excel
-    if (isExisting && user && user.role_name === 'manager') {
-      rowErrors.push(`Managers can only add new employees via Excel. Employee ID "${empId}" already exists and cannot be updated.`);
+    if (!password) {
+      rowErrors.push('Password is required.');
     }
 
-    // If new user, check if username already exists in database
+    // Check Employee ID duplicates in file only if provided
+    if (rawEmpId) {
+      if (seenEmployeeIds.has(rawEmpId.toUpperCase())) {
+        rowErrors.push(`Duplicate Employee ID "${rawEmpId}" in file.`);
+        summary.duplicateRows++;
+      }
+    }
+
+    // Check if employee exists by Employee ID or by Username
+    let existingRecord = null;
+    if (rawEmpId && existingEmpByCode.has(rawEmpId.toUpperCase())) {
+      existingRecord = existingEmpByCode.get(rawEmpId.toUpperCase());
+    } else if (username && existingEmpByUsername.has(username.toUpperCase())) {
+      existingRecord = existingEmpByUsername.get(username.toUpperCase());
+    }
+
+    const isExisting = !!existingRecord;
+
+    // Manager role restriction: managers can only add team members, cannot edit existing records
+    if (isExisting && user && user.role_name === 'manager') {
+      rowErrors.push(`Managers can only add new personnel via Excel. Record "${username}" already exists.`);
+    }
+
+    // If new employee, check if username already belongs to another user
     if (!isExisting && existingUsers.has(username.toUpperCase())) {
-      rowErrors.push(`Username "${username}" already exists in system.`);
+      rowErrors.push(`Username "${username}" already exists in the system.`);
     }
 
     if (rowErrors.length > 0) {
       summary.invalidRows++;
-      errors.push({ row: rowNum, employeeId: empId, errors: rowErrors });
+      errors.push({ row: rowNum, employeeId: rawEmpId || username, errors: rowErrors });
     } else {
-      seenEmployeeIds.add(empId.toUpperCase());
+      if (rawEmpId) seenEmployeeIds.add(rawEmpId.toUpperCase());
       seenUsernames.add(username.toUpperCase());
       summary.validRows++;
 
@@ -157,12 +214,23 @@ function validateEmployeeImport(buffer, companyId, user = null) {
 
       const shiftId = shiftMap.get(shiftName) || defaultShift;
 
+      // Determine reporting manager
+      let targetManagerId = null;
+      let reportsToAdmin = role === 'manager' ? 1 : 0;
+      if (reportsToRaw && reportsToRaw !== 'admin' && reportsToRaw !== 'company admin') {
+        targetManagerId = managerMap.get(reportsToRaw) || null;
+      }
+      if (!targetManagerId && reportsToRaw.includes('admin')) {
+        reportsToAdmin = 1;
+      }
+
       validRecords.push({
         rowNum,
-        empId,
+        empId: rawEmpId, // Optional; kept as provided or null
         fullName,
         username,
         password,
+        role,
         department,
         designation,
         mobile,
@@ -170,9 +238,12 @@ function validateEmployeeImport(buffer, companyId, user = null) {
         city,
         shiftId,
         weeklyOffId,
+        reportsToAdmin,
+        managerId: targetManagerId,
         status,
         isExisting,
-        existingId: isExisting ? existingEmpMap.get(empId.toUpperCase()).id : null
+        existingId: isExisting ? existingRecord.id : null,
+        existingUserId: isExisting ? existingRecord.user_id : null
       });
     }
   });
@@ -181,10 +252,12 @@ function validateEmployeeImport(buffer, companyId, user = null) {
 }
 
 /**
- * Commits employee import to database inside an ACID transaction.
+ * Commits employee/personnel import to database inside an ACID transaction.
+ * Dynamically assigns role (employee or manager), supports optional fields, and dual-syncs to Firebase.
  */
 function commitEmployeeImport(validRecords, companyId, adminUser) {
   const roleEmployee = db.prepare("SELECT id FROM roles WHERE name = 'employee'").get();
+  const roleManager = db.prepare("SELECT id FROM roles WHERE name = 'manager'").get();
   const currentYear = new Date().getFullYear();
 
   const leaveTypes = db.prepare('SELECT id, name FROM leave_types WHERE company_id = ?').all(companyId);
@@ -194,17 +267,24 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
+  const updateUser = db.prepare(`
+    UPDATE users SET email = COALESCE(?, email), status = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+
   const insertEmp = db.prepare(`
     INSERT INTO employees (
       company_id, user_id, employee_id, full_name, mobile, email, department, designation,
-      city, shift_id, weekly_off_id, manager_id, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      city, shift_id, weekly_off_id, manager_id, reports_to_admin, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const updateEmp = db.prepare(`
     UPDATE employees SET
       full_name = ?, mobile = ?, email = ?, department = ?, designation = ?,
-      city = COALESCE(?, city), shift_id = COALESCE(?, shift_id), status = ?, updated_at = CURRENT_TIMESTAMP
+      city = COALESCE(?, city), shift_id = COALESCE(?, shift_id), status = ?,
+      manager_id = COALESCE(?, manager_id), reports_to_admin = COALESCE(?, reports_to_admin),
+      updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `);
 
@@ -223,40 +303,59 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
 
   let createdCount = 0;
   let updatedCount = 0;
+  const createdOrUpdatedEmpIds = [];
 
   const transaction = db.transaction(() => {
-    for (const r of validRecords) {
+    validRecords.forEach((r, idx) => {
       if (r.isExisting) {
         if (!isManager) {
-          updateEmp.run(r.fullName, r.mobile, r.email, r.department, r.designation, r.city || null, r.shiftId, r.status, r.existingId);
+          updateEmp.run(
+            r.fullName, r.mobile, r.email, r.department, r.designation,
+            r.city || null, r.shiftId, r.status,
+            r.managerId || null, r.reportsToAdmin,
+            r.existingId
+          );
+          if (r.existingUserId) {
+            updateUser.run(r.email || null, r.status, r.existingUserId);
+          }
+          createdOrUpdatedEmpIds.push(r.existingId);
           updatedCount++;
         }
       } else {
         const passHash = bcrypt.hashSync(r.password, 10);
-        const userRes = insertUser.run(r.username, passHash, r.email, roleEmployee.id, companyId, r.status);
+        const roleId = r.role === 'manager' ? (roleManager?.id || 4) : (roleEmployee?.id || 5);
+        const userRes = insertUser.run(r.username, passHash, r.email, roleId, companyId, r.status);
+        
+        // Final employee ID: optional; keep provided or null
+        const finalEmpCode = r.empId || null;
+        const finalManagerId = isManager ? managerEmpId : (r.managerId || null);
+        const finalReportsToAdmin = r.role === 'manager' ? 1 : (r.reportsToAdmin || 0);
+
         const empRes = insertEmp.run(
-          companyId, userRes.lastInsertRowid, r.empId, r.fullName, r.mobile, r.email,
-          r.department, r.designation, r.city || '', r.shiftId, r.weeklyOffId, managerEmpId, r.status
+          companyId, userRes.lastInsertRowid, finalEmpCode, r.fullName, r.mobile, r.email,
+          r.department, r.designation, r.city || '', r.shiftId, r.weeklyOffId,
+          finalManagerId, finalReportsToAdmin, r.status
         );
 
         const empDbId = empRes.lastInsertRowid;
+        createdOrUpdatedEmpIds.push(empDbId);
 
-        // If imported by manager, auto-map to this manager
-        if (isManager && managerEmpId) {
-          insertMapping.run(companyId, managerEmpId, empDbId, adminUser.id);
+        // If imported by manager or assigned to manager, auto-map
+        if (finalManagerId) {
+          insertMapping.run(companyId, finalManagerId, empDbId, adminUser.id);
         }
 
         // Seed initial leave balances
         leaveTypes.forEach(lt => {
           let quota = 12.0;
-          if (lt.name.includes('Earned')) quota = 15.0;
+          if (lt.name.includes('Earned') || lt.name === 'EL') quota = 0;
           else if (lt.name.includes('Paid')) quota = 10.0;
           insertLeaveBal.run(empDbId, lt.id, currentYear, quota, quota);
         });
 
         createdCount++;
       }
-    }
+    });
 
     logAudit({
       companyId,
@@ -267,11 +366,33 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
       action: 'EXCEL_EMPLOYEE_IMPORT',
       targetEntity: 'employees',
       newValues: { created: createdCount, updated: updatedCount, total: validRecords.length },
-      reason: 'Batch employee import via Excel'
+      reason: 'Batch personnel import via Excel'
     });
   });
 
   transaction();
+
+  // Async sync to Firebase without blocking
+  try {
+    const { syncEmployee, syncUser, syncEmployeeMapping, syncLeaveBalance } = require('./firebase');
+    createdOrUpdatedEmpIds.forEach(empId => {
+      const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(empId);
+      if (empRecord) {
+        syncEmployee(empRecord).catch(() => {});
+        const userRecord = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(empRecord.user_id);
+        if (userRecord) syncUser(userRecord).catch(() => {});
+        if (empRecord.manager_id) {
+          const mapRecord = db.prepare('SELECT * FROM employee_mappings WHERE manager_id = ? AND employee_id = ?').get(empRecord.manager_id, empId);
+          if (mapRecord) syncEmployeeMapping(mapRecord).catch(() => {});
+        }
+        const balRecords = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ?').all(empId);
+        balRecords.forEach(lb => syncLeaveBalance(lb.employee_id, lb.leave_type_id).catch(() => {}));
+      }
+    });
+  } catch (e) {
+    console.warn('Firebase sync notice during Excel import:', e.message);
+  }
+
   return { success: true, createdCount, updatedCount };
 }
 
@@ -299,7 +420,7 @@ function diffEmployeeUpdate(buffer, companyId) {
   const notFound = [];
 
   rows.forEach((row, idx) => {
-    const empId = String(row['Employee ID'] || '').trim();
+    const empId = String(row['Employee ID'] || row['Employee ID *'] || row['Emp ID'] || '').trim();
     if (!empId) return;
 
     const existing = empMap.get(empId.toUpperCase());
@@ -310,23 +431,29 @@ function diffEmployeeUpdate(buffer, companyId) {
 
     const fieldChanges = [];
     const checkFields = [
-      { key: 'Full Name', current: existing.full_name, field: 'full_name' },
-      { key: 'Department', current: existing.department, field: 'department' },
-      { key: 'Designation', current: existing.designation, field: 'designation' },
-      { key: 'Mobile', current: existing.mobile, field: 'mobile' },
-      { key: 'Email', current: existing.email, field: 'email' },
-      { key: 'City', current: existing.city, field: 'city' },
-      { key: 'Account Status', current: existing.status, field: 'status' }
+      { key: 'Full Name', aliases: ['Full Name *', 'Full Name', 'Name *', 'Name'], current: existing.full_name, field: 'full_name' },
+      { key: 'Department', aliases: ['Department'], current: existing.department, field: 'department' },
+      { key: 'Designation', aliases: ['Designation'], current: existing.designation, field: 'designation' },
+      { key: 'Mobile', aliases: ['Mobile', 'Phone'], current: existing.mobile, field: 'mobile' },
+      { key: 'Email', aliases: ['Email'], current: existing.email, field: 'email' },
+      { key: 'City', aliases: ['City', 'Location'], current: existing.city, field: 'city' },
+      { key: 'Account Status', aliases: ['Account Status', 'Status'], current: existing.status, field: 'status' }
     ];
 
     checkFields.forEach(f => {
-      const newVal = String(row[f.key] || '').trim();
-      if (newVal && newVal !== (existing[f.field] || '')) {
+      let rawVal = '';
+      for (const a of f.aliases) {
+        if (row[a] !== undefined && row[a] !== '') {
+          rawVal = String(row[a]).trim();
+          break;
+        }
+      }
+      if (rawVal && rawVal !== (existing[f.field] || '')) {
         fieldChanges.push({
           field: f.key,
           dbField: f.field,
           oldValue: existing[f.field] || '(Empty)',
-          newValue: newVal
+          newValue: rawVal
         });
       }
     });

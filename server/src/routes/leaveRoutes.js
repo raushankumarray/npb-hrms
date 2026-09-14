@@ -432,10 +432,13 @@ router.get('/requests', verifyAuth, (req, res) => {
   let query = `
     SELECT lr.*, lt.name as leave_type_name,
            e.employee_id as employee_code, e.full_name as employee_name, e.department,
-           m.full_name as manager_name
+           m.full_name as manager_name,
+           r.name as role_name
     FROM leave_requests lr
     JOIN leave_types lt ON lr.leave_type_id = lt.id
     JOIN employees e ON lr.employee_id = e.id
+    LEFT JOIN users u ON e.user_id = u.id
+    LEFT JOIN roles r ON u.role_id = r.id
     LEFT JOIN employees m ON e.manager_id = m.id
     WHERE lr.company_id = ?
   `;

@@ -17,6 +17,7 @@ import EmployeeChangePasswordModal from '../components/EmployeeChangePasswordMod
 import EmployeeMappingView from '../components/EmployeeMappingView';
 import AttendanceManagementView from '../components/AttendanceManagementView';
 import AttendanceCorrectionReviewView from '../components/AttendanceCorrectionReviewView';
+import CompanyLeaveApprovalView from '../components/CompanyLeaveApprovalView';
 import ShiftManagementView from '../components/ShiftManagementView';
 import HolidaysWeeklyOffView from '../components/HolidaysWeeklyOffView';
 import CompanyCustomReportsView from '../components/CompanyCustomReportsView';
@@ -31,6 +32,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  // Approval and Correction sub-tab: 'corrections' | 'leave'
+  const [approvalSubTab, setApprovalSubTab] = useState('corrections');
 
   // Role filter for Personnel tab: 'all', 'employee', 'manager'
   const [roleFilter, setRoleFilter] = useState('all');
@@ -291,10 +295,11 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     return () => window.removeEventListener('master-refresh', handleMasterRefresh);
   }, [activeTab, roleFilter, statusFilter, cityFilter, page, pageSize, searchQuery]);
 
-  // Open modal pre-configured for Employee, Manager, or HR
+  // Open modal pre-configured for Employee or Manager
   const openAddStaffModal = (targetRole = 'employee') => {
     setStaffForm({
       role: targetRole,
+      reporting_target: 'admin', // 'admin' or manager_id
       employee_id: '',
       full_name: '',
       username: '',
@@ -304,9 +309,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       department: targetRole === 'manager' ? 'Management' : 'Operations',
       designation: targetRole === 'manager' ? 'Team Manager' : 'Associate',
       city: '',
-      reports_to_manager: false,
-      manager_id: '',
-      reports_to_admin: targetRole === 'manager',
       shift_id: shifts[0]?.id ? String(shifts[0].id) : '',
       geofence_id: geofences[0]?.id ? String(geofences[0].id) : '',
       geofence_mode: 'custom'
@@ -318,31 +320,33 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     e.preventDefault();
     setError('');
     try {
-      // Validate mapping requirements based on position
-      if (staffForm.role === 'employee') {
-        if (!staffForm.reports_to_manager && !staffForm.reports_to_admin) {
-          setError('Please select at least one reporting line (Manager or Company Admin).');
-          return;
-        }
-        if (staffForm.reports_to_manager && !staffForm.manager_id) {
-          setError('Please select a Reporting Manager from the dropdown.');
-          return;
-        }
-      }
+      const isManagerRole = staffForm.role === 'manager';
+      const isReportingToAdmin = isManagerRole || staffForm.reporting_target === 'admin';
+      const selectedManagerId = (!isManagerRole && staffForm.reporting_target !== 'admin') ? staffForm.reporting_target : null;
 
       const payload = {
-        ...staffForm,
-        manager_id: (staffForm.role === 'employee' && staffForm.reports_to_manager) ? staffForm.manager_id : null,
-        hr_id: null,
-        reports_to_admin: staffForm.role === 'manager' ? 1 : (staffForm.reports_to_admin ? 1 : 0),
-        geofence_mode: staffForm.geofence_id ? 'custom' : 'company'
+        role: staffForm.role,
+        employee_id: staffForm.employee_id ? staffForm.employee_id.trim() : null,
+        full_name: staffForm.full_name.trim(),
+        username: staffForm.username.trim(),
+        password: staffForm.password.trim(),
+        email: staffForm.email ? staffForm.email.trim() : '',
+        mobile: staffForm.mobile ? staffForm.mobile.trim() : '',
+        department: staffForm.department ? staffForm.department.trim() : '',
+        designation: staffForm.designation ? staffForm.designation.trim() : '',
+        city: staffForm.city ? staffForm.city.trim() : '',
+        shift_id: staffForm.shift_id || null,
+        geofence_id: staffForm.geofence_id || null,
+        geofence_mode: staffForm.geofence_id ? 'custom' : 'company',
+        manager_id: selectedManagerId,
+        reports_to_admin: isReportingToAdmin ? 1 : 0
       };
 
       const res = await apiRequest('/employees', {
         method: 'POST',
         body: payload
       });
-      setSuccess(`${staffForm.role.toUpperCase()} "${staffForm.full_name}" added successfully${res.employeeCode ? ` (Code: ${res.employeeCode})` : ' (No ID assigned - can update later)'}.`);
+      setSuccess(`${staffForm.role.toUpperCase()} "${staffForm.full_name}" added successfully${res.employeeCode ? ` (ID: ${res.employeeCode})` : ' (No ID assigned - can update later)'}.`);
       setShowAddStaffModal(false);
       fetchData();
     } catch (err) {
@@ -1049,84 +1053,107 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         </div>
       )}
 
-      {/* EMPLOYEES / HR / MANAGERS TAB */}
+      {/* EMPLOYEES / PERSONNEL & STAFF TAB */}
       {activeTab === 'employees' && (
         <div className="space-y-4">
-          {/* Advanced Filter Bar */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
+          {/* Top Action Section: Import Excel, Add Personnel, Search Bar directly beside */}
+          <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              {/* Role Position Pills */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-xs font-semibold text-slate-500 uppercase mr-1 flex items-center gap-1">
-                  <Filter className="w-3.5 h-3.5 text-slate-400" /> Position:
-                </span>
+              {/* Action Buttons: Import Excel & Add Staff */}
+              <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   type="button"
-                  onClick={() => { setRoleFilter('all'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
+                  onClick={() => setShowExcelModal(true)}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-xs font-bold flex items-center gap-2 border border-emerald-700 shadow-xs transition-all"
+                  title="Bulk upload multiple employees and managers via Excel"
                 >
-                  All ({totalEmployees})
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Import Excel / Template</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setRoleFilter('employee'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'employee' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
+                  onClick={() => openAddStaffModal('employee')}
+                  className="px-4 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-2 border border-sky-700 shadow-xs transition-all"
+                  title="Add new employee or manager with custom credentials"
                 >
-                  Employees
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setRoleFilter('manager'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'manager' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  Managers
+                  <Plus className="w-4 h-4" />
+                  <span>Add Personnel / Staff</span>
                 </button>
               </div>
 
-              <div className="text-xs text-slate-400">
-                Total matching: <span className="font-bold text-slate-700">{totalEmployees}</span> records
+              {/* Search Bar & Search Button placed directly beside */}
+              <div className="flex items-center gap-1.5 flex-1 max-w-md">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-3 text-slate-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); fetchData(); } }}
+                    placeholder="Search name, username, ID, phone..."
+                    className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-none text-xs focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-800"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setPage(1); fetchData(); }}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-none text-xs font-bold flex items-center gap-1.5 border border-slate-900 shadow-xs transition-all shrink-0"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Search</span>
+                </button>
               </div>
             </div>
+          </div>
 
-            {/* Dropdown Filters & Search */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-slate-100 text-xs">
-              {/* Search */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
-                  placeholder="Search name, ID, mobile..."
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-800"
-                />
-              </div>
+          {/* Filter Section in Square Container / Card */}
+          <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2.5">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-sky-600" /> Filter Directory
+              </span>
+              <span className="text-xs text-slate-500">
+                Total matching: <strong className="text-slate-900 font-bold">{totalEmployees}</strong> records
+              </span>
+            </div>
 
-              {/* Status Filter */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              {/* 1. Position / Role Dropdown */}
               <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Position / Role</label>
                 <select
-                  value={statusFilter}
-                  onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-                  className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  value={roleFilter}
+                  onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
-                  <option value="all">All Statuses</option>
-                  <option value="active">Active Accounts</option>
-                  <option value="suspended">Suspended Accounts</option>
+                  <option value="all">All (Employees & Managers)</option>
+                  <option value="employee">Employee</option>
+                  <option value="manager">Manager</option>
                 </select>
               </div>
 
-              {/* City Filter */}
+              {/* 2. Status Dropdown */}
               <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Status</label>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                >
+                  <option value="active">Active (Default)</option>
+                  <option value="all">All Statuses</option>
+                  <option value="suspended">Suspended</option>
+                  <option value="disabled">Blocked</option>
+                </select>
+              </div>
+
+              {/* 3. City Dropdown */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">City</label>
                 <select
                   value={cityFilter}
                   onChange={(e) => { setCityFilter(e.target.value); setPage(1); }}
-                  className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
                   <option value="all">All Cities</option>
                   {availableCities.map(c => (
@@ -1135,53 +1162,51 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 </select>
               </div>
 
-              {/* Page Size Selector */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-slate-400 whitespace-nowrap">Show:</span>
-                {[10, 25, 50].map(sz => (
-                  <button
-                    key={sz}
-                    type="button"
-                    onClick={() => { setPageSize(sz); setIsCustomPageSize(false); setPage(1); }}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-colors ${
-                      pageSize === sz && !isCustomPageSize
-                        ? 'bg-sky-600 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    {sz}
-                  </button>
-                ))}
-                {!isCustomPageSize ? (
-                  <button
-                    type="button"
-                    onClick={() => setIsCustomPageSize(true)}
-                    className="px-2 py-1 rounded-lg text-slate-600 hover:bg-slate-100 border border-slate-200 text-[11px] font-semibold"
-                  >
-                    Custom
-                  </button>
-                ) : (
-                  <input
-                    type="number"
-                    min="1"
-                    max="500"
-                    value={customPageSize}
+              {/* 4. Rows per page Dropdown */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Rows Per Page</label>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={isCustomPageSize ? 'custom' : pageSize}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      setCustomPageSize(e.target.value);
-                      if (val > 0) { setPageSize(val); setPage(1); }
+                      if (e.target.value === 'custom') {
+                        setIsCustomPageSize(true);
+                      } else {
+                        setIsCustomPageSize(false);
+                        setPageSize(Number(e.target.value));
+                        setPage(1);
+                      }
                     }}
-                    placeholder="Qty"
-                    className="w-14 py-1 px-2 text-center bg-white border border-sky-400 rounded-lg text-xs font-bold text-sky-700 focus:outline-none"
-                    autoFocus
-                  />
-                )}
+                    className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="10">10 (Default)</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  {isCustomPageSize && (
+                    <input
+                      type="number"
+                      min="1"
+                      max="500"
+                      value={customPageSize}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setCustomPageSize(e.target.value);
+                        if (val > 0) { setPageSize(val); setPage(1); }
+                      }}
+                      placeholder="Qty"
+                      className="w-20 py-2 px-2 text-center bg-white border border-sky-500 rounded-none text-xs font-bold text-sky-700 focus:outline-none"
+                      autoFocus
+                    />
+                  )}
+                </div>
               </div>
             </div>
           </div>
 
           {/* Personnel Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-white rounded-none border border-slate-200 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-xs text-left">
                 <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
@@ -1843,15 +1868,65 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
               </div>
             </div>
           </div>
-
-          {/* Attendance Correction Requests Section */}
-          <AttendanceCorrectionReviewView role="company_admin" title="Attendance Correction Applications" />
         </div>
       )}
 
-      {/* ATTENDANCE CORRECTIONS TAB */}
-      {activeTab === 'corrections' && (
-        <AttendanceCorrectionReviewView role="company_admin" />
+      {/* APPROVAL AND CORRECTION UNIFIED VIEW (Supports activeTab 'approvals' and legacy 'corrections') */}
+      {(activeTab === 'approvals' || activeTab === 'corrections') && (
+        <div className="space-y-4">
+          {/* Top Switcher in Square Container */}
+          <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 uppercase tracking-wide">
+                  <CheckCircle2 className="w-5 h-5 text-sky-600" />
+                  Approval and Correction Center
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Review, verify, and approve assigned attendance corrections and leave requests across your company
+                </p>
+              </div>
+
+              {/* Sub-page Toggle Buttons in Square Container */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setApprovalSubTab('corrections')}
+                  className={`px-4 py-2 text-xs font-bold flex items-center gap-2 rounded-none border transition-all ${
+                    approvalSubTab === 'corrections'
+                      ? 'bg-sky-600 text-white border-sky-700 shadow-xs'
+                      : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'
+                  }`}
+                >
+                  <Clock className="w-4 h-4" />
+                  <span>Attendance Correction</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApprovalSubTab('leave')}
+                  className={`px-4 py-2 text-xs font-bold flex items-center gap-2 rounded-none border transition-all ${
+                    approvalSubTab === 'leave'
+                      ? 'bg-sky-600 text-white border-sky-700 shadow-xs'
+                      : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'
+                  }`}
+                >
+                  <Calendar className="w-4 h-4" />
+                  <span>Leave Approval</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Sub-view 1: Attendance Correction */}
+          {approvalSubTab === 'corrections' && (
+            <AttendanceCorrectionReviewView role="company_admin" title="Attendance Correction Review" />
+          )}
+
+          {/* Sub-view 2: Leave Approval */}
+          {approvalSubTab === 'leave' && (
+            <CompanyLeaveApprovalView role="company_admin" title="Leave Approval Review" />
+          )}
+        </div>
       )}
 
       {/* GEOFENCES TAB */}
@@ -2548,17 +2623,17 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         <CompanyCustomReportsView user={user} company={company} />
       )}
 
-      {/* MODAL: ADD STAFF (EMPLOYEE / MANAGER / HR) */}
+      {/* MODAL: ADD PERSONNEL / STAFF (EMPLOYEE / MANAGER) */}
       {showAddStaffModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
-            <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-none max-w-lg w-full p-6 shadow-2xl border border-slate-300 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+            <div className="border-b border-slate-200 pb-2 flex items-center justify-between">
               <div>
-                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 uppercase tracking-wide">
                   <UserCheck className="w-5 h-5 text-sky-600" />
                   Add Personnel / Staff
                 </h3>
-                <p className="text-xs text-slate-500">Configure role position, multi-level reporting hierarchy & geofencing</p>
+                <p className="text-xs text-slate-500">Configure role position, supervisor hierarchy, and optional account parameters</p>
               </div>
               <button
                 type="button"
@@ -2570,298 +2645,221 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
             </div>
 
             <form onSubmit={handleCreateStaff} className="space-y-3.5 text-xs">
-              {/* Position / Role Selector Pill Toggle */}
+              {/* 1. Position / Role Selection Dropdown */}
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Select Position / Role *</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setStaffForm({
-                      ...staffForm,
-                      role: 'employee',
-                      department: 'Operations',
-                      designation: 'Associate',
-                      reports_to_manager: false,
-                      manager_id: '',
-                      reports_to_hr: false,
-                      hr_id: '',
-                      reports_to_admin: false
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      staffForm.role === 'employee' ? 'bg-sky-50 border-sky-500 text-sky-700 ring-1 ring-sky-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Employee
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStaffForm({
-                      ...staffForm,
-                      role: 'manager',
-                      department: 'Management',
-                      designation: 'Team Manager',
-                      reports_to_manager: false,
-                      manager_id: '',
-                      reports_to_hr: false,
-                      hr_id: '',
-                      reports_to_admin: false
-                    })}
-                    className={`py-2 text-xs font-bold rounded-lg border transition-all ${
-                      staffForm.role === 'manager' ? 'bg-purple-50 border-purple-500 text-purple-700 ring-1 ring-purple-500' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Manager
-                  </button>
-                </div>
+                <label className="font-bold text-slate-800 block mb-1">Position / Role *</label>
+                <select
+                  value={staffForm.role}
+                  onChange={(e) => {
+                    const newRole = e.target.value;
+                    setStaffForm(prev => ({
+                      ...prev,
+                      role: newRole,
+                      reporting_target: newRole === 'manager' ? 'admin' : prev.reporting_target,
+                      department: prev.department || (newRole === 'manager' ? 'Management' : 'Operations'),
+                      designation: prev.designation || (newRole === 'manager' ? 'Team Manager' : 'Associate')
+                    }));
+                  }}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-sky-500"
+                >
+                  <option value="employee">Employee</option>
+                  <option value="manager">Manager</option>
+                </select>
               </div>
 
-              {/* Dynamic Multi-Level Reporting Hierarchy */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-                    <GitMerge className="w-4 h-4 text-sky-600" />
-                    Reporting Line
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-medium">
-                    {staffForm.role === 'employee' ? 'Select reporting manager or direct admin' : 'Direct Admin Report'}
-                  </span>
-                </div>
-
-                {staffForm.role === 'employee' && (
-                  <div className="space-y-2.5 pt-1">
-                    {/* Checkbox 1: Manager */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={staffForm.reports_to_manager}
-                          onChange={(e) => setStaffForm({
-                            ...staffForm,
-                            reports_to_manager: e.target.checked,
-                            manager_id: e.target.checked ? staffForm.manager_id : ''
-                          })}
-                          className="rounded text-sky-600 focus:ring-sky-500 w-4 h-4"
-                        />
-                        <span>Report to Manager</span>
-                      </label>
-                      {staffForm.reports_to_manager && (
-                        <div className="ml-6 mt-1.5">
-                          <select
-                            value={staffForm.manager_id}
-                            onChange={(e) => setStaffForm({ ...staffForm, manager_id: e.target.value })}
-                            className="w-full p-2 border rounded-lg bg-white text-xs"
-                            required={staffForm.reports_to_manager}
-                          >
-                            <option value="">-- Select Reporting Manager * --</option>
-                            {employees.filter(e => e.role_name === 'manager').map(m => (
-                              <option key={m.id} value={m.id}>{m.full_name} ({m.employee_id}) - {m.designation || 'Manager'}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Checkbox 2: Direct Admin */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                        <input
-                          type="checkbox"
-                          checked={staffForm.reports_to_admin}
-                          onChange={(e) => setStaffForm({ ...staffForm, reports_to_admin: e.target.checked })}
-                          className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
-                        />
-                        <span className="flex items-center gap-1.5">
-                          <span>Report Directly to Company Admin</span>
-                          <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">Admin Level</span>
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                {staffForm.role === 'manager' && (
-                  <div className="flex items-center gap-2 p-2.5 bg-purple-50 border border-purple-200 rounded-lg text-purple-800">
-                    <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
-                    <span className="text-[11px] font-medium">
-                      Direct Report: Company Admin (All Managers report directly to the Company Administrator).
-                    </span>
-                  </div>
-                )}
-              </div>
-
-              {/* Assigned Geofencing & Shift */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-                    <Compass className="w-4 h-4 text-sky-600" />
-                    Geofencing & Shift Assignment
-                  </span>
-                  {staffForm.role === 'manager' ? (
-                    <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" /> Geofencing Optional (Exempt)
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-rose-600 font-bold bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <ShieldCheck className="w-3 h-3" /> Mandatory Punching Geofence
-                    </span>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="font-medium text-slate-700 block mb-1">
-                      Assigned Geofence {staffForm.role === 'employee' ? '*' : '(Optional)'}
-                    </label>
-                    <select
-                      value={staffForm.geofence_id}
-                      onChange={(e) => setStaffForm({ ...staffForm, geofence_id: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    >
-                      <option value="">
-                        {staffForm.role === 'employee' ? 'Default Company Geofence' : 'No Geofencing (Allowed Anywhere)'}
+              {/* 2. Reporting Name Dropdown */}
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Reporting Name / Supervisor *
+                </label>
+                {staffForm.role === 'manager' ? (
+                  <select
+                    disabled
+                    className="w-full p-2.5 bg-slate-100 border border-slate-300 rounded-none text-slate-700 font-medium cursor-not-allowed"
+                  >
+                    <option>Company Admin (Direct Admin Report)</option>
+                  </select>
+                ) : (
+                  <select
+                    value={staffForm.reporting_target || 'admin'}
+                    onChange={(e) => setStaffForm({ ...staffForm, reporting_target: e.target.value })}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="admin">Company Admin (Admin)</option>
+                    {employees.filter(e => e.role_name === 'manager').map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.full_name} ({m.employee_id || m.username}) - Manager
                       </option>
-                      {geofences.map(g => (
-                        <option key={g.id} value={g.id}>{g.location_name} ({g.radius}m radius)</option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      {staffForm.role === 'employee'
-                        ? 'Attendance punches are strictly blocked outside this perimeter.'
-                        : 'Managers are exempt; can punch from anywhere unless customized.'}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="font-medium text-slate-700 block mb-1">Assigned Shift *</label>
-                    <select
-                      value={staffForm.shift_id}
-                      onChange={(e) => setStaffForm({ ...staffForm, shift_id: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    >
-                      <option value="">Default General Shift</option>
-                      {shifts.map(s => (
-                        <option key={s.id} value={s.id}>{s.name} ({s.start_time} - {s.end_time})</option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] text-slate-500 mt-1">Governs working hours and attendance window.</p>
-                  </div>
-                </div>
+                    ))}
+                  </select>
+                )}
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  {staffForm.role === 'manager'
+                    ? 'Managers report directly to the Company Administrator.'
+                    : 'Choose whether this employee reports directly to Admin or an assigned Manager.'}
+                </span>
               </div>
 
-              {/* Basic Information */}
+              {/* 3. Name & Employee ID (Optional) */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Employee ID / Code (Optional)</label>
-                  <input
-                    type="text"
-                    value={staffForm.employee_id}
-                    onChange={(e) => setStaffForm({ ...staffForm, employee_id: e.target.value.toUpperCase() })}
-                    placeholder="Leave blank to assign in future"
-                    className="w-full p-2 border rounded-lg uppercase font-mono"
-                  />
-                  <span className="text-[10px] text-slate-400">Optional: If left blank, it will not be auto-generated and can be assigned later.</span>
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Full Name *</label>
+                  <label className="font-bold text-slate-800 block mb-1">Full Name *</label>
                   <input
                     type="text"
                     required
                     value={staffForm.full_name}
                     onChange={(e) => setStaffForm({ ...staffForm, full_name: e.target.value })}
                     placeholder="e.g. Ramesh Chandra"
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-800 block mb-1">Employee ID (Optional)</label>
+                  <input
+                    type="text"
+                    value={staffForm.employee_id}
+                    onChange={(e) => setStaffForm({ ...staffForm, employee_id: e.target.value.toUpperCase() })}
+                    placeholder="Leave blank to assign later"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none uppercase font-mono text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500"
                   />
                 </div>
               </div>
 
+              {/* 4. Username & Password */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Username *</label>
+                  <label className="font-bold text-slate-800 block mb-1">Username *</label>
                   <input
                     type="text"
                     required
                     value={staffForm.username}
                     onChange={(e) => setStaffForm({ ...staffForm, username: e.target.value })}
-                    placeholder="e.g. ramesh_chandra"
-                    className="w-full p-2 border rounded-lg font-mono"
+                    placeholder="Custom username, email, or phone"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-mono focus:outline-none focus:ring-1 focus:ring-sky-500"
                   />
+                  <span className="text-[10px] text-slate-400">Accepts text, email, or mobile number</span>
                 </div>
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Temporary Password *</label>
+                  <label className="font-bold text-slate-800 block mb-1">Password *</label>
                   <input
                     type="password"
                     required
                     value={staffForm.password}
                     onChange={(e) => setStaffForm({ ...staffForm, password: e.target.value })}
                     placeholder="••••••••"
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none text-slate-800 focus:outline-none focus:ring-1 focus:ring-sky-500"
                   />
+                  <span className="text-[10px] text-slate-400">Initial account access password</span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Department</label>
-                  <input
-                    type="text"
-                    value={staffForm.department}
-                    onChange={(e) => setStaffForm({ ...staffForm, department: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                  />
+              {/* 5. Optional Account Parameters in Square Container */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none space-y-3">
+                <span className="font-bold text-slate-700 block text-[11px] uppercase tracking-wider border-b border-slate-200 pb-1.5">
+                  Optional Details & Assignments
+                </span>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Department</label>
+                    <input
+                      type="text"
+                      value={staffForm.department}
+                      onChange={(e) => setStaffForm({ ...staffForm, department: e.target.value })}
+                      placeholder="e.g. Operations"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Designation</label>
+                    <input
+                      type="text"
+                      value={staffForm.designation}
+                      onChange={(e) => setStaffForm({ ...staffForm, designation: e.target.value })}
+                      placeholder="e.g. Associate"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">City / Location</label>
+                    <input
+                      type="text"
+                      value={staffForm.city}
+                      onChange={(e) => setStaffForm({ ...staffForm, city: e.target.value })}
+                      placeholder="e.g. Mumbai"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Designation</label>
-                  <input
-                    type="text"
-                    value={staffForm.designation}
-                    onChange={(e) => setStaffForm({ ...staffForm, designation: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                  />
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Mobile Phone</label>
+                    <input
+                      type="text"
+                      value={staffForm.mobile}
+                      onChange={(e) => setStaffForm({ ...staffForm, mobile: e.target.value })}
+                      placeholder="+91 9876543210"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Email Address</label>
+                    <input
+                      type="email"
+                      value={staffForm.email}
+                      onChange={(e) => setStaffForm({ ...staffForm, email: e.target.value })}
+                      placeholder="name@company.com"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">City / Location</label>
-                  <input
-                    type="text"
-                    value={staffForm.city}
-                    onChange={(e) => setStaffForm({ ...staffForm, city: e.target.value })}
-                    placeholder="e.g. Mumbai"
-                    className="w-full p-2 border rounded-lg"
-                  />
+
+                <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-200">
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">
+                      Assigned Geofence {staffForm.role === 'employee' ? '(Optional)' : '(Exempt)'}
+                    </label>
+                    <select
+                      value={staffForm.geofence_id}
+                      onChange={(e) => setStaffForm({ ...staffForm, geofence_id: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    >
+                      <option value="">
+                        {staffForm.role === 'employee' ? 'Company Default Geofence' : 'No Geofencing (Anywhere)'}
+                      </option>
+                      {geofences.map(g => (
+                        <option key={g.id} value={g.id}>{g.location_name} ({g.radius}m)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Assigned Shift (Optional)</label>
+                    <select
+                      value={staffForm.shift_id}
+                      onChange={(e) => setStaffForm({ ...staffForm, shift_id: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    >
+                      <option value="">General Company Shift</option>
+                      {shifts.map(s => (
+                        <option key={s.id} value={s.id}>{s.name} ({s.start_time} - {s.end_time})</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Mobile Phone</label>
-                  <input
-                    type="text"
-                    value={staffForm.mobile}
-                    onChange={(e) => setStaffForm({ ...staffForm, mobile: e.target.value })}
-                    placeholder="+91 9876543210"
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={staffForm.email}
-                    onChange={(e) => setStaffForm({ ...staffForm, email: e.target.value })}
-                    placeholder="name@company.com"
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
                   onClick={() => setShowAddStaffModal(false)}
-                  className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 border border-slate-300 rounded-none text-slate-700 hover:bg-slate-50 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none font-bold border border-sky-700 shadow-xs"
                 >
                   Save Personnel Record
                 </button>

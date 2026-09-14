@@ -16,6 +16,7 @@ import EmployeeChangePasswordModal from '../components/EmployeeChangePasswordMod
 import ManagerAttendanceReportsView from '../components/ManagerAttendanceReportsView';
 import AttendanceCorrectionReviewView from '../components/AttendanceCorrectionReviewView';
 import ManagerMonthlyAttendanceSheetView from '../components/ManagerMonthlyAttendanceSheetView';
+import CompanyLeaveApprovalView from '../components/CompanyLeaveApprovalView';
 
 export default function ManagerPanel({ user, company, activeTab }) {
   // Employees state
@@ -47,6 +48,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
   // Other tabs state
   const [attendance, setAttendance] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
+  const [approvalSubTab, setApprovalSubTab] = useState('corrections'); // 'corrections' | 'leave'
   const [tickets, setTickets] = useState([]);
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [ticketResolutionNotes, setTicketResolutionNotes] = useState('');
@@ -351,8 +353,8 @@ export default function ManagerPanel({ user, company, activeTab }) {
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">
             {activeTab === 'dashboard'
               ? `Welcome, ${user.fullName || user.username} (Manager)`
-              : activeTab === 'corrections'
-              ? 'Attendance Approval'
+              : (activeTab === 'approvals' || activeTab === 'corrections')
+              ? 'Approval and Correction'
               : activeTab === 'reports'
               ? 'Team Reports'
               : activeTab === 'live-map'
@@ -520,72 +522,103 @@ export default function ManagerPanel({ user, company, activeTab }) {
       {/* MY EMPLOYEES */}
       {activeTab === 'my-employees' && (
         <div className="space-y-4">
-          {/* Advanced Filter Bar */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
+          {/* Top Action Bar in Square Container */}
+          <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              {/* Role Position Pills */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-xs font-semibold text-slate-500 uppercase mr-1 flex items-center gap-1">
-                  <Filter className="w-3.5 h-3.5 text-slate-400" /> Team Personnel:
-                </span>
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => { setRoleFilter('all'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
+                  onClick={() => { setExcelModalMode('import'); setShowExcelModal(true); }}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-xs border border-emerald-700 transition-all"
+                  title="Import Excel or download template"
                 >
-                  All Team Members ({totalEmployees})
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Import Excel / Template</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setRoleFilter('employee'); setPage(1); }}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                    roleFilter === 'employee' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
+                  onClick={() => setShowAddModal(true)}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-xs border border-sky-700 transition-all"
                 >
-                  Assigned Employees
+                  <UserPlus className="w-4 h-4" />
+                  <span>Add Personnel / Staff</span>
                 </button>
+
+                {/* Search Bar / Button directly beside */}
+                <div className="flex items-center">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); fetchData(); } }}
+                      placeholder="Search name, code, mobile..."
+                      className="w-56 sm:w-72 pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-none text-xs focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-800"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setPage(1); fetchData(); }}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-none border border-slate-900 flex items-center gap-1"
+                  >
+                    <span>Search</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="text-xs text-slate-400">
-                Total matching: <span className="font-bold text-slate-700">{totalEmployees}</span> records
+              <div className="text-xs text-slate-500">
+                Team Personnel: <strong className="text-slate-900">{totalEmployees}</strong> members
               </div>
             </div>
+          </div>
 
-            {/* Dropdown Filters & Search */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-slate-100 text-xs">
-              {/* Search */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
-                  placeholder="Search name, ID, mobile..."
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-sky-500 text-slate-800"
-                />
-              </div>
+          {/* Square Filter Container / Card */}
+          <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-2">
+              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-sky-600" /> Team Filters
+              </span>
+              <span className="text-xs text-slate-400">
+                Matching records: <strong className="text-slate-700">{totalEmployees}</strong>
+              </span>
+            </div>
 
-              {/* Status Filter */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              {/* Position / Role Dropdown */}
               <div>
+                <label className="font-semibold text-slate-600 block mb-1">Position / Role</label>
                 <select
-                  value={statusFilter}
-                  onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-                  className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  value={roleFilter}
+                  onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}
+                  className="w-full py-1.5 px-3 bg-white border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
-                  <option value="all">All Statuses</option>
-                  <option value="active">Active Accounts</option>
-                  <option value="suspended">Suspended Accounts</option>
+                  <option value="all">All Roles</option>
+                  <option value="employee">Employee</option>
                 </select>
               </div>
 
-              {/* City Filter */}
+              {/* Status Dropdown */}
               <div>
+                <label className="font-semibold text-slate-600 block mb-1">Account Status</label>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+                  className="w-full py-1.5 px-3 bg-white border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="suspended">Suspended</option>
+                </select>
+              </div>
+
+              {/* City Dropdown */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">City / Location</label>
                 <select
                   value={cityFilter}
                   onChange={(e) => { setCityFilter(e.target.value); setPage(1); }}
-                  className="w-full py-1.5 px-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  className="w-full py-1.5 px-3 bg-white border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
                   <option value="all">All Cities</option>
                   {availableCities.map(c => (
@@ -594,55 +627,55 @@ export default function ManagerPanel({ user, company, activeTab }) {
                 </select>
               </div>
 
-              {/* Page Size Selector (10, 25, 50, Custom) */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-slate-500 font-medium whitespace-nowrap flex items-center gap-1">
-                  <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" /> Limit:
-                </span>
-                <select
-                  value={isCustomPageSize ? 'custom' : pageSize}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val === 'custom') {
-                      setIsCustomPageSize(true);
-                    } else {
-                      setIsCustomPageSize(false);
-                      setPageSize(Number(val));
-                      setPage(1);
-                    }
-                  }}
-                  className="py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-semibold focus:outline-none focus:ring-1 focus:ring-sky-500"
-                >
-                  <option value="10">10 / page</option>
-                  <option value="25">25 / page</option>
-                  <option value="50">50 / page</option>
-                  <option value="custom">Custom</option>
-                </select>
-
-                {isCustomPageSize && (
-                  <input
-                    type="number"
-                    min="1"
-                    max="500"
-                    placeholder="Size"
-                    value={customPageSize}
+              {/* Rows per page Selector */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Rows Per Page</label>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={isCustomPageSize ? 'custom' : pageSize}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setCustomPageSize(val);
-                      const num = parseInt(val, 10);
-                      if (num > 0) {
-                        setPageSize(num);
+                      if (val === 'custom') {
+                        setIsCustomPageSize(true);
+                      } else {
+                        setIsCustomPageSize(false);
+                        setPageSize(Number(val));
                         setPage(1);
                       }
                     }}
-                    className="w-16 py-1 px-2 border border-sky-400 rounded-xl text-slate-800 text-xs font-mono font-bold bg-sky-50/50"
-                  />
-                )}
+                    className="w-full py-1.5 px-2 bg-white border border-slate-300 rounded-none text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="10">10 / page</option>
+                    <option value="25">25 / page</option>
+                    <option value="50">50 / page</option>
+                    <option value="custom">Custom</option>
+                  </select>
+
+                  {isCustomPageSize && (
+                    <input
+                      type="number"
+                      min="1"
+                      max="500"
+                      placeholder="Size"
+                      value={customPageSize}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setCustomPageSize(val);
+                        const num = parseInt(val, 10);
+                        if (num > 0) {
+                          setPageSize(num);
+                          setPage(1);
+                        }
+                      }}
+                      className="w-16 py-1 px-2 border border-sky-400 rounded-none text-slate-800 text-xs font-mono font-bold bg-sky-50/50"
+                    />
+                  )}
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-white rounded-none border border-slate-200 shadow-sm overflow-hidden">
             <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
@@ -910,77 +943,61 @@ export default function ManagerPanel({ user, company, activeTab }) {
         <ManagerAttendanceReportsView user={user} company={company} onStatsUpdate={fetchData} />
       )}
 
-      {/* APPROVALS */}
-      {activeTab === 'approvals' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900">Leave Approval Requests</h3>
-            <span className="text-xs text-slate-400">Review team absence applications</span>
+      {/* APPROVAL AND CORRECTION (UNIFIED SUB-VIEWS) */}
+      {(activeTab === 'approvals' || activeTab === 'corrections') && (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 shadow-sm rounded-none p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-sky-600" />
+                  <span>Team Approvals & Corrections</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Review and authorize assigned team attendance corrections and leave applications
+                </p>
+              </div>
+
+              {/* Sub-view switcher buttons in square styling */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setApprovalSubTab('corrections')}
+                  className={`px-4 py-2 text-xs font-bold flex items-center gap-2 rounded-none border transition-all ${
+                    approvalSubTab === 'corrections'
+                      ? 'bg-sky-600 text-white border-sky-700 shadow-xs'
+                      : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'
+                  }`}
+                >
+                  <Clock className="w-4 h-4" />
+                  <span>Attendance Correction</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApprovalSubTab('leave')}
+                  className={`px-4 py-2 text-xs font-bold flex items-center gap-2 rounded-none border transition-all ${
+                    approvalSubTab === 'leave'
+                      ? 'bg-sky-600 text-white border-sky-700 shadow-xs'
+                      : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-300'
+                  }`}
+                >
+                  <Calendar className="w-4 h-4" />
+                  <span>Leave Approval</span>
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Employee</th>
-                  <th className="p-3">Leave Type</th>
-                  <th className="p-3">Dates</th>
-                  <th className="p-3">Reason</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3 text-right">Decision</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {leaveRequests.map(l => (
-                  <tr key={l.id} className="hover:bg-slate-50/50">
-                    <td className="p-3 font-semibold text-slate-900">{l.employee_name} ({l.employee_code})</td>
-                    <td className="p-3 font-bold text-sky-700">{l.leave_type_name}</td>
-                    <td className="p-3 text-slate-700">{l.start_date} to {l.end_date} ({l.total_days} days)</td>
-                    <td className="p-3 text-slate-600">{l.reason}</td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                        l.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                        l.status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
-                      }`}>
-                        {l.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">
-                      {l.status === 'pending' && (
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            onClick={() => handleLeaveDecision(l.id, 'approved')}
-                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold flex items-center gap-1"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleLeaveDecision(l.id, 'rejected')}
-                            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-semibold flex items-center gap-1"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            Reject
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Team Attendance Correction Applications */}
-          <div className="p-4 border-t border-slate-100">
+          {/* Sub-view 1: Attendance Correction */}
+          {approvalSubTab === 'corrections' && (
             <AttendanceCorrectionReviewView role="manager" title="Team Attendance Correction Applications" />
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* TAB: ATTENDANCE APPROVAL */}
-      {activeTab === 'corrections' && (
-        <AttendanceCorrectionReviewView role="manager" title="Attendance Approval" />
+          {/* Sub-view 2: Leave Approval */}
+          {approvalSubTab === 'leave' && (
+            <CompanyLeaveApprovalView role="manager" title="Team Leave Approval Review" />
+          )}
+        </div>
       )}
 
       {/* TAB: CALENDAR */}
@@ -1445,10 +1462,10 @@ export default function ManagerPanel({ user, company, activeTab }) {
       {/* MODAL: ADD TEAM EMPLOYEE */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
-            <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+          <div className="bg-white rounded-none max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+            <div className="border-b border-slate-200 pb-2 flex items-center justify-between">
               <div>
-                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 uppercase tracking-wide">
                   <UserPlus className="w-5 h-5 text-sky-600" />
                   Add Team Personnel / Staff
                 </h3>
@@ -1465,20 +1482,20 @@ export default function ManagerPanel({ user, company, activeTab }) {
 
             <form onSubmit={handleAddEmployee} className="space-y-3.5 text-xs">
               {/* Position / Role Locked to Employee */}
-              <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+              <div className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-none">
                 <div>
-                  <span className="font-semibold text-slate-700 block">Position / Role</span>
+                  <span className="font-bold text-slate-700 block">Position / Role</span>
                   <span className="text-[11px] text-slate-500">Only Employee accounts can be registered by Managers</span>
                 </div>
-                <span className="px-3 py-1 bg-sky-100 text-sky-800 text-xs font-bold rounded-lg border border-sky-200">
+                <span className="px-3 py-1 bg-sky-100 text-sky-800 text-xs font-bold rounded-none border border-sky-200">
                   Employee
                 </span>
               </div>
 
               {/* Dynamic Multi-Level Reporting Hierarchy */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-800 flex items-center gap-1.5">
+                  <span className="font-bold text-slate-800 flex items-center gap-1.5">
                     <GitMerge className="w-4 h-4 text-sky-600" />
                     Reporting Line
                   </span>
@@ -1497,70 +1514,13 @@ export default function ManagerPanel({ user, company, activeTab }) {
                       type="checkbox"
                       checked={newEmp.reports_to_admin}
                       onChange={(e) => setNewEmp({ ...newEmp, reports_to_admin: e.target.checked })}
-                      className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
+                      className="rounded-none text-amber-600 focus:ring-amber-500 w-4 h-4"
                     />
                     <span className="flex items-center gap-1.5">
                       <span>Also Report Directly to Company Admin</span>
-                      <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">Admin Level</span>
+                      <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-none font-bold">Admin Level</span>
                     </span>
                   </label>
-                </div>
-              </div>
-
-              {/* Assigned Geofencing & Shift */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-                    <Compass className="w-4 h-4 text-sky-600" />
-                    Geofencing & Shift Assignment
-                  </span>
-                  {newEmp.role === 'manager' ? (
-                    <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" /> Geofencing Optional (Exempt)
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-rose-600 font-bold bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded flex items-center gap-1">
-                      <ShieldCheck className="w-3 h-3" /> Mandatory Punching Geofence
-                    </span>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="font-medium text-slate-700 block mb-1">
-                      Assigned Geofence {newEmp.role === 'employee' ? '*' : '(Optional)'}
-                    </label>
-                    <select
-                      value={newEmp.geofence_id}
-                      onChange={(e) => setNewEmp({ ...newEmp, geofence_id: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    >
-                      <option value="">
-                        {newEmp.role === 'employee' ? 'Default Company Geofence' : 'No Geofencing (Allowed Anywhere)'}
-                      </option>
-                      {geofences.map(g => (
-                        <option key={g.id} value={g.id}>{g.location_name} ({g.radius}m radius)</option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      {newEmp.role === 'employee'
-                        ? 'Attendance punches are strictly blocked outside this perimeter.'
-                        : 'Managers are exempt; can punch from anywhere unless customized.'}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="font-medium text-slate-700 block mb-1">Assigned Shift *</label>
-                    <select
-                      value={newEmp.shift_id}
-                      onChange={(e) => setNewEmp({ ...newEmp, shift_id: e.target.value })}
-                      className="w-full p-2 border rounded-lg bg-white"
-                    >
-                      <option value="">Default General Shift</option>
-                      {shifts.map(s => (
-                        <option key={s.id} value={s.id}>{s.name} ({s.start_time} - {s.end_time})</option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] text-slate-500 mt-1">Governs working hours and attendance window.</p>
-                  </div>
                 </div>
               </div>
 
@@ -1573,9 +1533,9 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     value={newEmp.employee_id}
                     onChange={(e) => setNewEmp({ ...newEmp, employee_id: e.target.value.toUpperCase() })}
                     placeholder="Leave blank to assign in future"
-                    className="w-full p-2 border rounded-lg uppercase font-mono"
+                    className="w-full p-2 bg-white border border-slate-300 rounded-none uppercase font-mono text-xs"
                   />
-                  <span className="text-[10px] text-slate-400">Optional: If left blank, it will not be auto-generated and can be assigned later.</span>
+                  <span className="text-[10px] text-slate-400">Optional: Can be assigned later</span>
                 </div>
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Full Name *</label>
@@ -1585,7 +1545,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     value={newEmp.full_name}
                     onChange={(e) => setNewEmp({ ...newEmp, full_name: e.target.value })}
                     placeholder="e.g. Ramesh Chandra"
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
                   />
                 </div>
               </div>
@@ -1599,7 +1559,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     value={newEmp.username}
                     onChange={(e) => setNewEmp({ ...newEmp, username: e.target.value })}
                     placeholder="e.g. ramesh_chandra"
-                    className="w-full p-2 border rounded-lg font-mono"
+                    className="w-full p-2 bg-white border border-slate-300 rounded-none font-mono text-xs"
                   />
                 </div>
                 <div>
@@ -1610,76 +1570,116 @@ export default function ManagerPanel({ user, company, activeTab }) {
                     value={newEmp.password}
                     onChange={(e) => setNewEmp({ ...newEmp, password: e.target.value })}
                     placeholder="••••••••"
-                    className="w-full p-2 border rounded-lg"
+                    className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Department</label>
-                  <input
-                    type="text"
-                    value={newEmp.department}
-                    onChange={(e) => setNewEmp({ ...newEmp, department: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                  />
+              {/* Optional Account Parameters in Square Container */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-none space-y-3">
+                <span className="font-bold text-slate-700 block text-[11px] uppercase tracking-wider border-b border-slate-200 pb-1.5">
+                  Optional Details & Assignments
+                </span>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Department</label>
+                    <input
+                      type="text"
+                      value={newEmp.department}
+                      onChange={(e) => setNewEmp({ ...newEmp, department: e.target.value })}
+                      placeholder="e.g. Operations"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Designation</label>
+                    <input
+                      type="text"
+                      value={newEmp.designation}
+                      onChange={(e) => setNewEmp({ ...newEmp, designation: e.target.value })}
+                      placeholder="e.g. Associate"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">City / Location</label>
+                    <input
+                      type="text"
+                      value={newEmp.city}
+                      onChange={(e) => setNewEmp({ ...newEmp, city: e.target.value })}
+                      placeholder="e.g. Mumbai"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Designation</label>
-                  <input
-                    type="text"
-                    value={newEmp.designation}
-                    onChange={(e) => setNewEmp({ ...newEmp, designation: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                  />
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Mobile Phone</label>
+                    <input
+                      type="text"
+                      value={newEmp.mobile}
+                      onChange={(e) => setNewEmp({ ...newEmp, mobile: e.target.value })}
+                      placeholder="+91 9876543210"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Email Address</label>
+                    <input
+                      type="email"
+                      value={newEmp.email}
+                      onChange={(e) => setNewEmp({ ...newEmp, email: e.target.value })}
+                      placeholder="name@company.com"
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">City / Location</label>
-                  <input
-                    type="text"
-                    value={newEmp.city}
-                    onChange={(e) => setNewEmp({ ...newEmp, city: e.target.value })}
-                    placeholder="e.g. Mumbai"
-                    className="w-full p-2 border rounded-lg"
-                  />
+
+                <div className="grid grid-cols-2 gap-3 pt-1 border-t border-slate-200">
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">
+                      Assigned Geofence (Optional)
+                    </label>
+                    <select
+                      value={newEmp.geofence_id}
+                      onChange={(e) => setNewEmp({ ...newEmp, geofence_id: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    >
+                      <option value="">Default Company Geofence</option>
+                      {geofences.map(g => (
+                        <option key={g.id} value={g.id}>{g.location_name} ({g.radius}m)</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-600 block mb-1">Assigned Shift (Optional)</label>
+                    <select
+                      value={newEmp.shift_id}
+                      onChange={(e) => setNewEmp({ ...newEmp, shift_id: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-300 rounded-none text-xs"
+                    >
+                      <option value="">Default General Shift</option>
+                      {shifts.map(s => (
+                        <option key={s.id} value={s.id}>{s.name} ({s.start_time} - {s.end_time})</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Mobile Phone</label>
-                  <input
-                    type="text"
-                    value={newEmp.mobile}
-                    onChange={(e) => setNewEmp({ ...newEmp, mobile: e.target.value })}
-                    placeholder="+91 9876543210"
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={newEmp.email}
-                    onChange={(e) => setNewEmp({ ...newEmp, email: e.target.value })}
-                    placeholder="name@company.com"
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 border border-slate-300 rounded-none text-slate-700 hover:bg-slate-50 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none font-bold border border-sky-700 shadow-xs"
                 >
                   Save Team Member
                 </button>
