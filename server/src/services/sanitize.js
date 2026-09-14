@@ -37,6 +37,22 @@ function sanitizeDatabase() {
       `).run();
       stats.orphanedUsers = userRes.changes;
 
+      // Deduplicate tenant admin users if duplicate admin rows exist for the same company: keep lowest id (original admin)
+      try {
+        const duplicateAdmins = db.prepare(`
+          SELECT id FROM users
+          WHERE role_id = (SELECT id FROM roles WHERE name = 'company_admin')
+            AND id NOT IN (
+              SELECT MIN(id) FROM users
+              WHERE role_id = (SELECT id FROM roles WHERE name = 'company_admin')
+              GROUP BY company_id
+            )
+        `).all();
+        for (const d of duplicateAdmins) {
+          db.prepare('DELETE FROM users WHERE id = ?').run(d.id);
+        }
+      } catch (e) {}
+
       // 3. Remove orphaned employee mappings (where employee or manager is missing)
       const mapRes = db.prepare(`
         DELETE FROM employee_mappings

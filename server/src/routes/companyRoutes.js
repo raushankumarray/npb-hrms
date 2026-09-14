@@ -46,9 +46,9 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
     SELECT c.*,
       (SELECT COUNT(*) FROM employees e WHERE e.company_id = c.id AND e.is_deleted = 0) as total_employees,
       (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.is_deleted = 0) as total_users,
-      (SELECT username FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_username,
-      (SELECT email FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_email,
-      (SELECT mobile FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1) as admin_mobile,
+      (SELECT username FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') ORDER BY u.id ASC LIMIT 1) as admin_username,
+      (SELECT email FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') ORDER BY u.id ASC LIMIT 1) as admin_email,
+      (SELECT mobile FROM users u WHERE u.company_id = c.id AND u.role_id = (SELECT id FROM roles WHERE name = 'company_admin') ORDER BY u.id ASC LIMIT 1) as admin_mobile,
       (SELECT COUNT(*) FROM employees e JOIN users u ON e.user_id = u.id JOIN roles r ON u.role_id = r.id WHERE e.company_id = c.id AND r.name = 'manager') as total_managers,
       s.show_branding_mode, s.timezone, s.auto_archive_days
     FROM companies c
@@ -119,6 +119,7 @@ router.get('/:id', verifyAuth, (req, res) => {
   const adminUser = db.prepare(`
     SELECT id, username, email FROM users
     WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = 'company_admin') AND is_deleted = 0
+    ORDER BY id ASC
     LIMIT 1
   `).get(companyId);
 
@@ -422,7 +423,7 @@ router.put('/:id', verifyAuth, (req, res) => {
     if (compRecord) {
       syncCompany(compRecord, { username: admin_username, email: admin_email, password: admin_password }).catch(() => {});
     }
-    const adminUserRecord = db.prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.company_id = ? AND r.name = 'company_admin' LIMIT 1").get(companyId);
+    const adminUserRecord = db.prepare("SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.company_id = ? AND r.name = 'company_admin' ORDER BY u.id ASC LIMIT 1").get(companyId);
     if (adminUserRecord) {
       syncUser(adminUserRecord).catch(() => {});
     }
