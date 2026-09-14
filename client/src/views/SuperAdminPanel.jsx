@@ -96,6 +96,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     browser_favicon: '',
     show_branding_mode: 'both'
   });
+  const [logoSetAsFavicon, setLogoSetAsFavicon] = useState(false);
   const [adminAccountForm, setAdminAccountForm] = useState({
     username: '',
     full_name: '',
@@ -276,7 +277,15 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     }
     const reader = new FileReader();
     reader.onload = () => {
-      setSettingsForm(prev => ({ ...prev, platform_logo: reader.result }));
+      const dataUrl = reader.result;
+      setSettingsForm(prev => {
+        const next = { ...prev, platform_logo: dataUrl };
+        if (logoSetAsFavicon) {
+          next.browser_favicon = dataUrl;
+          setBrowserFavicon(dataUrl);
+        }
+        return next;
+      });
     };
     reader.readAsDataURL(file);
   };
@@ -999,10 +1008,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         <div>
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">
             {activeTab === 'dashboard'
-              ? `Welcome, ${user.fullName || user.username} (Super Admin)`
+              ? `Welcome, ${user.fullName || user.username}`
               : activeTab === 'settings'
               ? 'Platform Settings & System Branding'
-              : 'Super Admin Platform Control'}
+              : 'Platform Control Center'}
           </h2>
           <p className="text-xs text-slate-500">
             {activeTab === 'settings'
@@ -2256,6 +2265,38 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <p className="text-[11px] text-slate-500 leading-relaxed">
                       PNG, JPG, SVG or WebP format. Maximum 2MB. Recommended dimensions: 240×60px with transparent background.
                     </p>
+
+                    <div className="pt-2 border-t border-slate-200/60 flex flex-wrap items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 cursor-pointer select-none text-[11px] font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={logoSetAsFavicon}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setLogoSetAsFavicon(checked);
+                            if (checked && settingsForm.platform_logo) {
+                              setSettingsForm(prev => ({ ...prev, browser_favicon: prev.platform_logo }));
+                              setBrowserFavicon(settingsForm.platform_logo);
+                            }
+                          }}
+                          className="w-3.5 h-3.5 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
+                        />
+                        <span>Set as browser favicon</span>
+                      </label>
+                      {settingsForm.platform_logo && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettingsForm(prev => ({ ...prev, browser_favicon: prev.platform_logo }));
+                            setBrowserFavicon(settingsForm.platform_logo);
+                            setSuccess('System logo applied to browser favicon.');
+                          }}
+                          className="text-[10px] text-sky-600 hover:text-sky-700 font-semibold underline"
+                        >
+                          Use Logo as Favicon
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

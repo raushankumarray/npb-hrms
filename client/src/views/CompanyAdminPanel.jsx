@@ -213,6 +213,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [logoFile, setLogoFile] = useState(null);
   const [logoPreview, setLogoPreview] = useState(company?.logo || null);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [setAsFavicon, setSetAsFavicon] = useState(true);
 
   const fetchData = async () => {
     setLoading(true);
@@ -661,6 +662,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
 
     const formData = new FormData();
     formData.append('logo', logoFile);
+    formData.append('set_as_favicon', setAsFavicon ? '1' : '0');
 
     try {
       const res = await apiRequest(`/companies/${company.id}/logo`, {
@@ -668,12 +670,37 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         body: formData
       });
 
-      setSuccess('Company logo uploaded and saved successfully.');
+      setSuccess(setAsFavicon ? 'Company logo and browser favicon uploaded and saved successfully.' : 'Company logo uploaded and saved successfully.');
       setLogoPreview(res.logoUrl);
       setLogoFile(null);
 
-      // Instantly update parent Layout navbar branding!
-      onUpdateCompany?.({ logo: res.logoUrl });
+      // Instantly update parent Layout navbar branding & favicon!
+      onUpdateCompany?.({
+        logo: res.logoUrl,
+        favicon: res.faviconUrl || (setAsFavicon ? res.logoUrl : company?.favicon)
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  // Set Active Company Logo as Browser Favicon
+  const handleSetCurrentLogoAsFavicon = async () => {
+    if (!company?.logo && !logoPreview) {
+      setError('No active company logo to set as favicon. Please upload a logo first.');
+      return;
+    }
+    setUploadingLogo(true);
+    setError('');
+    try {
+      const res = await apiRequest(`/companies/${company.id}/favicon`, {
+        method: 'POST',
+        body: { use_current_logo: true }
+      });
+      setSuccess('Current company logo set as browser favicon successfully.');
+      onUpdateCompany?.({ favicon: res.faviconUrl || company?.logo });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2586,6 +2613,36 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 <Upload className="w-4 h-4 text-slate-500" />
                 <span>{logoFile ? logoFile.name : 'Select Image File (PNG, JPG, SVG)'}</span>
               </label>
+
+              {/* Option to set as browser favicon */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={setAsFavicon}
+                    onChange={(e) => setSetAsFavicon(e.target.checked)}
+                    className="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500"
+                  />
+                  <span className="text-xs font-semibold text-slate-700">
+                    Set as browser tab favicon
+                  </span>
+                </label>
+                <p className="text-[10px] text-slate-500 leading-tight">
+                  When enabled, this logo displays in the browser tab icon across Company Admin, Manager, and Employee portals for your company.
+                </p>
+
+                {(company?.logo || logoPreview) && !logoFile && (
+                  <button
+                    type="button"
+                    onClick={handleSetCurrentLogoAsFavicon}
+                    disabled={uploadingLogo}
+                    className="w-full mt-1.5 py-1.5 px-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-[11px] font-semibold rounded-lg shadow-2xs transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    <span>Use Current Logo as Browser Favicon</span>
+                  </button>
+                )}
+              </div>
 
               <button
                 type="button"

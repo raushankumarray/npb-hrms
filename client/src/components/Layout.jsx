@@ -31,7 +31,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
   const getBranding = () => {
     if (user.role === 'super_admin') {
       return {
-        name: systemSettings?.platform_name ? `${systemSettings.platform_name} Super Admin` : 'NPB HRMS Super Admin',
+        name: systemSettings?.platform_name || 'NPB HRMS',
         logo: systemSettings?.platform_logo || null,
         mode: systemSettings?.show_branding_mode || (systemSettings?.platform_logo ? 'both' : 'name_only')
       };
@@ -268,7 +268,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
                   {user.fullName || user.username}
                 </p>
                 <p className="text-[10px] text-slate-400 capitalize mt-0.5">
-                  {user.role.replace('_', ' ')}
+                  {user.role === 'super_admin' ? 'Administrator' : user.role.replace('_', ' ')}
                 </p>
               </div>
             </button>

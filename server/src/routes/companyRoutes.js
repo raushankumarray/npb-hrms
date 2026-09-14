@@ -514,9 +514,14 @@ router.post('/:id/logo', verifyAuth, uploadLogo.single('logo'), (req, res) => {
     return res.status(400).json({ error: 'Please provide an image file to upload.' });
   }
 
-  const currentComp = db.prepare('SELECT logo FROM companies WHERE id = ?').get(companyId);
+  const setAsFavicon = req.body.set_as_favicon === '1' || req.body.set_as_favicon === 'true' || req.body.set_as_favicon === true;
+  const currentComp = db.prepare('SELECT logo, favicon FROM companies WHERE id = ?').get(companyId);
 
-  db.prepare('UPDATE companies SET logo = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(logoUrl, companyId);
+  if (setAsFavicon) {
+    db.prepare('UPDATE companies SET logo = ?, favicon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(logoUrl, logoUrl, companyId);
+  } else {
+    db.prepare('UPDATE companies SET logo = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(logoUrl, companyId);
+  }
 
   logAudit({
     companyId,
@@ -524,18 +529,64 @@ router.post('/:id/logo', verifyAuth, uploadLogo.single('logo'), (req, res) => {
     userName: req.user.username,
     role: req.user.role_name,
     panel: 'Company Branding',
-    action: 'COMPANY_LOGO_UPDATED',
+    action: setAsFavicon ? 'COMPANY_LOGO_AND_FAVICON_UPDATED' : 'COMPANY_LOGO_UPDATED',
     targetEntity: 'companies',
     targetId: companyId,
-    oldValues: { logo: currentComp?.logo || null },
-    newValues: { logo: logoUrl },
-    reason: 'Company logo uploaded and updated'
+    oldValues: { logo: currentComp?.logo || null, favicon: currentComp?.favicon || null },
+    newValues: { logo: logoUrl, favicon: setAsFavicon ? logoUrl : (currentComp?.favicon || null) },
+    reason: setAsFavicon ? 'Company logo uploaded and set as browser favicon' : 'Company logo uploaded and updated'
   });
+
+  try {
+    const updatedComp = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
+    if (updatedComp) syncCompany(updatedComp).catch(() => {});
+  } catch (e) {}
 
   res.json({
     success: true,
     logoUrl,
-    message: 'Company logo uploaded and saved successfully.'
+    faviconUrl: setAsFavicon ? logoUrl : (currentComp?.favicon || null),
+    message: setAsFavicon
+      ? 'Company logo uploaded and set as browser favicon successfully.'
+      : 'Company logo uploaded and saved successfully.'
+  });
+});
+
+// Set / Update Company Favicon directly
+router.post('/:id/favicon', verifyAuth, uploadLogo.single('favicon'), (req, res) => {
+  const companyId = parseInt(req.params.id, 10);
+
+  if (req.user.role_name !== 'super_admin') {
+    if (req.user.role_name !== 'company_admin' || req.user.company_id !== companyId) {
+      return res.status(403).json({ error: 'Access denied to update company favicon.' });
+    }
+  }
+
+  let faviconUrl = '';
+  if (req.file) {
+    faviconUrl = `/uploads/${req.file.filename}`;
+  } else if (req.body.favicon_url) {
+    faviconUrl = req.body.favicon_url;
+  } else if (req.body.use_current_logo) {
+    const c = db.prepare('SELECT logo FROM companies WHERE id = ?').get(companyId);
+    faviconUrl = c?.logo || '';
+  } else if (req.body.reset) {
+    faviconUrl = null;
+  } else {
+    return res.status(400).json({ error: 'Please provide a favicon image file or specify an action.' });
+  }
+
+  db.prepare('UPDATE companies SET favicon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(faviconUrl, companyId);
+
+  try {
+    const updatedComp = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
+    if (updatedComp) syncCompany(updatedComp).catch(() => {});
+  } catch (e) {}
+
+  res.json({
+    success: true,
+    faviconUrl,
+    message: faviconUrl ? 'Company browser favicon updated successfully.' : 'Company browser favicon reset successfully.'
   });
 });
 

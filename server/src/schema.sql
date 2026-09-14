@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS companies (
   phone TEXT,
   address TEXT,
   logo TEXT,
+  favicon TEXT,
   plan_expiry_date DATE,
   status TEXT DEFAULT 'active' CHECK(status IN ('active', 'disabled', 'banned', 'deleted')),
   is_deleted INTEGER DEFAULT 0,

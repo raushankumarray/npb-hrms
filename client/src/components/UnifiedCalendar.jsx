@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Clock,
-  CheckCircle, AlertCircle, Sparkles, User, RefreshCw, X, Filter
+  CheckCircle, AlertCircle, Sparkles, User, RefreshCw, X, Filter, Building2
 } from 'lucide-react';
 import { apiRequest } from '../api';
 
@@ -17,6 +17,8 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
   const today = new Date();
   const [currentYear, setCurrentYear] = useState(today.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(today.getMonth() + 1); // 1-12
+  const [selectedCompanyId, setSelectedCompanyId] = useState(companyId || null);
+  const [companiesList, setCompaniesList] = useState([]);
   const [calendarData, setCalendarData] = useState({
     holidays: [],
     offDays: ['Sunday'],
@@ -30,15 +32,33 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
   const [employeesList, setEmployeesList] = useState([]);
 
   useEffect(() => {
+    if (companyId) {
+      setSelectedCompanyId(companyId);
+    }
+  }, [companyId]);
+
+  useEffect(() => {
     if (employeeId) {
       setFilterEmpId(employeeId);
     }
   }, [employeeId]);
 
+  // Load companies list for Super Admin / Support selector
+  useEffect(() => {
+    if (role === 'super_admin' || role === 'support') {
+      apiRequest('/companies?limit=100').then(res => {
+        setCompaniesList(res.companies || []);
+      }).catch(() => {});
+    }
+  }, [role]);
+
   const fetchCalendar = async () => {
     setLoading(true);
     try {
       let endpoint = `/attendance/calendar?year=${currentYear}&month=${currentMonth}`;
+      if (selectedCompanyId) {
+        endpoint += `&company_id=${selectedCompanyId}`;
+      }
       if (filterEmpId) {
         endpoint += `&employee_id=${filterEmpId}`;
       }
@@ -60,16 +80,20 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
 
   useEffect(() => {
     fetchCalendar();
-  }, [currentYear, currentMonth, filterEmpId]);
+  }, [currentYear, currentMonth, filterEmpId, selectedCompanyId]);
 
   useEffect(() => {
-    // If Admin/HR/Manager, load employee list for filtering
+    // If Admin/HR/Manager, load employee list for filtering (strictly scoped to company)
     if (role !== 'employee') {
-      apiRequest('/employees?limit=100').then(res => {
+      let empEndpoint = '/employees?limit=100';
+      if (selectedCompanyId) {
+        empEndpoint += `&company_id=${selectedCompanyId}`;
+      }
+      apiRequest(empEndpoint).then(res => {
         setEmployeesList(res.employees || []);
       }).catch(() => {});
     }
-  }, [role]);
+  }, [role, selectedCompanyId]);
 
   const handlePrevMonth = () => {
     if (currentMonth === 1) {
@@ -164,6 +188,29 @@ export default function UnifiedCalendar({ companyId, employeeId = null, role = '
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Company Selector for Super Admin / Support */}
+          {(role === 'super_admin' || role === 'support') && (
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+              <Building2 className="w-3.5 h-3.5 text-slate-400" />
+              <select
+                value={selectedCompanyId || ''}
+                onChange={(e) => {
+                  const val = e.target.value ? parseInt(e.target.value, 10) : null;
+                  setSelectedCompanyId(val);
+                  setFilterEmpId(null);
+                }}
+                className="bg-transparent text-xs text-slate-700 font-medium focus:outline-none"
+              >
+                <option value="">System Calendar (Independent)</option>
+                {companiesList.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Employee Filter for Admin/HR (hidden for manager holidays only) */}
           {!isManagerHolidaysOnly && role !== 'employee' && employeesList.length > 0 && (
             <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">

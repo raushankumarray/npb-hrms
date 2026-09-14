@@ -399,6 +399,7 @@ async function syncCompany(company, extra = {}) {
       portalName: company.portal_name || company.name,
       portal_name: company.portal_name || company.name,
       logo: company.logo || '',
+      favicon: company.favicon || null,
       email: company.email || adminEmail || '',
       phone: company.phone || '',
       address: company.address || '',
@@ -1836,19 +1837,20 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
 
         const planExpiryDate = c.plan_expiry_date || c.planExpiryDate || null;
+        const compFavicon = c.favicon || null;
 
         if (existing && claimedCompanyIds.has(existing.id)) {
           // Already claimed/restored in this cycle - update company details and keep existing id
           db.prepare(`
-            UPDATE companies SET name = ?, portal_name = ?, email = ?, phone = ?, address = ?, logo = ?, plan_expiry_date = COALESCE(?, plan_expiry_date), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
+            UPDATE companies SET name = ?, portal_name = ?, email = ?, phone = ?, address = ?, logo = ?, favicon = COALESCE(?, favicon), plan_expiry_date = COALESCE(?, plan_expiry_date), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(name, portalName, email, phone, address, logo, planExpiryDate, status, existing.id);
+          `).run(name, portalName, email, phone, address, logo, compFavicon, planExpiryDate, status, existing.id);
           targetCompId = existing.id;
         } else if (existing) {
           db.prepare(`
-            UPDATE companies SET name = ?, portal_name = ?, code = ?, email = ?, phone = ?, address = ?, logo = ?, plan_expiry_date = COALESCE(?, plan_expiry_date), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
+            UPDATE companies SET name = ?, portal_name = ?, code = ?, email = ?, phone = ?, address = ?, logo = ?, favicon = COALESCE(?, favicon), plan_expiry_date = COALESCE(?, plan_expiry_date), status = ?, is_deleted = 0, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `).run(name, portalName, rawCode, email, phone, address, logo, planExpiryDate, status, existing.id);
+          `).run(name, portalName, rawCode, email, phone, address, logo, compFavicon, planExpiryDate, status, existing.id);
           targetCompId = existing.id;
         } else {
           // Guarantee unique code
@@ -1869,21 +1871,21 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (canUseCompId) {
             try {
               db.prepare(`
-                INSERT INTO companies (id, name, portal_name, code, email, phone, address, logo, plan_expiry_date, status, is_deleted, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              `).run(targetCompId, name, portalName, finalCode, email, phone, address, logo, planExpiryDate, status);
+                INSERT INTO companies (id, name, portal_name, code, email, phone, address, logo, favicon, plan_expiry_date, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(targetCompId, name, portalName, finalCode, email, phone, address, logo, compFavicon, planExpiryDate, status);
             } catch (err) {
               const insRes = db.prepare(`
-                INSERT INTO companies (name, portal_name, code, email, phone, address, logo, plan_expiry_date, status, is_deleted, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-              `).run(name, portalName, finalCode, email, phone, address, logo, planExpiryDate, status);
+                INSERT INTO companies (name, portal_name, code, email, phone, address, logo, favicon, plan_expiry_date, status, is_deleted, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              `).run(name, portalName, finalCode, email, phone, address, logo, compFavicon, planExpiryDate, status);
               targetCompId = insRes.lastInsertRowid;
             }
           } else {
             const insRes = db.prepare(`
-              INSERT INTO companies (name, portal_name, code, email, phone, address, logo, plan_expiry_date, status, is_deleted, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            `).run(name, portalName, finalCode, email, phone, address, logo, planExpiryDate, status);
+              INSERT INTO companies (name, portal_name, code, email, phone, address, logo, favicon, plan_expiry_date, status, is_deleted, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(name, portalName, finalCode, email, phone, address, logo, compFavicon, planExpiryDate, status);
             targetCompId = insRes.lastInsertRowid;
           }
         }

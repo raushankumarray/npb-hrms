@@ -8,8 +8,25 @@ import CompanyAdminPanel from './views/CompanyAdminPanel';
 import ManagerPanel from './views/ManagerPanel';
 import EmployeePanel from './views/EmployeePanel';
 
+export function clearBrowserFavicon() {
+  try {
+    let link = document.querySelector("link[rel*='icon']");
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.getElementsByTagName('head')[0].appendChild(link);
+    }
+    link.href = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>';
+  } catch (e) {
+    console.error('Failed to clear favicon:', e);
+  }
+}
+
 export function setBrowserFavicon(iconUrl) {
-  if (!iconUrl) return;
+  if (!iconUrl) {
+    clearBrowserFavicon();
+    return;
+  }
   try {
     let link = document.querySelector("link[rel*='icon']");
     if (!link) {
@@ -32,14 +49,40 @@ export default function App() {
     return localStorage.getItem('npb_hrms_active_tab') || 'dashboard';
   });
 
+  // Dynamically set or clear browser tab favicon strictly based on authenticated panel
+  const applyPanelFavicon = (currentUser, currentCompany, currentSettings) => {
+    if (!currentUser) {
+      clearBrowserFavicon();
+      return;
+    }
+
+    if (currentUser.role === 'super_admin') {
+      // Super Admin panel: ONLY show Super Admin uploaded favicon
+      const superFavicon = currentSettings?.browser_favicon;
+      if (superFavicon) {
+        setBrowserFavicon(superFavicon);
+      } else {
+        clearBrowserFavicon();
+      }
+    } else if (['company_admin', 'manager', 'employee'].includes(currentUser.role)) {
+      // Company Admin, Manager, and Employee panels: ONLY show Company uploaded favicon
+      const compFavicon = currentCompany?.favicon || currentCompany?.settings?.browser_favicon || currentCompany?.settings?.favicon;
+      if (compFavicon) {
+        setBrowserFavicon(compFavicon);
+      } else {
+        clearBrowserFavicon();
+      }
+    } else {
+      clearBrowserFavicon();
+    }
+  };
+
   const loadSystemSettings = async () => {
     try {
       const res = await apiRequest('/system/settings');
       if (res.settings) {
         setSystemSettings(res.settings);
-        if (res.settings.browser_favicon) {
-          setBrowserFavicon(res.settings.browser_favicon);
-        }
+        // Do NOT set browser favicon on unauthenticated login page
       }
     } catch (e) {}
   };
@@ -49,14 +92,27 @@ export default function App() {
     const token = getToken();
     if (!token) {
       document.title = 'Sign In - Authentication Portal';
+      clearBrowserFavicon();
       setLoading(false);
       return;
     }
 
     try {
-      const res = await apiRequest('/auth/me');
+      const [res, sysRes] = await Promise.all([
+        apiRequest('/auth/me'),
+        apiRequest('/system/settings').catch(() => ({}))
+      ]);
+
+      const curSettings = sysRes.settings || systemSettings;
+      if (sysRes.settings) {
+        setSystemSettings(sysRes.settings);
+      }
+
       setUser(res.user);
       setCompany(res.company);
+
+      // Apply dynamic browser favicon strictly as per authenticated panel
+      applyPanelFavicon(res.user, res.company, curSettings);
 
       // Dynamic browser title post-login
       if (res.user.role === 'super_admin') {
@@ -77,6 +133,7 @@ export default function App() {
       removeToken();
       setUser(null);
       setCompany(null);
+      clearBrowserFavicon();
       document.title = 'Sign In - Authentication Portal';
     } finally {
       setLoading(false);
@@ -90,6 +147,7 @@ export default function App() {
     const handleExpired = () => {
       setUser(null);
       setCompany(null);
+      clearBrowserFavicon();
       document.title = 'Sign In - Authentication Portal';
     };
 
@@ -100,6 +158,9 @@ export default function App() {
   const handleLoginSuccess = (loggedInUser, companyInfo) => {
     setUser(loggedInUser);
     setCompany(companyInfo);
+
+    // Apply dynamic browser favicon strictly as per authenticated panel
+    applyPanelFavicon(loggedInUser, companyInfo, systemSettings);
 
     if (loggedInUser.role === 'super_admin') {
       document.title = 'Super Admin Console - NPB HRMS';
@@ -125,6 +186,7 @@ export default function App() {
     removeToken();
     setUser(null);
     setCompany(null);
+    clearBrowserFavicon();
     localStorage.removeItem('npb_hrms_active_tab');
     document.title = 'Sign In - Authentication Portal';
   };
@@ -145,6 +207,23 @@ export default function App() {
     return <LoginView onLoginSuccess={handleLoginSuccess} />;
   }
 
+  const handleSystemSettingsUpdate = (s) => {
+    setSystemSettings(s);
+    if (user?.role === 'super_admin') {
+      applyPanelFavicon(user, company, s);
+    }
+  };
+
+  const handleCompanyUpdate = (updated) => {
+    setCompany(prev => {
+      const merged = { ...prev, ...updated };
+      if (['company_admin', 'manager', 'employee'].includes(user?.role)) {
+        applyPanelFavicon(user, merged, systemSettings);
+      }
+      return merged;
+    });
+  };
+
   // Render role-specific panel inside Layout
   const renderPanel = () => {
     switch (user.role) {
@@ -154,7 +233,7 @@ export default function App() {
             user={user}
             activeTab={activeTab}
             onUserUpdate={(updated) => setUser(prev => ({ ...prev, ...updated }))}
-            onSystemSettingsUpdate={(s) => setSystemSettings(s)}
+            onSystemSettingsUpdate={handleSystemSettingsUpdate}
           />
         );
       case 'support':
@@ -165,7 +244,7 @@ export default function App() {
             company={company}
             user={user}
             activeTab={activeTab}
-            onUpdateCompany={(updated) => setCompany(prev => ({ ...prev, ...updated }))}
+            onUpdateCompany={handleCompanyUpdate}
           />
         );
       case 'manager':

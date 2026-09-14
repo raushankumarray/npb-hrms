@@ -207,32 +207,29 @@ router.get('/calendar', verifyAuth, (req, res) => {
     }
   }
 
-  // 3. Fetch attendance records
-  let attQuery = `
-    SELECT ar.id, ar.employee_id, ar.date, ar.punch_in_time, ar.punch_out_time, ar.total_hours, ar.status, ar.remarks,
-           e.full_name as employee_name, e.employee_id as employee_code, e.department
-    FROM attendance_records ar
-    JOIN employees e ON ar.employee_id = e.id
-    WHERE ar.date LIKE ?
-  `;
-  const params = [`${datePrefix}%`];
-
+  // 3. Fetch attendance records (Strictly scoped to companyId - Super Admin system calendar remains completely independent)
+  let records = [];
   if (companyId) {
-    attQuery += ' AND ar.company_id = ?';
-    params.push(companyId);
+    let attQuery = `
+      SELECT ar.id, ar.employee_id, ar.date, ar.punch_in_time, ar.punch_out_time, ar.total_hours, ar.status, ar.remarks,
+             e.full_name as employee_name, e.employee_id as employee_code, e.department
+      FROM attendance_records ar
+      JOIN employees e ON ar.employee_id = e.id
+      WHERE ar.date LIKE ? AND ar.company_id = ?
+    `;
+    const params = [`${datePrefix}%`, companyId];
+
+    if (employeeId) {
+      attQuery += ' AND ar.employee_id = ?';
+      params.push(employeeId);
+    } else if (req.user.role_name === 'manager') {
+      attQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
+      params.push(req.user.employee_id, req.user.employee_id);
+    }
+
+    attQuery += ' ORDER BY ar.date ASC, ar.punch_in_time ASC';
+    records = db.prepare(attQuery).all(...params);
   }
-
-  if (employeeId) {
-    attQuery += ' AND ar.employee_id = ?';
-    params.push(employeeId);
-  } else if (req.user.role_name === 'manager') {
-    attQuery += ' AND (e.manager_id = ? OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?))';
-    params.push(req.user.employee_id, req.user.employee_id);
-  }
-
-  attQuery += ' ORDER BY ar.date ASC, ar.punch_in_time ASC';
-
-  const records = db.prepare(attQuery).all(...params);
 
   let employeeCreatedAt = null;
   let employmentStartDate = null;

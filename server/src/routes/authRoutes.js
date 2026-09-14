@@ -74,7 +74,7 @@ router.post('/login', (req, res) => {
   // Check company status and plan expiry if user is tied to a company
   let companyInfo = null;
   if (user.company_id) {
-    const comp = db.prepare('SELECT id, name, portal_name, code, logo, plan_expiry_date, status FROM companies WHERE id = ?').get(user.company_id);
+    const comp = db.prepare('SELECT id, name, portal_name, code, logo, favicon, plan_expiry_date, status FROM companies WHERE id = ?').get(user.company_id);
     if (!comp || comp.status === 'deleted') {
       return res.status(403).json({ error: 'Company account does not exist.' });
     }
@@ -96,6 +96,7 @@ router.post('/login', (req, res) => {
       portalName: comp.portal_name,
       code: comp.code,
       logo: comp.logo,
+      favicon: comp.favicon || null,
       planExpiryDate: comp.plan_expiry_date || null,
       settings: settings || {},
       modules: modules.reduce((acc, m) => {
@@ -196,7 +197,7 @@ router.post('/login', (req, res) => {
 router.get('/me', verifyAuth, (req, res) => {
   let companyInfo = null;
   if (req.user.company_id) {
-    const comp = db.prepare('SELECT id, name, portal_name, code, logo, plan_expiry_date, status FROM companies WHERE id = ?').get(req.user.company_id);
+    const comp = db.prepare('SELECT id, name, portal_name, code, logo, favicon, plan_expiry_date, status FROM companies WHERE id = ?').get(req.user.company_id);
     if (!comp || comp.status === 'deleted') {
       return res.status(403).json({ error: 'Company account does not exist.' });
     }
@@ -218,6 +219,7 @@ router.get('/me', verifyAuth, (req, res) => {
       portalName: comp.portal_name,
       code: comp.code,
       logo: comp.logo,
+      favicon: comp.favicon || null,
       planExpiryDate: comp.plan_expiry_date || null,
       settings: settings || {},
       modules: modules.reduce((acc, m) => {
