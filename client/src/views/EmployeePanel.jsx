@@ -4,7 +4,7 @@ import {
   Ticket, KeyRound, User, Smartphone, RefreshCw, Send, ArrowUpRight,
   ShieldAlert, CheckCircle, Navigation, MessageSquare, Edit3, Sparkles, FileEdit, Check, X, Globe,
   FileText, Download, SlidersHorizontal, Printer, ChevronDown, CheckSquare, Square,
-  LogOut, ChevronLeft, ChevronRight, Filter, Lock, Unlock, Laptop, Copy, Headphones
+  LogOut, ChevronLeft, ChevronRight, Filter, Lock, Unlock, Laptop, Copy, Headphones, Ban
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';

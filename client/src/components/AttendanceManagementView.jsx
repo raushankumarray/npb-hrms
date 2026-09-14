@@ -3,7 +3,7 @@ import {
   Clock, Calendar, MapPin, Search, Filter, Download, Upload,
   FileSpreadsheet, FileText, CheckCircle, AlertTriangle, RefreshCw,
   Edit3, Check, X, SlidersHorizontal, ChevronLeft, ChevronRight,
-  Eye, CheckSquare, Square, Building2, UserCheck, Shield
+  Eye, CheckSquare, Square, Building2, UserCheck, Shield, Sparkles
 } from 'lucide-react';
 import { apiRequest } from '../api';
 

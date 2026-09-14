@@ -5,7 +5,7 @@ import {
   Edit3, Trash2, ArrowRight, Upload, Download, Smartphone, Image,
   UserCheck, Shield, Check, Eye, MessageSquare, X, GitMerge, ShieldCheck, CheckCircle2,
   Key, Ban, Filter, Search, FileSpreadsheet, ChevronLeft, ChevronRight, SlidersHorizontal,
-  Building2, Globe, LocateFixed, Archive, Inbox
+  Building2, Globe, LocateFixed, Archive, Inbox, Sparkles
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import LiveTrackingMap from '../components/LiveTrackingMap';
@@ -206,8 +206,25 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     half_day_min_hours: company?.settings?.half_day_min_hours || 4.0,
     full_day_min_hours: company?.settings?.full_day_min_hours || 8.0,
     show_branding_mode: company?.settings?.show_branding_mode || 'both',
-    auto_archive_days: company?.settings?.auto_archive_days || 1
+    auto_archive_days: company?.settings?.auto_archive_days || 1,
+    timezone: company?.settings?.timezone || 'Asia/Kolkata'
   });
+
+  // Sync settings when company object updates
+  useEffect(() => {
+    if (company) {
+      setSettingsForm(prev => ({
+        portal_name: company.portalName || company.name || prev.portal_name || '',
+        working_hours_per_day: company.settings?.working_hours_per_day ?? prev.working_hours_per_day ?? 8.0,
+        half_day_min_hours: company.settings?.half_day_min_hours ?? prev.half_day_min_hours ?? 4.0,
+        full_day_min_hours: company.settings?.full_day_min_hours ?? prev.full_day_min_hours ?? 8.0,
+        show_branding_mode: company.settings?.show_branding_mode ?? prev.show_branding_mode ?? 'both',
+        auto_archive_days: company.settings?.auto_archive_days ?? prev.auto_archive_days ?? 1,
+        timezone: company.settings?.timezone || prev.timezone || 'Asia/Kolkata'
+      }));
+      setLogoPreview(prev => (logoFile ? prev : (company.logo || null)));
+    }
+  }, [company]);
 
   // Logo upload state
   const [logoFile, setLogoFile] = useState(null);
@@ -2680,6 +2697,38 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   onChange={(e) => setSettingsForm({ ...settingsForm, portal_name: e.target.value })}
                   className="w-full p-2.5 border rounded-lg"
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Standard Daily Working Hours</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="1"
+                    max="24"
+                    value={settingsForm.working_hours_per_day}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, working_hours_per_day: parseFloat(e.target.value) || 8.0 })}
+                    className="w-full p-2.5 border rounded-lg"
+                  />
+                  <span className="text-[10px] text-slate-400">Default work shift duration (e.g. 8.0 hrs)</span>
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Company Timezone</label>
+                  <select
+                    value={settingsForm.timezone}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, timezone: e.target.value })}
+                    className="w-full p-2.5 border rounded-lg bg-white"
+                  >
+                    <option value="Asia/Kolkata">Asia/Kolkata (IST +5:30)</option>
+                    <option value="UTC">UTC (Coordinated Universal Time)</option>
+                    <option value="Asia/Dubai">Asia/Dubai (GST +4:00)</option>
+                    <option value="Asia/Singapore">Asia/Singapore (SGT +8:00)</option>
+                    <option value="America/New_York">America/New_York (EST/EDT)</option>
+                    <option value="Europe/London">Europe/London (GMT/BST)</option>
+                  </select>
+                  <span className="text-[10px] text-slate-400">Attendance calculation timezone</span>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

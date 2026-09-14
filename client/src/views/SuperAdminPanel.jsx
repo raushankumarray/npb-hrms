@@ -5,7 +5,7 @@ import {
   RefreshCw, FileSpreadsheet, Eye, ArrowUpRight, Key, Lock,
   Upload, Image, Globe, Save, Check, UserCheck, Sparkles, Sliders,
   ChevronLeft, ChevronRight, SlidersHorizontal, Filter, Compass,
-  Flame, Database, Radio, DownloadCloud, UploadCloud, LogOut
+  Flame, Database, Radio, DownloadCloud, UploadCloud, LogOut, X
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import CustomExportModal from '../components/CustomExportModal';
