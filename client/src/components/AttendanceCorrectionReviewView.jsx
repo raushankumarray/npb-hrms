@@ -10,7 +10,7 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'pending' | 'approved' | 'rejected'
+  const [statusFilter, setStatusFilter] = useState('pending'); // 'pending' by default | 'approved' | 'rejected' | 'archived' | 'all'
   const [searchQuery, setSearchQuery] = useState('');
 
   // Review modal state
@@ -31,7 +31,16 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
       queryParams.append('limit', '100');
 
       const res = await apiRequest(`/attendance/correction-requests?${queryParams.toString()}`);
-      setRequests(res.requests || []);
+      // Strictly deduplicate by ID to prevent duplicate rows
+      const seen = new Set();
+      const unique = [];
+      for (const r of (res.requests || [])) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          unique.push(r);
+        }
+      }
+      setRequests(unique);
     } catch (err) {
       setError(err.message || 'Failed to load correction requests.');
     } finally {
@@ -72,8 +81,8 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
 
       setSuccess(
         reviewModal.action === 'approved'
-          ? `Request for ${reviewModal.request.employee_name} approved! Attendance marked as Present.`
-          : `Request for ${reviewModal.request.employee_name} rejected. Attendance marked as Absent.`
+          ? `Request for ${reviewModal.request.employee_name} APPROVED! Attendance marked as Present and request moved to Archive.`
+          : `Request for ${reviewModal.request.employee_name} REJECTED. Attendance marked as Absent and request moved to Archive.`
       );
 
       // Instant cross-tab and cross-window sync to employee panel
@@ -83,6 +92,10 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
       localStorage.setItem('hrms_attendance_updated', String(Date.now()));
       window.dispatchEvent(new CustomEvent('master-refresh'));
 
+      // Auto-archive: if on pending tab, immediately remove from current pending view
+      const targetId = reviewModal.request.id;
+      setRequests(prev => prev.filter(r => r.id !== targetId));
+
       setReviewModal({ open: false, request: null, action: 'approved', notes: '', submitting: false });
       fetchRequests();
     } catch (err) {
@@ -91,7 +104,25 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
     }
   };
 
-  const filteredRequests = requests.filter(r => {
+  // Deduplicate and filter requests
+  const deduplicatedRequests = React.useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const r of requests) {
+      if (!seen.has(r.id)) {
+        seen.add(r.id);
+        list.push(r);
+      }
+    }
+    return list;
+  }, [requests]);
+
+  const filteredRequests = deduplicatedRequests.filter(r => {
+    if (statusFilter === 'archived') {
+      if (r.status === 'pending') return false;
+    } else if (statusFilter !== 'all') {
+      if (r.status !== statusFilter) return false;
+    }
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -103,7 +134,10 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
     );
   });
 
-  const pendingCount = requests.filter(r => r.status === 'pending').length;
+  const pendingCount = deduplicatedRequests.filter(r => r.status === 'pending').length;
+  const approvedCount = deduplicatedRequests.filter(r => r.status === 'approved').length;
+  const rejectedCount = deduplicatedRequests.filter(r => r.status === 'rejected').length;
+  const archivedCount = approvedCount + rejectedCount;
 
   return (
     <div className="space-y-6">
@@ -167,10 +201,11 @@ export default function AttendanceCorrectionReviewView({ role = 'company_admin',
             <Filter className="w-3.5 h-3.5 text-slate-400" /> Filter Status:
           </span>
           {[
-            { id: 'all', label: 'All Requests', count: requests.length },
-            { id: 'pending', label: 'Pending', count: requests.filter(r => r.status === 'pending').length },
-            { id: 'approved', label: 'Approved (Present)', count: requests.filter(r => r.status === 'approved').length },
-            { id: 'rejected', label: 'Rejected (Absent)', count: requests.filter(r => r.status === 'rejected').length }
+            { id: 'pending', label: 'Pending Approvals', count: pendingCount },
+            { id: 'archived', label: 'Archived / History', count: archivedCount },
+            { id: 'approved', label: 'Approved (Present)', count: approvedCount },
+            { id: 'rejected', label: 'Rejected (Absent)', count: rejectedCount },
+            { id: 'all', label: 'All Requests', count: deduplicatedRequests.length }
           ].map(f => (
             <button
               key={f.id}

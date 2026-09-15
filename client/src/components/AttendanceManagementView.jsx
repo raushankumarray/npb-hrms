@@ -7,18 +7,19 @@ import {
 } from 'lucide-react';
 import { apiRequest } from '../api';
 
-// All 10 standard columns requested
+// All 11 standard columns matching employee daily logs file
 const ALL_COLUMNS = [
-  { id: 'name', label: 'Employee Name & Code' },
-  { id: 'date', label: 'Attendance Date' },
+  { id: 'date', label: 'Date (Day)' },
+  { id: 'employee_id', label: 'Employee ID' },
+  { id: 'employee_name', label: 'Employee Name' },
   { id: 'punch_in', label: 'Punch In Time' },
-  { id: 'punch_in_gps', label: 'GPS Lat/Long (Punch In)' },
-  { id: 'punch_in_address', label: 'Address (Punch In)' },
+  { id: 'punch_in_gps', label: 'Punch In Lat/Long' },
+  { id: 'punch_in_address', label: 'Punch In Address' },
   { id: 'punch_out', label: 'Punch Out Time' },
-  { id: 'punch_out_gps', label: 'GPS Lat/Long (Punch Out)' },
-  { id: 'punch_out_address', label: 'Address (Punch Out)' },
-  { id: 'working_hours', label: 'Working Hours' },
-  { id: 'status', label: 'Status' }
+  { id: 'punch_out_gps', label: 'Punch Out Lat/Long' },
+  { id: 'punch_out_address', label: 'Punch Out Address' },
+  { id: 'status', label: 'Status' },
+  { id: 'working_hours', label: 'Working Hours (HH:MM)' }
 ];
 
 export default function AttendanceManagementView({ role = 'company_admin', company = {} }) {
@@ -198,15 +199,66 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
 
   // Format 12-hour display
   const formatTime = (timeStr) => {
-    if (!timeStr || timeStr === '-' || timeStr === '--:--') return '--:--';
+    if (!timeStr || timeStr === '-' || timeStr === '--:--' || timeStr === '--:--:--') return '--:--:--';
+    if (typeof timeStr === 'string' && (timeStr.includes('AM') || timeStr.includes('PM'))) return timeStr;
     const parts = timeStr.split(':');
     if (parts.length < 2) return timeStr;
     let h = parseInt(parts[0], 10);
     const m = parts[1];
+    const s = parts[2] || '00';
     const ampm = h >= 12 ? 'PM' : 'AM';
     h = h % 12;
     h = h ? h : 12;
-    return `${h < 10 ? '0' + h : h}:${m} ${ampm}`;
+    return `${h < 10 ? '0' + h : h}:${m}:${s} ${ampm}`;
+  };
+
+  const cleanAreaName = (raw) => {
+    if (!raw || raw === '-' || raw === '--') return '--';
+    let cleaned = String(raw).replace(/\s*\(?-?\d{1,3}\.\d+,\s*-?\d{1,3}\.\d+\)?/g, '').replace(/^Map Area\s*/i, '').trim();
+    cleaned = cleaned.replace(/^,\s*|,\s*$/g, '').trim();
+    if (!cleaned || cleaned === '-') return 'Office';
+    return cleaned;
+  };
+
+  const formatDateWithDay = (dateStr) => {
+    if (!dateStr || dateStr === '-' || dateStr === '--') return '--';
+    const parts = String(dateStr).split('T')[0].split('-');
+    if (parts.length === 3) {
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const d = parseInt(parts[2], 10);
+      const dateObj = new Date(y, m, d);
+      if (!isNaN(dateObj.getTime())) {
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        return `${parts[0]}-${parts[1]}-${parts[2]} (${days[dateObj.getDay()]})`;
+      }
+    }
+    return String(dateStr);
+  };
+
+  const formatWorkingHoursHHMM = (totalHours, inTime, outTime) => {
+    if (totalHours !== null && totalHours !== undefined && !isNaN(Number(totalHours)) && Number(totalHours) > 0) {
+      const th = Number(totalHours);
+      let h = Math.floor(th);
+      let m = Math.round((th - h) * 60);
+      if (m >= 60) { h += 1; m = 0; }
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+    if (inTime && outTime && inTime !== '-' && inTime !== '--:--' && inTime !== '--:--:--' && outTime !== '-' && outTime !== '--:--' && outTime !== '--:--:--') {
+      const p1 = String(inTime).split(':').map(Number);
+      const p2 = String(outTime).split(':').map(Number);
+      if (!p1.some(isNaN) && !p2.some(isNaN)) {
+        const s1 = (p1[0] || 0) * 3600 + (p1[1] || 0) * 60 + (p1[2] || 0);
+        const s2 = (p2[0] || 0) * 3600 + (p2[1] || 0) * 60 + (p2[2] || 0);
+        const diffSec = s2 - s1;
+        if (diffSec > 0) {
+          const h = Math.floor(diffSec / 3600);
+          const m = Math.floor((diffSec % 3600) / 60);
+          return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        }
+      }
+    }
+    return inTime && !outTime ? 'Active' : '00:00';
   };
 
   // Export handler (Excel or PDF) with Company Header & Filter Metadata
@@ -214,18 +266,19 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
     setExporting(true);
     setError('');
     try {
-      // Map selected column IDs to proper labels
+      // Map selected column IDs to proper labels matching the 11 standard columns
       const columnLabels = ALL_COLUMNS.filter(c => selectedColumns.includes(c.id)).map(c => {
-        if (c.id === 'name') return 'Employee Name';
         if (c.id === 'date') return 'Date';
-        if (c.id === 'punch_in') return 'Punch In';
-        if (c.id === 'punch_in_gps') return 'GPS Lat/Long (Punch In)';
-        if (c.id === 'punch_in_address') return 'Address (Punch In)';
-        if (c.id === 'punch_out') return 'Punch Out';
-        if (c.id === 'punch_out_gps') return 'GPS Lat/Long (Punch Out)';
-        if (c.id === 'punch_out_address') return 'Address (Punch Out)';
-        if (c.id === 'working_hours') return 'Working Hours';
+        if (c.id === 'employee_id') return 'Employee ID';
+        if (c.id === 'employee_name') return 'Employee Name';
+        if (c.id === 'punch_in') return 'Punch In Time';
+        if (c.id === 'punch_in_gps') return 'Punch In Lat/Long';
+        if (c.id === 'punch_in_address') return 'Punch In Address';
+        if (c.id === 'punch_out') return 'Punch Out Time';
+        if (c.id === 'punch_out_gps') return 'Punch Out Lat/Long';
+        if (c.id === 'punch_out_address') return 'Punch Out Address';
         if (c.id === 'status') return 'Status';
+        if (c.id === 'working_hours') return 'Working Hours (HH:MM)';
         return c.label;
       });
 
@@ -771,16 +824,17 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
           <table className="w-full text-xs text-left">
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 uppercase font-semibold">
               <tr>
-                {selectedColumns.includes('name') && <th className="p-3">Employee</th>}
-                {selectedColumns.includes('date') && <th className="p-3">Date</th>}
-                {selectedColumns.includes('punch_in') && <th className="p-3">Punch In</th>}
-                {selectedColumns.includes('punch_in_gps') && <th className="p-3">Punch In GPS</th>}
+                {selectedColumns.includes('date') && <th className="p-3">Date (Day)</th>}
+                {selectedColumns.includes('employee_id') && <th className="p-3">Employee ID</th>}
+                {selectedColumns.includes('employee_name') && <th className="p-3">Employee Name</th>}
+                {selectedColumns.includes('punch_in') && <th className="p-3">Punch In Time</th>}
+                {selectedColumns.includes('punch_in_gps') && <th className="p-3">Punch In Lat/Long</th>}
                 {selectedColumns.includes('punch_in_address') && <th className="p-3">Punch In Address</th>}
-                {selectedColumns.includes('punch_out') && <th className="p-3">Punch Out</th>}
-                {selectedColumns.includes('punch_out_gps') && <th className="p-3">Punch Out GPS</th>}
+                {selectedColumns.includes('punch_out') && <th className="p-3">Punch Out Time</th>}
+                {selectedColumns.includes('punch_out_gps') && <th className="p-3">Punch Out Lat/Long</th>}
                 {selectedColumns.includes('punch_out_address') && <th className="p-3">Punch Out Address</th>}
-                {selectedColumns.includes('working_hours') && <th className="p-3">Working Hrs</th>}
                 {selectedColumns.includes('status') && <th className="p-3">Status</th>}
+                {selectedColumns.includes('working_hours') && <th className="p-3">Working Hours (HH:MM)</th>}
                 <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -803,23 +857,29 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                 records.map((rec) => {
                   return (
                     <tr key={rec.id} className="hover:bg-slate-50/70 transition-colors">
-                      {/* Name & Code */}
-                      {selectedColumns.includes('name') && (
+                      {/* Date (Day) */}
+                      {selectedColumns.includes('date') && (
+                        <td className="p-3 font-semibold text-slate-700 whitespace-nowrap">
+                          {formatDateWithDay(rec.date)}
+                        </td>
+                      )}
+
+                      {/* Employee ID */}
+                      {selectedColumns.includes('employee_id') && (
+                        <td className="p-3 font-mono font-bold text-indigo-600 whitespace-nowrap">
+                          {rec.employee_code || '-'}
+                        </td>
+                      )}
+
+                      {/* Employee Name */}
+                      {selectedColumns.includes('employee_name') && (
                         <td className="p-3">
                           <div className="font-bold text-slate-900 leading-snug">{rec.employee_name}</div>
-                          <div className="text-[11px] font-mono text-indigo-600">{rec.employee_code}</div>
                           <div className="text-[10px] text-slate-400">{rec.department || 'General'}</div>
                         </td>
                       )}
 
-                      {/* Date */}
-                      {selectedColumns.includes('date') && (
-                        <td className="p-3 font-semibold text-slate-700 whitespace-nowrap">
-                          {rec.date}
-                        </td>
-                      )}
-
-                      {/* Punch In */}
+                      {/* Punch In Time */}
                       {selectedColumns.includes('punch_in') && (
                         <td className="p-3 font-mono font-bold text-emerald-700 whitespace-nowrap">
                           {formatTime(rec.punch_in_time)}
@@ -843,11 +903,11 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                       {/* Punch In Address */}
                       {selectedColumns.includes('punch_in_address') && (
                         <td className="p-3 text-slate-600 max-w-xs truncate" title={rec.punch_in_location || 'Office'}>
-                          {rec.punch_in_location || 'Office'}
+                          {cleanAreaName(rec.punch_in_location)}
                         </td>
                       )}
 
-                      {/* Punch Out */}
+                      {/* Punch Out Time */}
                       {selectedColumns.includes('punch_out') && (
                         <td className="p-3 font-mono font-bold text-rose-700 whitespace-nowrap">
                           {formatTime(rec.punch_out_time)}
@@ -871,23 +931,7 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                       {/* Punch Out Address */}
                       {selectedColumns.includes('punch_out_address') && (
                         <td className="p-3 text-slate-600 max-w-xs truncate" title={rec.punch_out_location || 'Office'}>
-                          {rec.punch_out_location || 'Office'}
-                        </td>
-                      )}
-
-                      {/* Working Hours */}
-                      {selectedColumns.includes('working_hours') && (
-                        <td className="p-3 font-semibold text-slate-800 whitespace-nowrap">
-                          {rec.total_hours ? (
-                            `${rec.total_hours} hrs`
-                          ) : rec.punch_in_time && !rec.punch_out_time ? (
-                            <span className="inline-flex items-center gap-1 text-emerald-600 font-bold font-mono text-[11px]">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                              Active (In Progress)
-                            </span>
-                          ) : (
-                            '0.0 hrs'
-                          )}
+                          {cleanAreaName(rec.punch_out_location)}
                         </td>
                       )}
 
@@ -909,6 +953,13 @@ export default function AttendanceManagementView({ role = 'company_admin', compa
                           >
                             {rec.status}
                           </span>
+                        </td>
+                      )}
+
+                      {/* Working Hours (HH:MM) */}
+                      {selectedColumns.includes('working_hours') && (
+                        <td className="p-3 font-mono font-bold text-slate-800 whitespace-nowrap">
+                          {formatWorkingHoursHHMM(rec.total_hours, rec.punch_in_time, rec.punch_out_time)}
                         </td>
                       )}
 

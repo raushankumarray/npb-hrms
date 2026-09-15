@@ -10,7 +10,7 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'pending' | 'approved' | 'rejected'
+  const [statusFilter, setStatusFilter] = useState('pending'); // 'pending' by default | 'approved' | 'rejected' | 'archived' | 'all'
   const [roleFilter, setRoleFilter] = useState('all'); // 'all' | 'employee' | 'manager'
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -32,7 +32,16 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
       queryParams.append('limit', '100');
 
       const res = await apiRequest(`/leave/requests?${queryParams.toString()}`);
-      setRequests(res.requests || []);
+      // Strictly deduplicate by ID to prevent duplicate rows
+      const seen = new Set();
+      const unique = [];
+      for (const r of (res.requests || [])) {
+        if (!seen.has(r.id)) {
+          seen.add(r.id);
+          unique.push(r);
+        }
+      }
+      setRequests(unique);
     } catch (err) {
       setError(err.message || 'Failed to load leave requests.');
     } finally {
@@ -84,8 +93,8 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
 
       setSuccess(
         reviewModal.action === 'approved'
-          ? `Leave request for ${reviewModal.request.employee_name} (${reviewModal.request.total_days} days) has been APPROVED and attendance updated.`
-          : `Leave request for ${reviewModal.request.employee_name} has been REJECTED.`
+          ? `Leave request for ${reviewModal.request.employee_name} (${reviewModal.request.total_days} days) has been APPROVED and moved to Archive.`
+          : `Leave request for ${reviewModal.request.employee_name} has been REJECTED and moved to Archive.`
       );
 
       // Broadcast and master refresh
@@ -95,6 +104,10 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
       localStorage.setItem('hrms_leave_updated', String(Date.now()));
       window.dispatchEvent(new CustomEvent('master-refresh'));
 
+      // Auto-archive: if currently viewing pending, remove reviewed item immediately from view
+      const targetId = reviewModal.request.id;
+      setRequests(prev => prev.filter(r => r.id !== targetId));
+
       setReviewModal({ open: false, request: null, action: 'approved', notes: '', submitting: false });
       fetchRequests();
     } catch (err) {
@@ -103,8 +116,28 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
     }
   };
 
+  // Deduplicate requests
+  const deduplicatedRequests = React.useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const r of requests) {
+      if (!seen.has(r.id)) {
+        seen.add(r.id);
+        list.push(r);
+      }
+    }
+    return list;
+  }, [requests]);
+
   // Filter requests
-  const filteredRequests = requests.filter(r => {
+  const filteredRequests = deduplicatedRequests.filter(r => {
+    // Status filter
+    if (statusFilter === 'archived') {
+      if (r.status === 'pending') return false;
+    } else if (statusFilter !== 'all') {
+      if (r.status !== statusFilter) return false;
+    }
+
     // Role filter
     if (roleFilter !== 'all') {
       const rRole = (r.role_name || '').toLowerCase();
@@ -124,9 +157,10 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
     );
   });
 
-  const pendingCount = requests.filter(r => r.status === 'pending').length;
-  const approvedCount = requests.filter(r => r.status === 'approved').length;
-  const rejectedCount = requests.filter(r => r.status === 'rejected').length;
+  const pendingCount = deduplicatedRequests.filter(r => r.status === 'pending').length;
+  const approvedCount = deduplicatedRequests.filter(r => r.status === 'approved').length;
+  const rejectedCount = deduplicatedRequests.filter(r => r.status === 'rejected').length;
+  const archivedCount = approvedCount + rejectedCount;
 
   return (
     <div className="space-y-4">
@@ -205,10 +239,11 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
                 onChange={(e) => setStatusFilter(e.target.value)}
                 className="w-full py-1.5 px-3 bg-white border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
               >
-                <option value="all">All Statuses ({requests.length})</option>
                 <option value="pending">Pending Review ({pendingCount})</option>
+                <option value="archived">Archived / Resolved ({archivedCount})</option>
                 <option value="approved">Approved ({approvedCount})</option>
                 <option value="rejected">Rejected ({rejectedCount})</option>
+                <option value="all">All Statuses ({deduplicatedRequests.length})</option>
               </select>
             </div>
 

@@ -253,6 +253,15 @@ router.delete('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res)
   });
 
   transaction();
+
+  // Clean up from Firebase
+  try {
+    const { deleteFromFirebase } = require('../services/firebase');
+    if (deleteFromFirebase) {
+      deleteFromFirebase('users', userId).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: `Support account "${currentSupport.username}" deleted successfully.` });
 });
 

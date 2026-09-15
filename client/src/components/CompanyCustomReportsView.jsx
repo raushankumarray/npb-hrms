@@ -114,6 +114,55 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
     setSelectedEmployeeIds([]);
   };
 
+  const formatDateWithDay = (dateStr) => {
+    if (!dateStr || dateStr === '-' || dateStr === '--') return '--';
+    if (String(dateStr).includes('(') && String(dateStr).includes(')')) return dateStr;
+    const parts = String(dateStr).split('T')[0].split('-');
+    if (parts.length === 3) {
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const d = parseInt(parts[2], 10);
+      const dateObj = new Date(y, m, d);
+      if (!isNaN(dateObj.getTime())) {
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        return `${parts[0]}-${parts[1]}-${parts[2]} (${days[dateObj.getDay()]})`;
+      }
+    }
+    return String(dateStr);
+  };
+
+  const formatWorkingHoursHHMM = (val, punchIn, punchOut) => {
+    if (val === null || val === undefined || val === '' || val === '-') {
+      if (punchIn && punchOut && punchIn !== '--:--:--' && punchOut !== '--:--:--') {
+        const p1 = String(punchIn).split(':').map(Number);
+        const p2 = String(punchOut).split(':').map(Number);
+        if (!p1.some(isNaN) && !p2.some(isNaN)) {
+          const s1 = (p1[0] || 0) * 3600 + (p1[1] || 0) * 60 + (p1[2] || 0);
+          const s2 = (p2[0] || 0) * 3600 + (p2[1] || 0) * 60 + (p2[2] || 0);
+          const diffSec = s2 - s1;
+          if (diffSec > 0) {
+            const h = Math.floor(diffSec / 3600);
+            const m = Math.floor((diffSec % 3600) / 60);
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+          }
+        }
+      }
+      return '00:00';
+    }
+    if (typeof val === 'string' && val.includes(':')) {
+      const parts = val.split(':');
+      return `${String(parts[0]).padStart(2, '0')}:${String(parts[1] || '00').padStart(2, '0')}`;
+    }
+    const th = parseFloat(val);
+    if (!isNaN(th) && th > 0) {
+      let h = Math.floor(th);
+      let m = Math.round((th - h) * 60);
+      if (m >= 60) { h += 1; m = 0; }
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+    return '00:00';
+  };
+
   // Determine effective limit for pagination
   const resolvePageSize = () => {
     if (pageSizeOption === 'custom') {
@@ -708,7 +757,7 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
                 <table className="w-full text-xs text-left">
                   <thead className="bg-slate-100 text-slate-700 uppercase font-bold border-b border-slate-200">
                     <tr>
-                      <th className="p-3 whitespace-nowrap">Date</th>
+                      <th className="p-3 whitespace-nowrap">Date (Day)</th>
                       <th className="p-3 whitespace-nowrap">Employee ID</th>
                       <th className="p-3 whitespace-nowrap">Employee Name</th>
                       <th className="p-3 whitespace-nowrap">Punch In Time</th>
@@ -718,14 +767,14 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
                       <th className="p-3 whitespace-nowrap">Punch Out Lat/Long</th>
                       <th className="p-3 whitespace-nowrap">Punch Out Address</th>
                       <th className="p-3 whitespace-nowrap">Status</th>
-                      <th className="p-3 whitespace-nowrap">Working Hours</th>
+                      <th className="p-3 whitespace-nowrap">Working Hours (HH:MM)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {dailyRecords.map((r, idx) => (
                       <tr key={idx} className="hover:bg-slate-50/75 transition-colors">
                         <td className="p-3 font-semibold text-slate-900 whitespace-nowrap">
-                          {r['Date'] || r.date}
+                          {formatDateWithDay(r['Date'] || r.date)}
                         </td>
                         <td className="p-3 font-mono font-bold text-slate-700 whitespace-nowrap">
                           {r['Employee ID'] || r.employee_id}
@@ -755,9 +804,7 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
                           {renderStatusBadge(r['Status'] || r['Attendance Status'])}
                         </td>
                         <td className="p-3 font-mono font-bold text-slate-800 whitespace-nowrap">
-                          {typeof r['Working Hours'] === 'number'
-                            ? `${Math.floor(r['Working Hours'])}h ${Math.round((r['Working Hours'] % 1) * 60)}m`
-                            : r['Working Hours'] || r['Total Working Hours'] || '0.00'}
+                          {formatWorkingHoursHHMM(r['Working Hours (HH:MM)'] || r['Working Hours'] || r['Total Working Hours'], r['Punch In Time'] || r['Punch In'], r['Punch Out Time'] || r['Punch Out'])}
                         </td>
                       </tr>
                     ))}

@@ -1544,7 +1544,7 @@ router.post('/export', verifyAuth, (req, res) => {
   } = req.body;
 
   const defaultCols = [
-    'Employee ID', 'Employee Name', 'Punch In Time', 'Punch In Lat/Long', 'Punch In Address',
+    'Date', 'Employee ID', 'Employee Name', 'Punch In Time', 'Punch In Lat/Long', 'Punch In Address',
     'Punch Out Time', 'Punch Out Lat/Long', 'Punch Out Address', 'Status', 'Working Hours (HH:MM)'
   ];
   const activeCols = (selected_columns && selected_columns.length > 0) ? selected_columns : defaultCols;
@@ -1746,8 +1746,23 @@ router.post('/export', verifyAuth, (req, res) => {
       const outAddr = cleanAreaName(r["Address (Punch Out)"]);
       const wh = formatWorkingHoursHHMM(r["raw_total_hours"], r["Punch In"], r["Punch Out"]);
 
+      const rawDate = r["Date"] || effectiveDate;
+      let dateWithDay = rawDate;
+      if (rawDate && !rawDate.includes('(')) {
+        const parts = String(rawDate).split('-');
+        if (parts.length === 3) {
+          const dObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+          if (!isNaN(dObj.getTime())) {
+            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            dateWithDay = `${rawDate} (${days[dObj.getDay()]})`;
+          }
+        }
+      }
+
       return {
         ...r,
+        "Date": dateWithDay,
+        "Date (Day)": dateWithDay,
         "Employee ID": r["Employee ID"] || '-',
         "Employee Name": r["Employee Name"] || '-',
         "Punch In Time": punchIn12,
@@ -2728,7 +2743,14 @@ router.post('/correction-request', verifyAuth, (req, res) => {
     autoCalculatedStatus = 'Present';
   }
 
-  const finalRequestedStatus = req.body.requested_status || autoCalculatedStatus;
+  // Prevent duplicate pending requests for the same date and employee
+  const existingPending = db.prepare(`
+    SELECT id FROM attendance_correction_requests
+    WHERE company_id = ? AND employee_id = ? AND date = ? AND status = 'pending'
+  `).get(companyId, employeeId, date);
+  if (existingPending) {
+    return res.status(400).json({ error: 'A pending attendance correction request already exists for this date. Please wait for supervisor review.' });
+  }
 
   const result = db.prepare(`
     INSERT INTO attendance_correction_requests (
@@ -2841,12 +2863,14 @@ router.get('/correction-requests', verifyAuth, (req, res) => {
     params.push(req.user.employee_id, req.user.employee_id);
   }
 
-  if (status && status !== 'all') {
+  if (status === 'archived') {
+    query += " AND cr.status IN ('approved', 'rejected')";
+  } else if (status && status !== 'all') {
     query += ' AND cr.status = ?';
     params.push(status);
   }
 
-  query += ' ORDER BY cr.created_at DESC LIMIT ? OFFSET ?';
+  query += ' GROUP BY cr.id ORDER BY cr.created_at DESC LIMIT ? OFFSET ?';
   params.push(parseInt(limit, 10), parseInt(offset, 10));
 
   const requests = db.prepare(query).all(...params);

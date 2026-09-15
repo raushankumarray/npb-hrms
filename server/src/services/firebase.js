@@ -392,14 +392,39 @@ async function syncCompany(company, extra = {}) {
       } catch (e) {}
     }
 
+    // Ensure logo and favicon contain base64 image data so images survive server resets and disk loss
+    let resolvedLogo = company.logo || '';
+    if (resolvedLogo && typeof resolvedLogo === 'string' && resolvedLogo.startsWith('/uploads/')) {
+      try {
+        const absPath = path.resolve(__dirname, '../../', '.' + resolvedLogo);
+        if (fs.existsSync(absPath)) {
+          const ext = path.extname(absPath).slice(1) || 'png';
+          const buf = fs.readFileSync(absPath);
+          resolvedLogo = `data:image/${ext === 'svg' ? 'svg+xml' : ext};base64,${buf.toString('base64')}`;
+        }
+      } catch (e) {}
+    }
+
+    let resolvedFavicon = company.favicon || null;
+    if (resolvedFavicon && typeof resolvedFavicon === 'string' && resolvedFavicon.startsWith('/uploads/')) {
+      try {
+        const absPath = path.resolve(__dirname, '../../', '.' + resolvedFavicon);
+        if (fs.existsSync(absPath)) {
+          const ext = path.extname(absPath).slice(1) || 'png';
+          const buf = fs.readFileSync(absPath);
+          resolvedFavicon = `data:image/${ext === 'svg' ? 'svg+xml' : ext};base64,${buf.toString('base64')}`;
+        }
+      } catch (e) {}
+    }
+
     const payload = {
       id: company.id,
       name: company.name,
       code: company.code,
       portalName: company.portal_name || company.name,
       portal_name: company.portal_name || company.name,
-      logo: company.logo || '',
-      favicon: company.favicon || null,
+      logo: resolvedLogo,
+      favicon: resolvedFavicon,
       email: company.email || adminEmail || '',
       phone: company.phone || '',
       address: company.address || '',
@@ -1292,10 +1317,16 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
         await firestoreDb.collection('employees').doc(strId).delete().catch(() => {});
         if (extra.companyId) {
           await firestoreDb.collection('companies').doc(String(extra.companyId)).collection('employees').doc(strId).delete().catch(() => {});
+          await firestoreDb.collection('companies').doc(String(extra.companyId)).collection('devices').doc(strId).delete().catch(() => {});
         }
         if (extra.userId) {
           await firestoreDb.collection('users').doc(String(extra.userId)).delete().catch(() => {});
+          await firestoreDb.collection('employee_devices').doc(String(extra.userId)).delete().catch(() => {});
+          if (extra.companyId) {
+            await firestoreDb.collection('companies').doc(String(extra.companyId)).collection('users').doc(String(extra.userId)).delete().catch(() => {});
+          }
         }
+        await firestoreDb.collection('device_bindings').doc(strId).delete().catch(() => {});
       }
       if (realtimeDb) {
         await realtimeDb.ref(`employees/${strId}`).remove().catch(() => {});
@@ -1303,10 +1334,26 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
           await realtimeDb.ref(`companies/${extra.companyId}/employees/${strId}`).remove().catch(() => {});
           await realtimeDb.ref(`company_employees/${extra.companyId}/${strId}`).remove().catch(() => {});
           await realtimeDb.ref(`live_locations/${extra.companyId}/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`companies/${extra.companyId}/devices/${strId}`).remove().catch(() => {});
         }
         if (extra.userId) {
           await realtimeDb.ref(`users/${extra.userId}`).remove().catch(() => {});
+          await realtimeDb.ref(`devices/${extra.userId}`).remove().catch(() => {});
+          await realtimeDb.ref(`employee_devices/${extra.userId}`).remove().catch(() => {});
+          if (extra.companyId) {
+            await realtimeDb.ref(`companies/${extra.companyId}/users/${extra.userId}`).remove().catch(() => {});
+          }
         }
+      }
+    } else if (entityType === 'users') {
+      if (firestoreDb) {
+        await firestoreDb.collection('users').doc(strId).delete().catch(() => {});
+        await firestoreDb.collection('employee_devices').doc(strId).delete().catch(() => {});
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`users/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`devices/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`employee_devices/${strId}`).remove().catch(() => {});
       }
     } else {
       if (firestoreDb) {

@@ -513,21 +513,29 @@ router.post('/:id/logo', verifyAuth, uploadLogo.single('logo'), (req, res) => {
   }
 
   let logoUrl = '';
+  let logoBase64 = '';
   if (req.file) {
     logoUrl = `/uploads/${req.file.filename}`;
+    try {
+      const fileBuf = fs.readFileSync(req.file.path);
+      const mime = req.file.mimetype || 'image/png';
+      logoBase64 = `data:${mime};base64,${fileBuf.toString('base64')}`;
+    } catch (e) {}
   } else if (req.body.logo_base64) {
     logoUrl = req.body.logo_base64;
+    logoBase64 = req.body.logo_base64;
   } else {
     return res.status(400).json({ error: 'Please provide an image file to upload.' });
   }
 
+  const finalLogo = logoBase64 || logoUrl;
   const setAsFavicon = req.body.set_as_favicon === '1' || req.body.set_as_favicon === 'true' || req.body.set_as_favicon === true;
   const currentComp = db.prepare('SELECT logo, favicon FROM companies WHERE id = ?').get(companyId);
 
   if (setAsFavicon) {
-    db.prepare('UPDATE companies SET logo = ?, favicon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(logoUrl, logoUrl, companyId);
+    db.prepare('UPDATE companies SET logo = ?, favicon = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(finalLogo, finalLogo, companyId);
   } else {
-    db.prepare('UPDATE companies SET logo = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(logoUrl, companyId);
+    db.prepare('UPDATE companies SET logo = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(finalLogo, companyId);
   }
 
   logAudit({
@@ -540,7 +548,7 @@ router.post('/:id/logo', verifyAuth, uploadLogo.single('logo'), (req, res) => {
     targetEntity: 'companies',
     targetId: companyId,
     oldValues: { logo: currentComp?.logo || null, favicon: currentComp?.favicon || null },
-    newValues: { logo: logoUrl, favicon: setAsFavicon ? logoUrl : (currentComp?.favicon || null) },
+    newValues: { logo: finalLogo, favicon: setAsFavicon ? finalLogo : (currentComp?.favicon || null) },
     reason: setAsFavicon ? 'Company logo uploaded and set as browser favicon' : 'Company logo uploaded and updated'
   });
 
@@ -551,8 +559,8 @@ router.post('/:id/logo', verifyAuth, uploadLogo.single('logo'), (req, res) => {
 
   res.json({
     success: true,
-    logoUrl,
-    faviconUrl: setAsFavicon ? logoUrl : (currentComp?.favicon || null),
+    logoUrl: finalLogo,
+    faviconUrl: setAsFavicon ? finalLogo : (currentComp?.favicon || null),
     message: setAsFavicon
       ? 'Company logo uploaded and set as browser favicon successfully.'
       : 'Company logo uploaded and saved successfully.'
@@ -572,6 +580,11 @@ router.post('/:id/favicon', verifyAuth, uploadLogo.single('favicon'), (req, res)
   let faviconUrl = '';
   if (req.file) {
     faviconUrl = `/uploads/${req.file.filename}`;
+    try {
+      const fileBuf = fs.readFileSync(req.file.path);
+      const mime = req.file.mimetype || 'image/png';
+      faviconUrl = `data:${mime};base64,${fileBuf.toString('base64')}`;
+    } catch (e) {}
   } else if (req.body.favicon_url) {
     faviconUrl = req.body.favicon_url;
   } else if (req.body.use_current_logo) {

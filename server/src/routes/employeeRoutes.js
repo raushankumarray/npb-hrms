@@ -886,6 +886,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'supe
     // 1. Attendance & Tracking
     try { db.prepare('DELETE FROM attendance_edit_logs WHERE attendance_record_id IN (SELECT id FROM attendance_records WHERE employee_id = ?)').run(empId); } catch(e) {}
     try { db.prepare('DELETE FROM attendance_corrections WHERE employee_id = ?').run(empId); } catch(e) {}
+    try { db.prepare('DELETE FROM attendance_correction_requests WHERE employee_id = ?').run(empId); } catch(e) {}
     db.prepare('DELETE FROM attendance_records WHERE employee_id = ?').run(empId);
     try { db.prepare('DELETE FROM location_tracking_logs WHERE employee_id = ?').run(empId); } catch(e) {}
 
@@ -897,16 +898,20 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'supe
     // 3. Service Requests / Tickets
     try { db.prepare('DELETE FROM service_request_messages WHERE ticket_id IN (SELECT id FROM service_requests WHERE employee_id = ?)').run(empId); } catch(e) {}
     db.prepare('DELETE FROM service_requests WHERE employee_id = ?').run(empId);
+    try { db.prepare('DELETE FROM ticket_messages WHERE ticket_id IN (SELECT id FROM support_tickets WHERE employee_id = ? OR user_id = ?)').run(empId, emp.user_id); } catch(e) {}
+    try { db.prepare('DELETE FROM support_tickets WHERE employee_id = ? OR user_id = ?').run(empId, emp.user_id); } catch(e) {}
 
     // 4. Employee Mappings & Shift assignments
     db.prepare('DELETE FROM employee_mappings WHERE employee_id = ? OR manager_id = ?').run(empId, empId);
     try { db.prepare('DELETE FROM employee_profiles WHERE employee_id = ?').run(empId); } catch(e) {}
     try { db.prepare('DELETE FROM geofence_assignments WHERE employee_id = ?').run(empId); } catch(e) {}
     try { db.prepare('DELETE FROM shift_assignments WHERE employee_id = ?').run(empId); } catch(e) {}
+    try { db.prepare('DELETE FROM employee_weekly_offs WHERE employee_id = ?').run(empId); } catch(e) {}
 
     // 5. Devices & Notifications
     if (emp.user_id) {
       try { db.prepare('DELETE FROM employee_devices WHERE user_id = ?').run(emp.user_id); } catch(e) {}
+      try { db.prepare('DELETE FROM device_bindings WHERE user_id = ? OR employee_id = ?').run(emp.user_id, empId); } catch(e) {}
       try { db.prepare('DELETE FROM device_binding_logs WHERE user_id = ?').run(emp.user_id); } catch(e) {}
       try { db.prepare('DELETE FROM notifications WHERE user_id = ?').run(emp.user_id); } catch(e) {}
       db.prepare('DELETE FROM users WHERE id = ?').run(emp.user_id);

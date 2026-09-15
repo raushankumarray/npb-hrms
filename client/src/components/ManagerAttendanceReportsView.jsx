@@ -14,8 +14,9 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
-// The 10 standard report headers specified
+// The 11 standard report headers specified with Date (Day) strictly as 1st column
 const STANDARD_REPORT_HEADERS = [
+  { key: 'Date', label: 'Date (Day)', description: 'Calendar date and weekday without skipping any date' },
   { key: 'Employee ID', label: 'Employee ID', description: 'Unique company employee code' },
   { key: 'Employee Name', label: 'Employee Name', description: 'Full legal name of staff' },
   { key: 'Punch In Time', label: 'Punch In Time', description: 'Recorded punch-in in 12-hr format or --:--:--' },
@@ -28,11 +29,8 @@ const STANDARD_REPORT_HEADERS = [
   { key: 'Working Hours (HH:MM)', label: 'Working Hours (HH:MM)', description: 'Total shift duration strictly in HH:MM' }
 ];
 
-// Section 2 headers with Date strictly as 1st column
-const SECTION_2_REPORT_HEADERS = [
-  { key: 'Date', label: 'Date (Day)', description: 'Calendar date and weekday without skipping any date' },
-  ...STANDARD_REPORT_HEADERS
-];
+// Section 2 headers with Date strictly as 1st column (identical 11 standard headers)
+const SECTION_2_REPORT_HEADERS = STANDARD_REPORT_HEADERS;
 
 export default function ManagerAttendanceReportsView({ user, company = {}, onStatsUpdate }) {
   const todayStr = new Date().toISOString().split('T')[0];
@@ -123,6 +121,22 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
     cleaned = cleaned.replace(/^,\s*|,\s*$/g, '').trim();
     if (!cleaned || cleaned === '-') return 'Office / Designated Area';
     return cleaned;
+  };
+
+  const formatDateWithDay = (dateStr) => {
+    if (!dateStr || dateStr === '-' || dateStr === '--') return '--';
+    const parts = String(dateStr).split('T')[0].split('-');
+    if (parts.length === 3) {
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const d = parseInt(parts[2], 10);
+      const dateObj = new Date(y, m, d);
+      if (!isNaN(dateObj.getTime())) {
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        return `${parts[0]}-${parts[1]}-${parts[2]} (${days[dateObj.getDay()]})`;
+      }
+    }
+    return String(dateStr);
   };
 
   const format12Hour = (timeStr) => {
@@ -331,12 +345,17 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
     setSec1Exporting(true);
     setError('');
     try {
+      const rawCols = sec1SelectedCols.length > 0 ? sec1SelectedCols : STANDARD_REPORT_HEADERS.map(h => h.key);
+      const finalSelectedCols = rawCols.includes('Date')
+        ? ['Date', ...rawCols.filter(c => c !== 'Date')]
+        : ['Date', ...rawCols];
+
       const exportBody = {
         format,
         date: sec1Date,
         status: sec1StatusFilter,
         search: sec1Search,
-        selected_columns: sec1SelectedCols.length > 0 ? sec1SelectedCols : STANDARD_REPORT_HEADERS.map(h => h.key)
+        selected_columns: finalSelectedCols
       };
 
       if (sec1EmpMode === 'individual' && sec1SelectedIndividualEmp) {
@@ -840,7 +859,7 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
               title="Select which of the 10 headers to include in your download or table"
             >
               <Columns className="w-3.5 h-3.5 text-slate-600" />
-              <span>Modify Headers ({sec1SelectedCols.length}/10)</span>
+              <span>Modify Headers ({sec1SelectedCols.length}/11)</span>
             </button>
 
             {/* Direct Download Excel */}
@@ -893,11 +912,12 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
           </div>
         </div>
 
-        {/* 1.4 DAILY ATTENDANCE DATA TABLE (STRICTLY 10 HEADERS, NO OVERRIDE BUTTONS) */}
+        {/* 1.4 DAILY ATTENDANCE DATA TABLE (STRICTLY 11 HEADERS) */}
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-left border-collapse">
             <thead className="bg-slate-100 text-slate-800 uppercase font-black tracking-wider border-b-2 border-slate-300">
               <tr>
+                {sec1SelectedCols.includes('Date') && <th className="p-3 border-r border-slate-200">Date (Day)</th>}
                 {sec1SelectedCols.includes('Employee ID') && <th className="p-3 border-r border-slate-200">Employee ID</th>}
                 {sec1SelectedCols.includes('Employee Name') && <th className="p-3 border-r border-slate-200">Employee Name</th>}
                 {sec1SelectedCols.includes('Punch In Time') && <th className="p-3 border-r border-slate-200">Punch In Time</th>}
@@ -937,6 +957,11 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
 
                   return (
                     <tr key={r.id || `${r.employee_id}-${r.date}`} className="hover:bg-slate-50 transition-colors">
+                      {sec1SelectedCols.includes('Date') && (
+                        <td className="p-3 border-r border-slate-200 font-mono font-bold text-slate-800 whitespace-nowrap bg-slate-50/50">
+                          {formatDateWithDay(r.date || sec1Date)}
+                        </td>
+                      )}
                       {sec1SelectedCols.includes('Employee ID') && (
                         <td className="p-3 border-r border-slate-200 font-mono font-bold text-slate-900">
                           {r.employee_code || '-'}

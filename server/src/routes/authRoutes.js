@@ -8,7 +8,7 @@ const { logAudit } = require('../services/audit');
 const { syncUser, syncEmployee } = require('../services/firebase');
 
 // Unified generic Login endpoint for ALL user roles
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { username, password, device_id, mac_address, device_type, device_name } = req.body;
 
   if (!username || !password) {
@@ -16,25 +16,46 @@ router.post('/login', (req, res) => {
   }
 
   const cleanLoginInput = username.trim();
-  const user = db.prepare(`
-    SELECT u.id, u.username, u.password_hash, u.email, u.mobile, u.role_id, u.company_id, u.status, u.is_deleted,
-           r.name as role_name,
-           s.permission_level as support_level,
-           e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id,
-           e.employment_start_date, e.employment_end_date
-    FROM users u
-    JOIN roles r ON u.role_id = r.id
-    LEFT JOIN support_users s ON u.id = s.user_id
-    LEFT JOIN employees e ON u.id = e.user_id
-    WHERE (
-      LOWER(u.username) = LOWER(?)
-      OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
-      OR (u.mobile IS NOT NULL AND (u.mobile = ? OR REPLACE(REPLACE(u.mobile, ' ', ''), '+91', '') = REPLACE(REPLACE(?, ' ', ''), '+91', '')))
-      OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
-      OR (e.mobile IS NOT NULL AND (e.mobile = ? OR REPLACE(REPLACE(e.mobile, ' ', ''), '+91', '') = REPLACE(REPLACE(?, ' ', ''), '+91', '')))
-    )
-    LIMIT 1
-  `).get(cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput, cleanLoginInput);
+
+  const lookupUser = (input) => {
+    return db.prepare(`
+      SELECT u.id, u.username, u.password_hash, u.email, u.mobile, u.role_id, u.company_id, u.status, u.is_deleted,
+             r.name as role_name,
+             s.permission_level as support_level,
+             e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id,
+             e.employment_start_date, e.employment_end_date
+      FROM users u
+      JOIN roles r ON u.role_id = r.id
+      LEFT JOIN support_users s ON u.id = s.user_id
+      LEFT JOIN employees e ON u.id = e.user_id
+      WHERE (
+        LOWER(u.username) = LOWER(?)
+        OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
+        OR (u.mobile IS NOT NULL AND (u.mobile = ? OR REPLACE(REPLACE(u.mobile, ' ', ''), '+91', '') = REPLACE(REPLACE(?, ' ', ''), '+91', '')))
+        OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
+        OR (e.mobile IS NOT NULL AND (e.mobile = ? OR REPLACE(REPLACE(e.mobile, ' ', ''), '+91', '') = REPLACE(REPLACE(?, ' ', ''), '+91', '')))
+      )
+      LIMIT 1
+    `).get(input, input, input, input, input, input, input);
+  };
+
+  let user = lookupUser(cleanLoginInput);
+
+  // If user not found in local DB and Firebase is connected, check if local DB is fresh/empty and auto-restore before failing login
+  if (!user || user.is_deleted) {
+    try {
+      const { getFirebaseStatus, fetchAllFromFirebaseAndRestoreToDb } = require('../services/firebase');
+      const fbStatus = getFirebaseStatus();
+      if (fbStatus && fbStatus.connected) {
+        const compCount = db.prepare("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0").get()?.count || 0;
+        if (compCount === 0) {
+          console.log('[Auth] User not found locally and 0 companies exist in local database. Auto-restoring from Firebase before login...');
+          await fetchAllFromFirebaseAndRestoreToDb();
+          user = lookupUser(cleanLoginInput);
+        }
+      }
+    } catch (e) {}
+  }
 
   if (!user || user.is_deleted) {
     return res.status(401).json({ error: 'Invalid username or password.' });
@@ -158,23 +179,21 @@ router.post('/login', (req, res) => {
   });
 
   // Auto-restore company data from Firebase if local database has 0 companies
-  if (user.role_name === 'super_admin') {
-    try {
-      const { getFirebaseStatus, fetchAllFromFirebaseAndRestoreToDb } = require('../services/firebase');
-      const fbStatus = getFirebaseStatus();
-      if (fbStatus && fbStatus.connected) {
-        const compCount = db.prepare("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0 AND UPPER(code) NOT IN ('NPB01', 'BSES01', 'MAN01') AND LOWER(name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')").get()?.count || 0;
-        if (compCount === 0) {
-          console.log('[Auth] Super admin logged in with 0 companies locally. Triggering auto-restore from Firebase in background...');
-          fetchAllFromFirebaseAndRestoreToDb().then(r => {
-            if (r.success) {
-              console.log(`[Auth] Auto-restore on login finished: ${r.restoredCompanies} companies restored.`);
-            }
-          }).catch(e => console.error('[Auth] Auto-restore on login error:', e.message));
-        }
+  try {
+    const { getFirebaseStatus, fetchAllFromFirebaseAndRestoreToDb } = require('../services/firebase');
+    const fbStatus = getFirebaseStatus();
+    if (fbStatus && fbStatus.connected) {
+      const compCount = db.prepare("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0 AND UPPER(code) NOT IN ('NPB01', 'BSES01', 'MAN01') AND LOWER(name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')").get()?.count || 0;
+      if (compCount === 0) {
+        console.log(`[Auth] User ${user.username} (${user.role_name}) logged in with 0 companies locally. Triggering auto-restore from Firebase in background...`);
+        fetchAllFromFirebaseAndRestoreToDb().then(r => {
+          if (r && r.success) {
+            console.log(`[Auth] Auto-restore on login finished: ${r.restoredCompanies} companies restored.`);
+          }
+        }).catch(e => console.error('[Auth] Auto-restore on login error:', e.message));
       }
-    } catch (e) {}
-  }
+    }
+  } catch (e) {}
 
   let boundDevice = null;
   if (user.role_name === 'employee') {

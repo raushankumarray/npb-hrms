@@ -355,6 +355,16 @@ router.post('/requests', verifyAuth, (req, res) => {
     });
   }
 
+  // Prevent duplicate pending requests for overlapping dates
+  const existingPending = db.prepare(`
+    SELECT id FROM leave_requests
+    WHERE company_id = ? AND employee_id = ? AND status = 'pending'
+      AND ((start_date <= ? AND end_date >= ?) OR (start_date <= ? AND end_date >= ?) OR (start_date >= ? AND end_date <= ?))
+  `).get(companyId, employeeId, end_date, start_date, start_date, start_date, start_date, end_date);
+  if (existingPending) {
+    return res.status(400).json({ error: 'A pending leave request already exists for this date range. Please wait for review.' });
+  }
+
   const result = db.prepare(`
     INSERT INTO leave_requests (
       company_id, employee_id, leave_type_id, start_date, end_date, total_days, reason, status
@@ -452,12 +462,14 @@ router.get('/requests', verifyAuth, (req, res) => {
     params.push(req.user.employee_id, req.user.employee_id);
   }
 
-  if (status && status !== 'all') {
+  if (status === 'archived') {
+    query += " AND lr.status IN ('approved', 'rejected')";
+  } else if (status && status !== 'all') {
     query += ' AND lr.status = ?';
     params.push(status);
   }
 
-  query += ' ORDER BY lr.created_at DESC LIMIT ? OFFSET ?';
+  query += ' GROUP BY lr.id ORDER BY lr.created_at DESC LIMIT ? OFFSET ?';
   params.push(parseInt(limit, 10), parseInt(offset, 10));
 
   const requests = db.prepare(query).all(...params);
