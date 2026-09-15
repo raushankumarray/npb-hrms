@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   MessageSquare, X, Send, Volume2, VolumeX, Sparkles, Clock,
   Calendar, CheckCircle2, UserCheck, ShieldAlert, Bot, ArrowRight,
-  RefreshCw, AlertCircle, MapPin, Ticket, Edit3, BarChart2, Languages
+  RefreshCw, AlertCircle, MapPin, Ticket, Edit3, BarChart2, Languages,
+  EyeOff, GripVertical
 } from 'lucide-react';
 import { apiRequest } from '../api';
 
@@ -94,12 +95,37 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
   const [conversationState, setConversationState] = useState({});
   const [inactivityNotice, setInactivityNotice] = useState(false);
 
+  // Draggable floating position state (persisted in localStorage)
+  const [customPos, setCustomPos] = useState(() => {
+    try {
+      const saved = localStorage.getItem('pihu_fab_position');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return null; // null uses responsive CSS default (above mobile footer)
+  });
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Screen removal state (persisted in sessionStorage)
+  const [isRemoved, setIsRemoved] = useState(() => {
+    return sessionStorage.getItem('pihu_removed_from_screen') === 'true';
+  });
+  const [removedNotice, setRemovedNotice] = useState(false);
+
   // In-chat punch state
   const [pendingPunch, setPendingPunch] = useState(null); // { type: 'in'|'out', time: '', lat: 0, lon: 0, location: '', loading: false }
 
   const inactivityTimerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  const fabRef = useRef(null);
+  const dragInfoRef = useRef({
+    isDown: false,
+    startX: 0,
+    startY: 0,
+    startLeft: 0,
+    startTop: 0,
+    hasMoved: false
+  });
 
   const role = user?.role_name || user?.role || 'employee';
 
@@ -260,6 +286,158 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
       ]);
     }
   };
+
+  // Remove PIHU from screen
+  const handleRemoveFromScreen = () => {
+    setIsRemoved(true);
+    sessionStorage.setItem('pihu_removed_from_screen', 'true');
+    setIsOpen(false);
+    setRemovedNotice(true);
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setTimeout(() => {
+      setRemovedNotice(false);
+    }, 4500);
+  };
+
+  // Restore PIHU back to screen
+  const handleRestoreToScreen = () => {
+    setIsRemoved(false);
+    sessionStorage.removeItem('pihu_removed_from_screen');
+    setRemovedNotice(false);
+    handleOpenChat();
+  };
+
+  // Handle Drag / Move Floating Widget across Screen (Touch & Mouse)
+  const handlePointerDown = (clientX, clientY, e) => {
+    if (e.target.closest('[data-no-drag="true"]')) return;
+
+    const el = fabRef.current;
+    if (!el) return;
+
+    const rect = el.getBoundingClientRect();
+    dragInfoRef.current = {
+      isDown: true,
+      startX: clientX,
+      startY: clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      hasMoved: false
+    };
+
+    const handlePointerMove = (moveEvt) => {
+      if (!dragInfoRef.current.isDown) return;
+      const curX = moveEvt.clientX !== undefined
+        ? moveEvt.clientX
+        : (moveEvt.touches && moveEvt.touches[0] ? moveEvt.touches[0].clientX : 0);
+      const curY = moveEvt.clientY !== undefined
+        ? moveEvt.clientY
+        : (moveEvt.touches && moveEvt.touches[0] ? moveEvt.touches[0].clientY : 0);
+
+      const dx = curX - dragInfoRef.current.startX;
+      const dy = curY - dragInfoRef.current.startY;
+
+      if (!dragInfoRef.current.hasMoved && Math.hypot(dx, dy) > 5) {
+        dragInfoRef.current.hasMoved = true;
+        setIsDragging(true);
+      }
+
+      if (dragInfoRef.current.hasMoved) {
+        if (moveEvt.cancelable && moveEvt.type === 'touchmove') {
+          moveEvt.preventDefault();
+        }
+        const currentEl = fabRef.current;
+        const width = currentEl ? currentEl.offsetWidth : 160;
+        const height = currentEl ? currentEl.offsetHeight : 56;
+
+        const newLeft = dragInfoRef.current.startLeft + dx;
+        const newTop = dragInfoRef.current.startTop + dy;
+
+        const minX = 8;
+        const maxX = Math.max(minX, window.innerWidth - width - 8);
+        const minY = 8;
+        // On mobile, keep it above the bottom navigation footer bar (~80px margin)
+        const isMobileScreen = window.innerWidth < 768;
+        const bottomMargin = isMobileScreen ? 80 : 16;
+        const maxY = Math.max(minY, window.innerHeight - height - bottomMargin);
+
+        const clampedX = Math.round(Math.min(Math.max(newLeft, minX), maxX));
+        const clampedY = Math.round(Math.min(Math.max(newTop, minY), maxY));
+
+        setCustomPos({ x: clampedX, y: clampedY });
+      }
+    };
+
+    const handlePointerUp = () => {
+      if (dragInfoRef.current.isDown) {
+        dragInfoRef.current.isDown = false;
+        if (dragInfoRef.current.hasMoved) {
+          setIsDragging(false);
+          if (fabRef.current) {
+            const finalRect = fabRef.current.getBoundingClientRect();
+            localStorage.setItem('pihu_fab_position', JSON.stringify({
+              x: Math.round(finalRect.left),
+              y: Math.round(finalRect.top)
+            }));
+          }
+        }
+      }
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchmove', handlePointerMove);
+      window.removeEventListener('touchend', handlePointerUp);
+    };
+
+    window.addEventListener('mousemove', handlePointerMove, { passive: false });
+    window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('touchmove', handlePointerMove, { passive: false });
+    window.addEventListener('touchend', handlePointerUp);
+  };
+
+  const handleFabClick = () => {
+    if (dragInfoRef.current.hasMoved) {
+      return;
+    }
+    handleOpenChat();
+  };
+
+  // Auto-show and auto-open PIHU post-login across all pages
+  useEffect(() => {
+    if (!user) return;
+    const welcomeKey = `pihu_welcomed_${user.id || user.username}`;
+    const autoPending = sessionStorage.getItem('pihu_auto_welcome_pending');
+    const alreadyWelcomed = sessionStorage.getItem(welcomeKey);
+
+    if (autoPending === 'true' || !alreadyWelcomed) {
+      sessionStorage.removeItem('pihu_auto_welcome_pending');
+      sessionStorage.setItem(welcomeKey, 'true');
+      setIsRemoved(false);
+      sessionStorage.removeItem('pihu_removed_from_screen');
+
+      const timer = setTimeout(() => {
+        handleOpenChat();
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+  }, [user?.id, user?.username]);
+
+  // Global listener for navbar header button or other triggers
+  useEffect(() => {
+    const handlePihuToggle = () => {
+      if (isRemoved) {
+        setIsRemoved(false);
+        sessionStorage.removeItem('pihu_removed_from_screen');
+        handleOpenChat();
+      } else if (isOpen) {
+        handleCloseChat();
+      } else {
+        handleOpenChat();
+      }
+    };
+    window.addEventListener('pihu-toggle', handlePihuToggle);
+    return () => window.removeEventListener('pihu-toggle', handlePihuToggle);
+  }, [isRemoved, isOpen]);
 
   // Activity listeners to reset 5-min inactivity timer
   useEffect(() => {
@@ -587,15 +765,34 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
 
   return (
     <>
-      {/* Floating Action Button at Bottom Right with Circular AI Girl Avatar */}
-      {!isOpen && (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2 select-none">
+      {/* Floating Action Button - Draggable anywhere on screen, sits UP above mobile footer bar */}
+      {!isOpen && !isRemoved && (
+        <div
+          ref={fabRef}
+          style={
+            customPos
+              ? { position: 'fixed', left: `${customPos.x}px`, top: `${customPos.y}px`, zIndex: 50 }
+              : undefined
+          }
+          className={
+            customPos
+              ? `fixed z-50 flex flex-col items-end gap-2 select-none touch-none ${isDragging ? 'opacity-95 scale-105 transition-none' : 'transition-transform'}`
+              : `fixed bottom-24 right-4 sm:bottom-6 sm:right-6 z-50 flex flex-col items-end gap-2 select-none touch-none ${isDragging ? 'opacity-95 scale-105 transition-none' : 'transition-transform'}`
+          }
+          onMouseDown={(e) => {
+            if (e.button === 0) handlePointerDown(e.clientX, e.clientY, e);
+          }}
+          onTouchStart={(e) => {
+            if (e.touches && e.touches[0]) handlePointerDown(e.touches[0].clientX, e.touches[0].clientY, e);
+          }}
+        >
           {inactivityNotice && (
             <div className="bg-slate-900 text-white text-xs px-3 py-1.5 rounded-lg shadow-xl border border-slate-700 flex items-center gap-1.5 animate-fade-in">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
               <span>{language === 'hi' ? '5 मिनट निष्क्रियता के बाद चैट क्लियर हो गई' : 'Chat closed & cleared after 5 min idle'}</span>
               <button
                 type="button"
+                data-no-drag="true"
                 onClick={() => setInactivityNotice(false)}
                 className="ml-1 text-slate-400 hover:text-white"
               >
@@ -604,43 +801,104 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
             </div>
           )}
 
+          <div className="relative group flex items-center">
+            {/* Remove / Hide from Screen button on corner */}
+            <button
+              type="button"
+              data-no-drag="true"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRemoveFromScreen();
+              }}
+              className="absolute -top-2 -left-2 w-5 h-5 bg-slate-900/90 hover:bg-rose-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-md border border-white/60 transition-all z-20 cursor-pointer"
+              title={language === 'hi' ? 'स्क्रीन से हटाएं' : 'Remove from screen'}
+            >
+              ✕
+            </button>
+
+            <button
+              type="button"
+              onClick={handleFabClick}
+              className="relative flex items-center gap-2 p-1.5 pr-3.5 bg-gradient-to-r from-pink-600 via-rose-600 to-indigo-600 text-white font-semibold rounded-full shadow-2xl hover:shadow-pink-500/40 hover:scale-105 active:scale-95 transition-all duration-300 border-2 border-white/40 cursor-grab active:cursor-grabbing"
+              title={language === 'hi' ? 'पिहू AI से बात करें (ड्रैग करके कहीं भी ले जाएं)' : 'Chat with PIHU AI (Drag anywhere to move)'}
+            >
+              {/* Circular AI Girl Avatar inside */}
+              <div className="relative pointer-events-none">
+                <AiGirlAvatar size="w-11 h-11" border={false} />
+                <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-400 border-2 border-pink-700"></span>
+                </span>
+              </div>
+
+              <div className="flex flex-col items-start text-left pointer-events-none">
+                <div className="flex items-center gap-1">
+                  <span className="text-sm font-extrabold tracking-wide">PIHU AI</span>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                </div>
+                <span className="text-[10px] text-pink-100 font-medium">
+                  {language === 'hi' ? 'सहायक AI' : 'Smart Assistant'}
+                </span>
+              </div>
+
+              {/* Move / Drag grip handle icon */}
+              <div
+                className="text-white/60 group-hover:text-white pl-1 pointer-events-none"
+                title={language === 'hi' ? 'ड्रैग करके ले जाएं' : 'Drag to move'}
+              >
+                <GripVertical className="w-4 h-4" />
+              </div>
+
+              {/* Hover Tooltip */}
+              <span className="absolute -top-9 right-0 bg-slate-900 text-white text-[11px] font-medium px-2.5 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
+                {language === 'hi' ? 'नमस्ते! क्या मैं मदद करूँ? (ड्रैग कर सकते हैं)' : 'Hi! May I help you? (Draggable)'}
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Discrete Edge Tab to Restore PIHU when removed from screen */}
+      {isRemoved && (
+        <button
+          type="button"
+          onClick={handleRestoreToScreen}
+          className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-gradient-to-l from-pink-600 via-rose-600 to-indigo-600 text-white py-2.5 px-1.5 sm:px-2 rounded-l-2xl shadow-xl hover:px-3 transition-all flex flex-col items-center gap-1 border-l-2 border-t-2 border-b-2 border-white/50 cursor-pointer group select-none animate-in fade-in"
+          title={language === 'hi' ? 'पिहू AI को स्क्रीन पर वापस लाएं' : 'Restore PIHU AI to screen'}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+          <span className="[writing-mode:vertical-rl] font-black tracking-widest text-[9px] sm:text-[10px] text-pink-100 group-hover:text-white">
+            PIHU AI
+          </span>
+        </button>
+      )}
+
+      {/* Temporary Toast when PIHU is removed */}
+      {removedNotice && (
+        <div className="fixed bottom-24 right-4 sm:bottom-6 sm:right-6 z-50 bg-slate-900/95 text-white text-xs px-3.5 py-2 rounded-xl shadow-2xl border border-slate-700 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 select-none">
+          <EyeOff className="w-4 h-4 text-pink-400 shrink-0" />
+          <span>{language === 'hi' ? 'पिहू स्क्रीन से हटा दी गई है।' : 'PIHU removed from screen.'}</span>
           <button
             type="button"
-            onClick={handleOpenChat}
-            className="group relative flex items-center gap-2.5 p-1.5 pr-4 bg-gradient-to-r from-pink-600 via-rose-600 to-indigo-600 text-white font-semibold rounded-full shadow-2xl hover:shadow-pink-500/40 hover:scale-105 active:scale-95 transition-all duration-300 border-2 border-white/40"
-            title="Chat with PIHU AI Assistant"
+            onClick={handleRestoreToScreen}
+            className="ml-1 text-pink-400 font-bold hover:underline cursor-pointer"
           >
-            {/* Circular AI Girl Avatar inside */}
-            <div className="relative">
-              <AiGirlAvatar size="w-11 h-11" border={false} />
-              <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-400 border-2 border-pink-700"></span>
-              </span>
-            </div>
-
-            <div className="flex flex-col items-start text-left">
-              <div className="flex items-center gap-1">
-                <span className="text-sm font-extrabold tracking-wide">PIHU AI</span>
-                <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
-              </div>
-              <span className="text-[10px] text-pink-100 font-medium">
-                {language === 'hi' ? 'सहायक AI' : 'Smart Assistant'}
-              </span>
-            </div>
-
-            {/* Hover Tooltip */}
-            <span className="absolute -top-9 right-0 bg-slate-900 text-white text-[11px] font-medium px-2.5 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
-              {language === 'hi' ? 'नमस्ते! क्या मैं मदद करूँ?' : 'Hi! May I help you?'}
-            </span>
+            {language === 'hi' ? 'वापस लाएं' : 'Restore'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setRemovedNotice(false)}
+            className="text-slate-400 hover:text-white ml-1 cursor-pointer"
+          >
+            ✕
           </button>
         </div>
       )}
 
-      {/* PIHU Chat Window Modal/Drawer */}
+      {/* PIHU Chat Window Modal/Drawer - Positioned above footer on mobile */}
       {isOpen && (
         <div
-          className="fixed bottom-4 right-4 z-50 w-[95vw] sm:w-[420px] h-[600px] max-h-[92vh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200"
+          className="fixed bottom-20 left-2 right-2 sm:left-auto sm:bottom-4 sm:right-4 z-50 w-auto sm:w-[420px] h-[580px] max-h-[82vh] sm:max-h-[92vh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200"
           onClick={resetInactivityTimer}
           onMouseMove={resetInactivityTimer}
           onKeyDown={resetInactivityTimer}
@@ -691,6 +949,16 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
                 title={voiceEnabled ? 'Voice Active (Click to Mute)' : 'Voice Muted (Click to Enable)'}
               >
                 {voiceEnabled ? <Volume2 className="w-4 h-4 text-emerald-300" /> : <VolumeX className="w-4 h-4 text-white/50" />}
+              </button>
+
+              {/* Remove from screen button */}
+              <button
+                type="button"
+                onClick={handleRemoveFromScreen}
+                className="p-1.5 hover:bg-white/20 rounded-lg text-white/80 hover:text-white transition-colors"
+                title={language === 'hi' ? 'स्क्रीन से हटाएं' : 'Remove from screen'}
+              >
+                <EyeOff className="w-4 h-4" />
               </button>
 
               {/* Close Button */}

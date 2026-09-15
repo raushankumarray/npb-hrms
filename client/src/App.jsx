@@ -156,6 +156,10 @@ export default function App() {
   }, []);
 
   const handleLoginSuccess = (loggedInUser, companyInfo) => {
+    // Flag to auto-show and auto-open PIHU assistant on fresh login
+    sessionStorage.setItem('pihu_auto_welcome_pending', 'true');
+    sessionStorage.removeItem('pihu_removed_from_screen');
+
     setUser(loggedInUser);
     setCompany(companyInfo);
 
@@ -188,6 +192,8 @@ export default function App() {
     setCompany(null);
     clearBrowserFavicon();
     localStorage.removeItem('npb_hrms_active_tab');
+    sessionStorage.removeItem('pihu_auto_welcome_pending');
+    sessionStorage.removeItem('pihu_removed_from_screen');
     document.title = 'Sign In - Authentication Portal';
   };
 
