@@ -611,14 +611,26 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
       employee_id: employeeId,
       date: today,
       punchInTime: punchData.punch_in_time || punchData.punchInTime || null,
+      punch_in_time: punchData.punch_in_time || punchData.punchInTime || null,
       punchOutTime: punchData.punch_out_time || punchData.punchOutTime || null,
+      punch_out_time: punchData.punch_out_time || punchData.punchOutTime || null,
       punchInLat: punchData.punch_in_lat ?? punchData.punchInLat ?? null,
+      punch_in_lat: punchData.punch_in_lat ?? punchData.punchInLat ?? null,
       punchInLng: punchData.punch_in_lng ?? punchData.punchInLng ?? null,
-      punchInLocation: punchData.punch_in_location || punchData.punchInLocation || null,
+      punch_in_lng: punchData.punch_in_lng ?? punchData.punchInLng ?? null,
+      punchInLocation: punchData.punch_in_location || punchData.punchInLocation || punchData.punch_in_address || null,
+      punch_in_location: punchData.punch_in_location || punchData.punchInLocation || punchData.punch_in_address || null,
+      punch_in_address: punchData.punch_in_location || punchData.punchInLocation || punchData.punch_in_address || null,
       punchOutLat: punchData.punch_out_lat ?? punchData.punchOutLat ?? null,
+      punch_out_lat: punchData.punch_out_lat ?? punchData.punchOutLat ?? null,
       punchOutLng: punchData.punch_out_lng ?? punchData.punchOutLng ?? null,
-      punchOutLocation: punchData.punch_out_location || punchData.punchOutLocation || null,
-      totalHours: punchData.total_hours ?? punchData.totalHours ?? 0.0,
+      punch_out_lng: punchData.punch_out_lng ?? punchData.punchOutLng ?? null,
+      punchOutLocation: punchData.punch_out_location || punchData.punchOutLocation || punchData.punch_out_address || null,
+      punch_out_location: punchData.punch_out_location || punchData.punchOutLocation || punchData.punch_out_address || null,
+      punch_out_address: punchData.punch_out_location || punchData.punchOutLocation || punchData.punch_out_address || null,
+      totalHours: Number(punchData.total_hours ?? punchData.totalHours ?? punchData.working_hours ?? 0.0),
+      total_hours: Number(punchData.total_hours ?? punchData.totalHours ?? punchData.working_hours ?? 0.0),
+      working_hours: Number(punchData.total_hours ?? punchData.totalHours ?? punchData.working_hours ?? 0.0),
       status: punchData.status || 'Present',
       remarks: punchData.remarks || null,
       syncedAt: new Date().toISOString()
@@ -630,6 +642,7 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
         await realtimeDb.ref(`companies/${companyId}/attendance/${today}/${employeeId}`).set(payload);
         await realtimeDb.ref(`company_attendance/${companyId}/${today}/${employeeId}`).set(payload);
       }
+      await realtimeDb.ref(`employee_attendance/${employeeId}/${today}`).set(payload);
     }
     if (firestoreDb) {
       await firestoreDb.collection('attendance_punches').doc(`${companyId}_${employeeId}_${today}`).set(payload, { merge: true });
@@ -1479,10 +1492,10 @@ async function syncAllDatabaseToFirebase() {
       correctionsCount++;
     }
 
-    // 8. Sync recent attendance punches (past 30 days)
-    const recentAttendances = db.prepare("SELECT * FROM attendance_records WHERE date >= date('now', '-30 days')").all();
+    // 8. Sync all attendance records and punches
+    const allAttendances = db.prepare('SELECT * FROM attendance_records').all();
     let attendancesCount = 0;
-    for (const att of recentAttendances) {
+    for (const att of allAttendances) {
       await syncAttendancePunch(att.company_id, att.employee_id, {
         date: att.date,
         punch_in_time: att.punch_in_time,
@@ -2044,6 +2057,53 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchRtDbCollection('service_requests', serviceRequestsMap);
       await fetchRtDbCollection('service_request_messages', serviceRequestMessagesMap);
       await fetchRtDbCollection('audit_logs', auditLogsMap);
+
+      // Realtime Database attendance punches fetch
+      try {
+        const snap = await realtimeDb.ref('attendance_punches').once('value');
+        const val = snap.val();
+        if (val && typeof val === 'object') {
+          Object.entries(val).forEach(([cId, emps]) => {
+            if (emps && typeof emps === 'object') {
+              Object.entries(emps).forEach(([eId, dates]) => {
+                if (dates && typeof dates === 'object') {
+                  Object.entries(dates).forEach(([dKey, att]) => {
+                    if (att && typeof att === 'object') {
+                      const key = `${att.companyId || att.company_id || cId}_${att.employeeId || att.employee_id || eId}_${att.date || dKey}`;
+                      if (!attendanceMap.has(key)) {
+                        attendanceMap.set(key, { ...att, companyId: cId, employeeId: eId, date: att.date || dKey });
+                      }
+                    }
+                  });
+                }
+              });
+            }
+          });
+        }
+      } catch (e) {}
+
+      try {
+        const compAttSnap = await realtimeDb.ref('company_attendance').once('value');
+        const compAttVal = compAttSnap.val();
+        if (compAttVal && typeof compAttVal === 'object') {
+          Object.entries(compAttVal).forEach(([cId, dates]) => {
+            if (dates && typeof dates === 'object') {
+              Object.entries(dates).forEach(([dKey, emps]) => {
+                if (emps && typeof emps === 'object') {
+                  Object.entries(emps).forEach(([eId, att]) => {
+                    if (att && typeof att === 'object') {
+                      const key = `${cId}_${eId}_${dKey}`;
+                      if (!attendanceMap.has(key)) {
+                        attendanceMap.set(key, { ...att, companyId: cId, employeeId: eId, date: dKey });
+                      }
+                    }
+                  });
+                }
+              });
+            }
+          });
+        }
+      } catch (e) {}
     }
 
     // Strict 1:1 Mirror: Purge existing local tenant data before restore so that local database
@@ -2986,7 +3046,15 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
             const pIn = att.punchInTime || att.punch_in_time || null;
             const pOut = att.punchOutTime || att.punch_out_time || null;
-            const tHours = Number(att.totalHours || att.total_hours || 8.0);
+            const inLat = att.punchInLat ?? att.punch_in_lat ?? null;
+            const inLng = att.punchInLng ?? att.punch_in_lng ?? null;
+            const inLoc = att.punchInLocation || att.punch_in_location || att.punchInAddress || att.punch_in_address || null;
+            const inAcc = att.punchInAccuracy ?? att.punch_in_accuracy ?? 10;
+            const outLat = att.punchOutLat ?? att.punch_out_lat ?? null;
+            const outLng = att.punchOutLng ?? att.punch_out_lng ?? null;
+            const outLoc = att.punchOutLocation || att.punch_out_location || att.punchOutAddress || att.punch_out_address || null;
+            const outAcc = att.punchOutAccuracy ?? att.punch_out_accuracy ?? 10;
+            const tHours = Number(att.totalHours ?? att.total_hours ?? att.working_hours ?? 8.0);
             const existingAtt = db.prepare('SELECT id FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?').get(compId, empId, date);
 
             if (existingAtt) {
@@ -2994,16 +3062,30 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
                 UPDATE attendance_records SET
                   punch_in_time = COALESCE(?, punch_in_time),
                   punch_out_time = COALESCE(?, punch_out_time),
+                  punch_in_lat = COALESCE(?, punch_in_lat),
+                  punch_in_lng = COALESCE(?, punch_in_lng),
+                  punch_in_location = COALESCE(?, punch_in_location),
+                  punch_in_accuracy = COALESCE(?, punch_in_accuracy),
+                  punch_out_lat = COALESCE(?, punch_out_lat),
+                  punch_out_lng = COALESCE(?, punch_out_lng),
+                  punch_out_location = COALESCE(?, punch_out_location),
+                  punch_out_accuracy = COALESCE(?, punch_out_accuracy),
                   status = COALESCE(?, status),
                   total_hours = COALESCE(?, total_hours),
                   updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-              `).run(pIn, pOut, attStatus, tHours, existingAtt.id);
+              `).run(pIn, pOut, inLat, inLng, inLoc, inAcc, outLat, outLng, outLoc, outAcc, attStatus, tHours, existingAtt.id);
             } else {
               db.prepare(`
-                INSERT INTO attendance_records (company_id, employee_id, date, punch_in_time, punch_out_time, status, total_hours)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-              `).run(compId, empId, date, pIn, pOut, attStatus, tHours);
+                INSERT INTO attendance_records (
+                  company_id, employee_id, date,
+                  punch_in_time, punch_out_time,
+                  punch_in_lat, punch_in_lng, punch_in_location, punch_in_accuracy,
+                  punch_out_lat, punch_out_lng, punch_out_location, punch_out_accuracy,
+                  status, total_hours
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(compId, empId, date, pIn, pOut, inLat, inLng, inLoc, inAcc, outLat, outLng, outLoc, outAcc, attStatus, tHours);
             }
             restoredAttendances++;
           }

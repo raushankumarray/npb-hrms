@@ -425,6 +425,12 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     `).get(employeeId);
     resolvedLocation = assignedGf?.location_name || 'Designated Office Area';
   }
+  if (!resolvedLocation || resolvedLocation === 'Designated Office Area' || resolvedLocation === '--') {
+    const companyGf = db.prepare('SELECT location_name FROM geofences WHERE company_id = ? AND is_active = 1 LIMIT 1').get(companyId);
+    if (companyGf && companyGf.location_name) {
+      resolvedLocation = companyGf.location_name;
+    }
+  }
 
   const transaction = db.transaction(() => {
     db.prepare(`
@@ -457,11 +463,16 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
 
   transaction();
 
-  // Real-time sync punch-in to Firebase
+  // Real-time sync punch-in to Firebase with complete timestamps, lat/long, and address
   try {
     syncAttendancePunch(companyId, employeeId, {
       date: today,
       punch_in_time: nowTime,
+      punch_in_lat: latitude,
+      punch_in_lng: longitude,
+      punch_in_location: resolvedLocation,
+      punch_in_address: resolvedLocation,
+      punch_in_accuracy: accuracy || 10,
       status: 'Missing Punch Out'
     }).catch(() => {});
     syncCompanyReports(companyId).catch(() => {});
@@ -601,6 +612,12 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     `).get(employeeId);
     resolvedLocation = assignedGf?.location_name || 'Designated Office Area';
   }
+  if (!resolvedLocation || resolvedLocation === 'Designated Office Area' || resolvedLocation === '--') {
+    const companyGf = db.prepare('SELECT location_name FROM geofences WHERE company_id = ? AND is_active = 1 LIMIT 1').get(companyId);
+    if (companyGf && companyGf.location_name) {
+      resolvedLocation = companyGf.location_name;
+    }
+  }
 
   const transaction = db.transaction(() => {
     db.prepare(`
@@ -627,12 +644,23 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
 
   transaction();
 
-  // Real-time sync punch-out to Firebase
+  // Real-time sync punch-out to Firebase with complete timestamps, lat/long, address, and hours
   try {
     syncAttendancePunch(companyId, employeeId, {
       date: today,
       punch_in_time: existing.punch_in_time,
+      punch_in_lat: existing.punch_in_lat,
+      punch_in_lng: existing.punch_in_lng,
+      punch_in_location: existing.punch_in_location,
+      punch_in_address: existing.punch_in_location,
       punch_out_time: nowTime,
+      punch_out_lat: latitude,
+      punch_out_lng: longitude,
+      punch_out_location: resolvedLocation,
+      punch_out_address: resolvedLocation,
+      punch_out_accuracy: accuracy || 10,
+      total_hours: totalHours,
+      working_hours: totalHours,
       status: attendanceStatus
     }).catch(() => {});
     syncCompanyReports(companyId).catch(() => {});

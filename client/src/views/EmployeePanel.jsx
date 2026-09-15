@@ -11,15 +11,17 @@ import UnifiedCalendar from '../components/UnifiedCalendar';
 import TicketChatModal from '../components/TicketChatModal';
 
 const ALL_DAILY_REPORT_COLUMNS = [
-  { id: 'Date', label: 'Attendance Date' },
-  { id: 'Punch In', label: 'Punch In Time' },
-  { id: 'GPS Lat/Long (Punch In)', label: 'Punch In GPS (Lat/Long)' },
-  { id: 'Address (Punch In)', label: 'Punch In Location Address' },
-  { id: 'Punch Out', label: 'Punch Out Time' },
-  { id: 'GPS Lat/Long (Punch Out)', label: 'Punch Out GPS (Lat/Long)' },
-  { id: 'Address (Punch Out)', label: 'Punch Out Location Address' },
-  { id: 'Working Hours', label: 'Total Working Hours' },
-  { id: 'Status', label: 'Attendance Status' }
+  { id: 'Date', label: 'Date (Day)' },
+  { id: 'Employee ID', label: 'Employee ID' },
+  { id: 'Employee Name', label: 'Employee Name' },
+  { id: 'Punch In Time', label: 'Punch In Time' },
+  { id: 'Punch In Lat/Long', label: 'Punch In Lat/Long' },
+  { id: 'Punch In Address', label: 'Punch In Address' },
+  { id: 'Punch Out Time', label: 'Punch Out Time' },
+  { id: 'Punch Out Lat/Long', label: 'Punch Out Lat/Long' },
+  { id: 'Punch Out Address', label: 'Punch Out Address' },
+  { id: 'Status', label: 'Status' },
+  { id: 'Working Hours (HH:MM)', label: 'Working Hours (HH:MM)' }
 ];
 
 function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -45,6 +47,38 @@ function format12Hour(timeStr) {
   h = h % 12;
   h = h ? h : 12;
   return `${h < 10 ? '0' + h : h}:${m} ${ampm}`;
+}
+
+function formatWorkingHoursHHMM(val, punchIn, punchOut) {
+  if (val === null || val === undefined || val === '' || val === '-') {
+    if (punchIn && punchOut && punchIn !== '--:--' && punchOut !== '--:--' && punchIn !== '--:--:--' && punchOut !== '--:--:--') {
+      const p1 = String(punchIn).split(':').map(Number);
+      const p2 = String(punchOut).split(':').map(Number);
+      if (!p1.some(isNaN) && !p2.some(isNaN)) {
+        const s1 = (p1[0] || 0) * 3600 + (p1[1] || 0) * 60 + (p1[2] || 0);
+        const s2 = (p2[0] || 0) * 3600 + (p2[1] || 0) * 60 + (p2[2] || 0);
+        const diffSec = s2 - s1;
+        if (diffSec > 0) {
+          const h = Math.floor(diffSec / 3600);
+          const m = Math.floor((diffSec % 3600) / 60);
+          return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        }
+      }
+    }
+    return '00:00';
+  }
+  if (typeof val === 'string' && val.includes(':')) {
+    const parts = val.split(':');
+    return `${String(parts[0]).padStart(2, '0')}:${String(parts[1] || '00').padStart(2, '0')}`;
+  }
+  const th = parseFloat(val);
+  if (!isNaN(th) && th > 0) {
+    let h = Math.floor(th);
+    let m = Math.round((th - h) * 60);
+    if (m >= 60) { h += 1; m = 0; }
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+  return '00:00';
 }
 
 // Calculate working days strictly excluding Weekly Offs (WO) and official holidays
@@ -137,11 +171,9 @@ export default function EmployeePanel({ user, company, activeTab, onLogout }) {
       window.location.reload();
     }
   };
-  const [selectedExportColumns, setSelectedExportColumns] = useState([
-    'Date', 'Punch In', 'GPS Lat/Long (Punch In)', 'Address (Punch In)',
-    'Punch Out', 'GPS Lat/Long (Punch Out)', 'Address (Punch Out)',
-    'Working Hours', 'Status'
-  ]);
+  const [selectedExportColumns, setSelectedExportColumns] = useState(
+    ALL_DAILY_REPORT_COLUMNS.map(c => c.id)
+  );
   const [exportingPdf, setExportingPdf] = useState(false);
 
   const [shiftInfo, setShiftInfo] = useState(null);
@@ -1384,10 +1416,16 @@ Please deregister this device in Support Panel so I can register and log in on m
         statusCode = '-';
       }
 
+      const workingHoursFormatted = (att && (att.total_hours || (att.punch_in_time && att.punch_out_time)))
+        ? formatWorkingHoursHHMM(att.total_hours, att.punch_in_time, att.punch_out_time)
+        : (punchIn !== '--:--' && punchOut === '--:--' ? 'In Progress' : '00:00');
+
       logs.push({
         day: d,
         date: dateStr,
         dayName: shortDay,
+        formattedDate: `${dateStr} (${shortDay})`,
+        employeeId: user?.employeeCode || user?.employeeId || user?.id || '-',
         name: user?.fullName || user?.username || 'Employee',
         status,
         statusCode,
@@ -1397,7 +1435,8 @@ Please deregister this device in Support Panel so I can register and log in on m
         punchOut,
         punchOutLatLong,
         punchOutLocation,
-        totalHours
+        totalHours,
+        workingHoursFormatted
       });
     }
 
@@ -2229,23 +2268,49 @@ Please deregister this device in Support Panel so I can register and log in on m
               <table className="w-full text-xs text-left">
                 <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px] border-b border-slate-200">
                   <tr>
-                    <th className="p-3">Name</th>
-                    <th className="p-3">Date</th>
-                    <th className="p-3 text-center">Status</th>
-                    <th className="p-3 min-w-[200px]">Punch In Details</th>
-                    <th className="p-3 min-w-[200px]">Punch Out Details</th>
-                    <th className="p-3 text-right">Working Hrs</th>
+                    <th className="p-3 whitespace-nowrap">Date (Day)</th>
+                    <th className="p-3 whitespace-nowrap">Employee ID</th>
+                    <th className="p-3 whitespace-nowrap">Employee Name</th>
+                    <th className="p-3 whitespace-nowrap">Punch In Time</th>
+                    <th className="p-3 whitespace-nowrap">Punch In Lat/Long</th>
+                    <th className="p-3 whitespace-nowrap min-w-[160px]">Punch In Address</th>
+                    <th className="p-3 whitespace-nowrap">Punch Out Time</th>
+                    <th className="p-3 whitespace-nowrap">Punch Out Lat/Long</th>
+                    <th className="p-3 whitespace-nowrap min-w-[160px]">Punch Out Address</th>
+                    <th className="p-3 text-center whitespace-nowrap">Status</th>
+                    <th className="p-3 text-right whitespace-nowrap">Working Hours (HH:MM)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {paginatedLogs.map((log) => (
                     <tr key={log.date} className="hover:bg-slate-50/70 transition-colors">
                       <td className="p-3 font-semibold text-slate-800 whitespace-nowrap">
-                        {log.name}
-                      </td>
-                      <td className="p-3 font-mono text-slate-700 whitespace-nowrap">
                         <span className="font-bold">{log.date}</span>
                         <span className="text-[10px] text-slate-400 ml-1.5 font-sans uppercase">({log.dayName})</span>
+                      </td>
+                      <td className="p-3 font-mono font-bold text-slate-700 whitespace-nowrap">
+                        {log.employeeId}
+                      </td>
+                      <td className="p-3 font-semibold text-slate-800 whitespace-nowrap">
+                        {log.name}
+                      </td>
+                      <td className="p-3 font-mono font-bold text-emerald-700 whitespace-nowrap">
+                        {log.punchIn}
+                      </td>
+                      <td className="p-3 font-mono text-slate-600 whitespace-nowrap">
+                        {log.punchInLatLong}
+                      </td>
+                      <td className="p-3 text-slate-700 max-w-[200px] truncate" title={log.punchInLocation}>
+                        {log.punchInLocation}
+                      </td>
+                      <td className="p-3 font-mono font-bold text-rose-700 whitespace-nowrap">
+                        {log.punchOut}
+                      </td>
+                      <td className="p-3 font-mono text-slate-600 whitespace-nowrap">
+                        {log.punchOutLatLong}
+                      </td>
+                      <td className="p-3 text-slate-700 max-w-[200px] truncate" title={log.punchOutLocation}>
+                        {log.punchOutLocation}
                       </td>
                       <td className="p-3 text-center whitespace-nowrap">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
@@ -2260,58 +2325,14 @@ Please deregister this device in Support Panel so I can register and log in on m
                           {log.status}
                         </span>
                       </td>
-                      <td className="p-3">
-                        {log.punchIn !== '--:--' ? (
-                          <div className="space-y-1">
-                            <div className="font-mono font-bold text-emerald-700 text-xs">
-                              {log.punchIn}
-                            </div>
-                            {log.punchInLatLong !== '-' && (
-                              <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1">
-                                <MapPin className="w-3 h-3 text-emerald-500 shrink-0" />
-                                <span>{log.punchInLatLong}</span>
-                              </div>
-                            )}
-                            {log.punchInLocation !== '-' && (
-                              <div className="text-[11px] text-slate-700 font-medium line-clamp-2 max-w-[240px]" title={log.punchInLocation}>
-                                {log.punchInLocation}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="font-mono text-slate-400">--:--</span>
-                        )}
-                      </td>
-                      <td className="p-3">
-                        {log.punchOut !== '--:--' ? (
-                          <div className="space-y-1">
-                            <div className="font-mono font-bold text-rose-700 text-xs">
-                              {log.punchOut}
-                            </div>
-                            {log.punchOutLatLong !== '-' && (
-                              <div className="text-[10px] font-mono text-slate-500 flex items-center gap-1">
-                                <MapPin className="w-3 h-3 text-rose-500 shrink-0" />
-                                <span>{log.punchOutLatLong}</span>
-                              </div>
-                            )}
-                            {log.punchOutLocation !== '-' && (
-                              <div className="text-[11px] text-slate-700 font-medium line-clamp-2 max-w-[240px]" title={log.punchOutLocation}>
-                                {log.punchOutLocation}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="font-mono text-slate-400">--:--</span>
-                        )}
-                      </td>
-                      <td className="p-3 text-right font-medium text-slate-900 font-mono whitespace-nowrap">
-                        {log.totalHours}
+                      <td className="p-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
+                        {log.workingHoursFormatted}
                       </td>
                     </tr>
                   ))}
                   {paginatedLogs.length === 0 && (
                     <tr>
-                      <td colSpan="6" className="p-8 text-center text-slate-400">
+                      <td colSpan="11" className="p-8 text-center text-slate-400">
                         No attendance records match the selected filter.
                       </td>
                     </tr>
