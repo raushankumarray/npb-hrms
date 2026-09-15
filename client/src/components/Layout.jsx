@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
+import PihuAssistant from './PihuAssistant';
 
 export default function Layout({ user, company, systemSettings, activeTab, onSelectTab, onLogout, onUserUpdate, children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -489,6 +490,13 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         onClose={() => setShowProfileModal(false)}
         user={user}
         onUserUpdate={onUserUpdate}
+      />
+
+      {/* UNIVERSAL PIHU AI ASSISTANT (All Panels: Employee, Manager, Company Admin, Support, Super Admin) */}
+      <PihuAssistant
+        user={user}
+        company={company}
+        onSelectTab={onSelectTab}
       />
     </div>
   );
