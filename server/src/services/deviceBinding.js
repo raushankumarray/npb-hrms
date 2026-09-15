@@ -44,6 +44,15 @@ function checkAndBindDevice({ userId, roleName, deviceId, macAddress, deviceType
       VALUES (?, 'bound', ?, ?, 'Initial device registration on login', ?)
     `).run(userId, activeDeviceId, userId, ipAddress);
 
+    // Sync device lock & MAC address to Firebase
+    try {
+      const boundDev = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(userId);
+      if (boundDev) {
+        const { syncEmployeeDevice } = require('./firebase');
+        syncEmployeeDevice(boundDev).catch(() => {});
+      }
+    } catch (e) {}
+
     return { allowed: true, deviceId: activeDeviceId, macAddress: activeMac, isNewBinding: true };
   }
 
@@ -57,6 +66,15 @@ function checkAndBindDevice({ userId, roleName, deviceId, macAddress, deviceType
       UPDATE employee_devices SET last_login_at = CURRENT_TIMESTAMP, bound_ip = ?, mac_address = COALESCE(?, mac_address)
       WHERE id = ?
     `).run(ipAddress, activeMac, existingDevice.id);
+
+    // Sync refreshed login state to Firebase
+    try {
+      const updatedDev = db.prepare('SELECT * FROM employee_devices WHERE id = ?').get(existingDevice.id);
+      if (updatedDev) {
+        const { syncEmployeeDevice } = require('./firebase');
+        syncEmployeeDevice(updatedDev).catch(() => {});
+      }
+    } catch (e) {}
 
     return { allowed: true, deviceId: activeDeviceId, macAddress: existingDevice.mac_address || activeMac };
   }
@@ -124,6 +142,16 @@ function unbindUserDevice({ userId, authorizedUserId, authorizerName, authorizer
   });
 
   const macDisplay = currentDevice.mac_address || currentDevice.device_id;
+
+  // Sync unbound device status to Firebase
+  try {
+    const unboundDev = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(userId);
+    if (unboundDev) {
+      const { syncEmployeeDevice } = require('./firebase');
+      syncEmployeeDevice(unboundDev).catch(() => {});
+    }
+  } catch (e) {}
+
   return { 
     success: true, 
     message: `Device (${macDisplay}) successfully deregistered and unlocked. The employee may now log in from their new device.` 

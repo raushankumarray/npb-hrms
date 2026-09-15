@@ -1113,12 +1113,20 @@ function generateFullMonthAttendanceRows(req, options = {}) {
     const attMap = {};
     attList.forEach(a => { attMap[a.date] = a; });
 
-    // Loop through ALL days from 1 to daysInMonth without skipping any date!
+    // Loop through days from 1 to daysInMonth respecting employment start/end date
     for (let d = 1; d <= daysInMonth; d++) {
       const dStr = String(d).padStart(2, '0');
       const curDateStr = `${yInt}-${mStr}-${dStr}`;
       const dObj = new Date(yInt, mInt - 1, d);
       const dayOfWeek = dayNames[dObj.getDay()];
+
+      // Strictly exclude days prior to employment start date or after employment end date
+      if (emp.employment_start_date && curDateStr < emp.employment_start_date) {
+        continue;
+      }
+      if (emp.employment_end_date && curDateStr > emp.employment_end_date) {
+        continue;
+      }
 
       const att = attMap[curDateStr];
       const isHoliday = holMap[curDateStr];
@@ -2434,6 +2442,16 @@ function buildMonthlySheetData(req, options = {}) {
       const curDateStr = `${year}-${mStr}-${dStr}`;
       const dObj = new Date(year, month - 1, d);
       const dayOfWeek = dayNames[dObj.getDay()];
+
+      // Strictly check employment tenure start date and end date
+      if (emp.employment_start_date && curDateStr < emp.employment_start_date) {
+        dailyStatus[d] = '--';
+        continue;
+      }
+      if (emp.employment_end_date && curDateStr > emp.employment_end_date) {
+        dailyStatus[d] = '--';
+        continue;
+      }
 
       const att = attMap[curDateStr];
       const isHoliday = holMap[curDateStr];

@@ -5,27 +5,43 @@ const { verifyAuth } = require('../middleware/auth');
 const { getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { unbindUserDevice } = require('../services/deviceBinding');
-const { syncTicketMessage, syncSupportTicket } = require('../services/firebase');
+const { syncTicketMessage, syncSupportTicket, syncServiceRequest, syncServiceRequestMessage } = require('../services/firebase');
 
 // Helper to auto-archive resolved/old tickets based on company retention setting (default 1 day)
-function autoArchiveExpiredRequests(companyId) {
+function autoArchiveExpiredRequests(companyId = null) {
   try {
-    const settings = db.prepare('SELECT auto_archive_days FROM company_settings WHERE company_id = ?').get(companyId);
-    const days = settings && settings.auto_archive_days !== undefined ? settings.auto_archive_days : 1;
+    if (companyId) {
+      const settings = db.prepare('SELECT auto_archive_days FROM company_settings WHERE company_id = ?').get(companyId);
+      const days = settings && settings.auto_archive_days !== undefined ? settings.auto_archive_days : 1;
 
-    // Archive resolved/closed requests older than configured days
-    db.prepare(`
-      UPDATE service_requests
-      SET is_archived = 1, archived_at = CURRENT_TIMESTAMP
-      WHERE company_id = ? 
-        AND is_archived = 0
-        AND status IN ('resolved', 'closed')
-        AND datetime(updated_at, '+' || ? || ' days') <= datetime('now')
-    `).run(companyId, days);
+      // Archive resolved/closed requests older than configured days
+      db.prepare(`
+        UPDATE service_requests
+        SET is_archived = 1, archived_at = CURRENT_TIMESTAMP
+        WHERE company_id = ? 
+          AND is_archived = 0
+          AND status IN ('resolved', 'closed')
+          AND datetime(updated_at, '+' || ? || ' days') <= datetime('now')
+      `).run(companyId, days);
+    } else {
+      // Archive all resolved/closed tickets older than 1 day across all companies
+      db.prepare(`
+        UPDATE service_requests
+        SET is_archived = 1, archived_at = CURRENT_TIMESTAMP
+        WHERE is_archived = 0
+          AND status IN ('resolved', 'closed')
+          AND datetime(updated_at, '+1 day') <= datetime('now')
+      `).run();
+    }
   } catch (err) {
     console.error('Error auto-archiving service requests:', err.message);
   }
 }
+
+// Initial archive run on startup
+try {
+  autoArchiveExpiredRequests();
+} catch (e) {}
 
 // Auto-migration: ensure assigned_role and assigned_to columns exist
 try {
@@ -107,10 +123,20 @@ router.post('/service-request', verifyAuth, (req, res) => {
 
   // Insert initial creation message into ticket conversation thread
   try {
-    db.prepare(`
+    const initMsg = `Ticket created by ${senderRoleLabel} (${senderDisplayName}): "${title.trim()}". Directly routed to Technical Support Team for resolution.`;
+    const msgRes = db.prepare(`
       INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
       VALUES (?, ?, ?, ?, ?)
-    `).run(reqId, req.user.id, senderDisplayName, req.user.role_name, `Ticket created by ${senderRoleLabel} (${senderDisplayName}): "${title.trim()}". Directly routed to Technical Support Team for resolution.`);
+    `).run(reqId, req.user.id, senderDisplayName, req.user.role_name, initMsg);
+
+    syncServiceRequestMessage({
+      id: msgRes.lastInsertRowid,
+      request_id: reqId,
+      user_id: req.user.id,
+      sender_name: senderDisplayName,
+      sender_role: req.user.role_name,
+      message: initMsg
+    }).catch(() => {});
   } catch (e) {}
 
   // Send notification directly to Technical Support Team and Super Admins
@@ -129,6 +155,10 @@ router.post('/service-request', verifyAuth, (req, res) => {
   } catch (e) {}
 
   try {
+    const freshSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+    if (freshSr) {
+      syncServiceRequest(freshSr).catch(() => {});
+    }
     syncSupportTicket({
       id: reqId,
       ticket_number: `TKT-${reqId}`,
@@ -310,6 +340,13 @@ router.put('/service-requests/:id/assign', verifyAuth, (req, res) => {
 
   transaction();
 
+  try {
+    const updatedSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+    if (updatedSr) {
+      syncServiceRequest(updatedSr).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     message: `Ticket #${reqId} successfully assigned to ${targetLabel}.`,
@@ -432,6 +469,14 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
   });
 
   transaction();
+
+  try {
+    const updatedSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+    if (updatedSr) {
+      syncServiceRequest(updatedSr).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: `Ticket marked as ${status}.` });
 });
 
@@ -562,6 +607,15 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
       message: message.trim()
     }).catch(() => {});
 
+    syncServiceRequestMessage({
+      id: msgRes.lastInsertRowid,
+      request_id: reqId,
+      user_id: req.user.id,
+      sender_name: senderName,
+      sender_role: role,
+      message: message.trim()
+    }).catch(() => {});
+
     let finalStatus = ticket.status;
 
     // 2. If status change requested
@@ -643,6 +697,14 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
   });
 
   const outcome = transaction();
+
+  try {
+    const updatedSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+    if (updatedSr) {
+      syncServiceRequest(updatedSr).catch(() => {});
+    }
+  } catch (e) {}
+
   res.status(201).json({
     success: true,
     messageId: outcome.messageId,

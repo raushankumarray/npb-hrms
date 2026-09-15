@@ -20,7 +20,8 @@ router.post('/login', (req, res) => {
     SELECT u.id, u.username, u.password_hash, u.email, u.mobile, u.role_id, u.company_id, u.status, u.is_deleted,
            r.name as role_name,
            s.permission_level as support_level,
-           e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id
+           e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id,
+           e.employment_start_date, e.employment_end_date
     FROM users u
     JOIN roles r ON u.role_id = r.id
     LEFT JOIN support_users s ON u.id = s.user_id
@@ -192,6 +193,10 @@ router.post('/login', (req, res) => {
       companyId: user.company_id,
       employeeId: user.employee_id,
       employeeCode: user.employee_code,
+      employmentStartDate: user.employment_start_date || null,
+      employmentEndDate: user.employment_end_date || null,
+      employment_start_date: user.employment_start_date || null,
+      employment_end_date: user.employment_end_date || null,
       fullName: user.full_name || (user.role_name === 'super_admin' ? 'Super Admin' : user.username),
       registeredDevice: boundDevice
     },
@@ -266,6 +271,10 @@ router.get('/me', verifyAuth, (req, res) => {
       companyName: req.user.company_name || (companyInfo?.name) || '',
       employeeId: req.user.employee_id,
       employeeCode: req.user.employee_code,
+      employmentStartDate: req.user.employment_start_date || null,
+      employmentEndDate: req.user.employment_end_date || null,
+      employment_start_date: req.user.employment_start_date || null,
+      employment_end_date: req.user.employment_end_date || null,
       department: req.user.department || '',
       designation: req.user.designation || '',
       fullName: req.user.full_name || (req.user.role_name === 'super_admin' ? 'Super Admin' : req.user.username),

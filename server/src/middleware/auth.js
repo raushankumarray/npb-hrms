@@ -36,6 +36,7 @@ function verifyAuth(req, res, next) {
              COALESCE(e.full_name, sa.full_name, s.full_name, u.username) as full_name,
              COALESCE(e.mobile, u.mobile, '') as mobile,
              e.department, e.designation, e.manager_id,
+             e.employment_start_date, e.employment_end_date,
              c.name as company_name
       FROM users u
       JOIN roles r ON u.role_id = r.id

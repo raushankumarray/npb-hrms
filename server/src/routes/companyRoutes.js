@@ -938,4 +938,58 @@ router.put('/:id/modules', verifyAuth, requireRole(['super_admin']), (req, res) 
   res.json({ success: true, message: 'Company modules updated successfully.' });
 });
 
+// Toggle Manager Attendance Punch Capability (Company Admin or Super Admin)
+router.put('/:id/manager-punch', verifyAuth, (req, res) => {
+  const companyId = parseInt(req.params.id, 10);
+
+  // Tenant isolation check
+  if (req.user.role_name !== 'super_admin') {
+    if (req.user.role_name !== 'company_admin' || req.user.company_id !== companyId) {
+      return res.status(403).json({ error: 'Access denied to update company attendance policy.' });
+    }
+  }
+
+  const { enabled } = req.body;
+  if (enabled === undefined) {
+    return res.status(400).json({ error: 'Field "enabled" (boolean) is required.' });
+  }
+
+  const isEnabled = enabled ? 1 : 0;
+  db.prepare(`
+    INSERT INTO company_modules (company_id, module_name, is_enabled, updated_at)
+    VALUES (?, 'manager_punch', ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(company_id, module_name) DO UPDATE SET
+      is_enabled = excluded.is_enabled,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(companyId, isEnabled);
+
+  logAudit({
+    companyId,
+    userId: req.user.id,
+    userName: req.user.username,
+    role: req.user.role_name,
+    panel: 'Company Policy',
+    action: isEnabled ? 'MANAGER_PUNCH_ENABLED' : 'MANAGER_PUNCH_DISABLED',
+    targetEntity: 'company_modules',
+    targetId: companyId,
+    newValues: { manager_punch: isEnabled === 1 },
+    reason: isEnabled ? 'Company admin enabled manager attendance punch' : 'Company admin disabled manager attendance punch'
+  });
+
+  try {
+    const modules = db.prepare('SELECT module_name, is_enabled FROM company_modules WHERE company_id = ?').all(companyId);
+    const mObj = {};
+    modules.forEach(m => mObj[m.module_name] = !!m.is_enabled);
+    syncCompanyModules(companyId, mObj).catch(() => {});
+  } catch (e) {}
+
+  res.json({
+    success: true,
+    enabled: isEnabled === 1,
+    message: isEnabled === 1
+      ? 'Manager attendance punch has been enabled for this company.'
+      : 'Manager attendance punch has been disabled for this company.'
+  });
+});
+
 module.exports = router;

@@ -1038,25 +1038,180 @@ async function syncSupportTicket(ticket) {
 }
 
 /**
+ * Real-time sync: Employee Device Lock & MAC Address Binding
+ */
+async function syncEmployeeDevice(device) {
+  if (!firebaseStatus.connected || !device) return null;
+  try {
+    const userId = device.user_id || device.userId;
+    if (!userId) return false;
+
+    const payload = {
+      id: device.id || userId,
+      userId: Number(userId),
+      user_id: Number(userId),
+      deviceId: device.device_id || device.deviceId || '',
+      device_id: device.device_id || device.deviceId || '',
+      macAddress: device.mac_address || device.macAddress || '',
+      mac_address: device.mac_address || device.macAddress || '',
+      deviceType: device.device_type || device.deviceType || 'Web Browser',
+      device_type: device.device_type || device.deviceType || 'Web Browser',
+      deviceName: device.device_name || device.deviceName || 'Default Device',
+      device_name: device.device_name || device.deviceName || 'Default Device',
+      status: device.status || 'bound',
+      boundIp: device.bound_ip || device.boundIp || '127.0.0.1',
+      bound_ip: device.bound_ip || device.boundIp || '127.0.0.1',
+      registeredAt: device.registered_at || device.registeredAt || new Date().toISOString(),
+      registered_at: device.registered_at || device.registeredAt || new Date().toISOString(),
+      lastLoginAt: device.last_login_at || device.lastLoginAt || new Date().toISOString(),
+      last_login_at: device.last_login_at || device.lastLoginAt || new Date().toISOString(),
+      syncedAt: new Date().toISOString()
+    };
+
+    if (firestoreDb) {
+      await firestoreDb.collection('employee_devices').doc(`user_${userId}`).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`employee_devices/${userId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncEmployeeDevice error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Service Request / Ticket
+ */
+async function syncServiceRequest(sr) {
+  if (!firebaseStatus.connected || !sr) return null;
+  try {
+    const id = sr.id;
+    if (!id) return false;
+    const compId = sr.company_id || sr.companyId;
+    const empId = sr.employee_id || sr.employeeId;
+
+    const payload = {
+      id: Number(id),
+      companyId: compId ? Number(compId) : null,
+      company_id: compId ? Number(compId) : null,
+      employeeId: empId ? Number(empId) : null,
+      employee_id: empId ? Number(empId) : null,
+      requestType: sr.request_type || sr.requestType || 'other',
+      request_type: sr.request_type || sr.requestType || 'other',
+      title: sr.title || '',
+      description: sr.description || '',
+      punchDate: sr.punch_date || sr.punchDate || null,
+      punch_date: sr.punch_date || sr.punchDate || null,
+      suggestedPunchIn: sr.suggested_punch_in || sr.suggestedPunchIn || null,
+      suggested_punch_in: sr.suggested_punch_in || sr.suggestedPunchIn || null,
+      suggestedPunchOut: sr.suggested_punch_out || sr.suggestedPunchOut || null,
+      suggested_punch_out: sr.suggested_punch_out || sr.suggestedPunchOut || null,
+      status: sr.status || 'pending',
+      resolvedBy: sr.resolved_by || sr.resolvedBy || null,
+      resolved_by: sr.resolved_by || sr.resolvedBy || null,
+      resolutionNotes: sr.resolution_notes || sr.resolutionNotes || '',
+      resolution_notes: sr.resolution_notes || sr.resolutionNotes || '',
+      isArchived: sr.is_archived || sr.isArchived ? 1 : 0,
+      is_archived: sr.is_archived || sr.isArchived ? 1 : 0,
+      archivedAt: sr.archived_at || sr.archivedAt || null,
+      archived_at: sr.archived_at || sr.archivedAt || null,
+      assignedRole: sr.assigned_role || sr.assignedRole || 'support',
+      assigned_role: sr.assigned_role || sr.assignedRole || 'support',
+      assignedTo: sr.assigned_to || sr.assignedTo || null,
+      assigned_to: sr.assigned_to || sr.assignedTo || null,
+      createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
+      created_at: sr.created_at || sr.createdAt || new Date().toISOString(),
+      updatedAt: sr.updated_at || sr.updatedAt || new Date().toISOString(),
+      updated_at: sr.updated_at || sr.updatedAt || new Date().toISOString(),
+      syncedAt: new Date().toISOString()
+    };
+
+    if (firestoreDb) {
+      await firestoreDb.collection('service_requests').doc(String(id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`service_requests/${id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncServiceRequest error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Service Request Chat Message
+ */
+async function syncServiceRequestMessage(msg) {
+  if (!firebaseStatus.connected || !msg) return null;
+  try {
+    const id = msg.id || `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const reqId = msg.request_id || msg.requestId;
+    if (!reqId) return false;
+
+    const payload = {
+      id,
+      requestId: Number(reqId),
+      request_id: Number(reqId),
+      userId: msg.user_id || msg.userId || null,
+      user_id: msg.user_id || msg.userId || null,
+      senderName: msg.sender_name || msg.senderName || 'User',
+      sender_name: msg.sender_name || msg.senderName || 'User',
+      senderRole: msg.sender_role || msg.senderRole || 'employee',
+      sender_role: msg.sender_role || msg.senderRole || 'employee',
+      message: msg.message || '',
+      createdAt: msg.created_at || msg.createdAt || new Date().toISOString(),
+      created_at: msg.created_at || msg.createdAt || new Date().toISOString(),
+      syncedAt: new Date().toISOString()
+    };
+
+    if (firestoreDb) {
+      await firestoreDb.collection('service_request_messages').doc(String(id)).set(payload, { merge: true });
+      await firestoreDb.collection('service_requests').doc(String(reqId)).collection('messages').doc(String(id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`service_request_messages/${reqId}/${id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncServiceRequestMessage error:', err.message);
+    return false;
+  }
+}
+
+/**
  * Real-time sync: Audit Logs
  */
 async function syncAuditLog(log) {
   if (!firebaseStatus.connected || !log) return null;
   try {
-    const id = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const id = log.id ? String(log.id) : `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const payload = {
       id,
       companyId: log.companyId || log.company_id || null,
-      userId: log.userId || log.user_id,
+      company_id: log.companyId || log.company_id || null,
+      userId: log.userId || log.user_id || null,
+      user_id: log.userId || log.user_id || null,
       userName: log.userName || log.user_name || 'System',
+      user_name: log.userName || log.user_name || 'System',
       role: log.role || 'system',
       panel: log.panel || 'General',
-      action: log.action,
+      action: log.action || 'OPERATION',
       targetEntity: log.targetEntity || log.target_entity || '',
+      target_entity: log.targetEntity || log.target_entity || '',
       targetId: log.targetId || log.target_id || null,
+      target_id: log.targetId || log.target_id || null,
+      oldValues: log.oldValues || log.old_values_json || null,
+      old_values_json: typeof log.oldValues === 'object' ? JSON.stringify(log.oldValues) : (log.old_values_json || null),
+      newValues: log.newValues || log.new_values_json || null,
+      new_values_json: typeof log.newValues === 'object' ? JSON.stringify(log.newValues) : (log.new_values_json || null),
       reason: log.reason || '',
       ipAddress: log.ipAddress || log.ip_address || '127.0.0.1',
-      createdAt: log.createdAt || new Date().toISOString()
+      ip_address: log.ipAddress || log.ip_address || '127.0.0.1',
+      createdAt: log.createdAt || log.created_at || new Date().toISOString(),
+      created_at: log.createdAt || log.created_at || new Date().toISOString()
     };
     if (firestoreDb) {
       await firestoreDb.collection('audit_logs').doc(id).set(payload, { merge: true });
@@ -1306,7 +1461,55 @@ async function syncAllDatabaseToFirebase() {
       ticketsCount++;
     }
 
-    // 10. Sync company attendance summary reports
+    // 10. Sync employee devices (Device lock & MAC addresses)
+    let devicesCount = 0;
+    try {
+      const devices = db.prepare('SELECT * FROM employee_devices').all();
+      for (const dev of devices) {
+        await syncEmployeeDevice(dev);
+        devicesCount++;
+      }
+    } catch (e) {
+      console.warn('Sync employee devices notice:', e.message);
+    }
+
+    // 11. Sync service requests
+    let serviceRequestsCount = 0;
+    try {
+      const srs = db.prepare('SELECT * FROM service_requests').all();
+      for (const sr of srs) {
+        await syncServiceRequest(sr);
+        serviceRequestsCount++;
+      }
+    } catch (e) {
+      console.warn('Sync service requests notice:', e.message);
+    }
+
+    // 12. Sync service request messages
+    let srMessagesCount = 0;
+    try {
+      const srms = db.prepare('SELECT * FROM service_request_messages').all();
+      for (const msg of srms) {
+        await syncServiceRequestMessage(msg);
+        srMessagesCount++;
+      }
+    } catch (e) {
+      console.warn('Sync service request messages notice:', e.message);
+    }
+
+    // 13. Sync audit logs (system trail)
+    let auditLogsCount = 0;
+    try {
+      const logs = db.prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 500').all();
+      for (const l of logs) {
+        await syncAuditLog(l);
+        auditLogsCount++;
+      }
+    } catch (e) {
+      console.warn('Sync audit logs notice:', e.message);
+    }
+
+    // 14. Sync company attendance summary reports
     let reportsCount = 0;
     for (const c of companies) {
       await syncCompanyReports(c.id);
@@ -1328,7 +1531,11 @@ async function syncAllDatabaseToFirebase() {
       leavesCount,
       correctionsCount,
       ticketsCount,
-      message: `Successfully synchronized ${companiesCount} companies, ${employeesCount} employees, ${usersCount} user accounts, ${attendancesCount} attendance records, ${leavesCount} leave requests, ${correctionsCount} corrections, ${shiftsCount} shifts, ${geofencesCount} geofences, and ${reportsCount} reports to Firebase!`
+      devicesCount,
+      serviceRequestsCount,
+      srMessagesCount,
+      auditLogsCount,
+      message: `Successfully synchronized ${companiesCount} companies, ${employeesCount} employees, ${usersCount} user accounts, ${attendancesCount} attendance records, ${leavesCount} leave requests, ${correctionsCount} corrections, ${shiftsCount} shifts, ${geofencesCount} geofences, ${devicesCount} device locks, ${serviceRequestsCount} tickets, and ${reportsCount} reports to Firebase!`
     };
   } catch (err) {
     console.error('syncAllDatabaseToFirebase error:', err);
@@ -1693,6 +1900,10 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     let ticketsMap = new Map();
     let settingsMap = new Map();
     let modulesMap = new Map();
+    let devicesMap = new Map();
+    let serviceRequestsMap = new Map();
+    let serviceRequestMessagesMap = new Map();
+    let auditLogsMap = new Map();
 
     // 1. Fetch from Firestore if available
     if (firestoreDb) {
@@ -1723,6 +1934,10 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchFsCollection('support_tickets', ticketsMap);
       await fetchFsCollection('company_settings', settingsMap);
       await fetchFsCollection('company_modules', modulesMap);
+      await fetchFsCollection('employee_devices', devicesMap);
+      await fetchFsCollection('service_requests', serviceRequestsMap);
+      await fetchFsCollection('service_request_messages', serviceRequestMessagesMap);
+      await fetchFsCollection('audit_logs', auditLogsMap);
 
       try {
         const snap = await firestoreDb.collection('attendance_punches').limit(1000).get();
@@ -1778,6 +1993,10 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchRtDbCollection('support_tickets', ticketsMap);
       await fetchRtDbCollection('company_settings', settingsMap);
       await fetchRtDbCollection('company_modules', modulesMap);
+      await fetchRtDbCollection('employee_devices', devicesMap);
+      await fetchRtDbCollection('service_requests', serviceRequestsMap);
+      await fetchRtDbCollection('service_request_messages', serviceRequestMessagesMap);
+      await fetchRtDbCollection('audit_logs', auditLogsMap);
     }
 
     // Strict 1:1 Mirror: Purge existing local tenant data before restore so that local database
@@ -1789,6 +2008,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     let restoredUsers = 0;
     let restoredEmployees = 0;
     let restoredAttendances = 0;
+    let restoredDevices = 0;
+    let restoredServiceRequests = 0;
+    let restoredAuditLogs = 0;
 
     const companyIdMap = new Map();
     const userIdMap = new Map();
@@ -2781,6 +3003,179 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
       }
+
+      // Phase 11: Restore Service Requests (Company & Employee tickets)
+      const serviceRequestIdMap = new Map();
+      for (const [_, sr] of serviceRequestsMap) {
+        if (!sr) continue;
+        let rawCompId = sr.companyId || sr.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+
+        let rawEmpId = sr.employeeId || sr.employee_id;
+        let empId = rawEmpId ? (employeeIdMap.get(String(rawEmpId)) || Number(rawEmpId)) : null;
+
+        let rawResolvedBy = sr.resolvedBy || sr.resolved_by;
+        let resolvedBy = rawResolvedBy ? (userIdMap.get(String(rawResolvedBy)) || Number(rawResolvedBy)) : null;
+
+        const title = (sr.title || '').trim();
+        if (!title || !compId || !empId) continue;
+
+        const compExists = db.prepare('SELECT id FROM companies WHERE id = ?').get(compId);
+        const empExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(empId);
+        if (!compExists || !empExists) continue;
+
+        const reqType = sr.requestType || sr.request_type || 'other';
+        const description = sr.description || '';
+        const punchDate = sr.punchDate || sr.punch_date || null;
+        const sugIn = sr.suggestedPunchIn || sr.suggested_punch_in || null;
+        const sugOut = sr.suggestedPunchOut || sr.suggested_punch_out || null;
+        const status = sr.status || 'pending';
+        const resNotes = sr.resolutionNotes || sr.resolution_notes || null;
+        const isArchived = (sr.isArchived !== undefined ? sr.isArchived : sr.is_archived) ? 1 : 0;
+        const archivedAt = sr.archivedAt || sr.archived_at || null;
+        const assignedRole = sr.assignedRole || sr.assigned_role || 'support';
+        const assignedTo = sr.assignedTo || sr.assigned_to || null;
+        const createdAt = sr.createdAt || sr.created_at || new Date().toISOString();
+        const updatedAt = sr.updatedAt || sr.updated_at || new Date().toISOString();
+
+        let newSrId = null;
+        const existingSr = sr.id ? db.prepare('SELECT id FROM service_requests WHERE id = ?').get(sr.id) : null;
+        if (existingSr) {
+          db.prepare(`
+            UPDATE service_requests SET
+              company_id = ?, employee_id = ?, request_type = ?, title = ?, description = ?,
+              punch_date = ?, suggested_punch_in = ?, suggested_punch_out = ?, status = ?,
+              resolved_by = ?, resolution_notes = ?, is_archived = ?, archived_at = ?,
+              assigned_role = ?, assigned_to = ?, updated_at = ?
+            WHERE id = ?
+          `).run(compId, empId, reqType, title, description, punchDate, sugIn, sugOut, status, resolvedBy, resNotes, isArchived, archivedAt, assignedRole, assignedTo, updatedAt, existingSr.id);
+          newSrId = existingSr.id;
+        } else if (sr.id) {
+          try {
+            db.prepare(`
+              INSERT INTO service_requests (id, company_id, employee_id, request_type, title, description, punch_date, suggested_punch_in, suggested_punch_out, status, resolved_by, resolution_notes, is_archived, archived_at, assigned_role, assigned_to, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(sr.id, compId, empId, reqType, title, description, punchDate, sugIn, sugOut, status, resolvedBy, resNotes, isArchived, archivedAt, assignedRole, assignedTo, createdAt, updatedAt);
+            newSrId = sr.id;
+          } catch (e) {
+            const insRes = db.prepare(`
+              INSERT INTO service_requests (company_id, employee_id, request_type, title, description, punch_date, suggested_punch_in, suggested_punch_out, status, resolved_by, resolution_notes, is_archived, archived_at, assigned_role, assigned_to, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(compId, empId, reqType, title, description, punchDate, sugIn, sugOut, status, resolvedBy, resNotes, isArchived, archivedAt, assignedRole, assignedTo, createdAt, updatedAt);
+            newSrId = insRes.lastInsertRowid;
+          }
+        } else {
+          const insRes = db.prepare(`
+            INSERT INTO service_requests (company_id, employee_id, request_type, title, description, punch_date, suggested_punch_in, suggested_punch_out, status, resolved_by, resolution_notes, is_archived, archived_at, assigned_role, assigned_to, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(compId, empId, reqType, title, description, punchDate, sugIn, sugOut, status, resolvedBy, resNotes, isArchived, archivedAt, assignedRole, assignedTo, createdAt, updatedAt);
+          newSrId = insRes.lastInsertRowid;
+        }
+
+        if (sr.id && newSrId) {
+          serviceRequestIdMap.set(String(sr.id), newSrId);
+        }
+        restoredServiceRequests++;
+      }
+
+      // Phase 12: Restore Service Request Messages
+      for (const [_, msg] of serviceRequestMessagesMap) {
+        if (!msg) continue;
+        const oldReqId = msg.requestId || msg.request_id;
+        const newReqId = oldReqId ? (serviceRequestIdMap.get(String(oldReqId)) || Number(oldReqId)) : null;
+        if (!newReqId) continue;
+
+        const reqExists = db.prepare('SELECT id FROM service_requests WHERE id = ?').get(newReqId);
+        if (!reqExists) continue;
+
+        let uId = msg.userId || msg.user_id;
+        if (uId) uId = userIdMap.get(String(uId)) || Number(uId);
+        if (!uId || !db.prepare('SELECT id FROM users WHERE id = ?').get(uId)) {
+          uId = db.prepare("SELECT id FROM users WHERE role_id = (SELECT id FROM roles WHERE name = 'super_admin') OR username = 'adminn' LIMIT 1").get()?.id || 1;
+        }
+
+        const senderName = msg.senderName || msg.sender_name || 'User';
+        const senderRole = msg.senderRole || msg.sender_role || 'employee';
+        const messageText = msg.message || '';
+        const createdAt = msg.createdAt || msg.created_at || new Date().toISOString();
+
+        if (messageText) {
+          db.prepare(`
+            INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).run(newReqId, uId, senderName, senderRole, messageText, createdAt);
+        }
+      }
+
+      // Phase 13: Restore Employee Devices (Device Lock & MAC Address Binding)
+      for (const [_, dev] of devicesMap) {
+        if (!dev) continue;
+        let rawUserId = dev.userId || dev.user_id;
+        let uId = rawUserId ? (userIdMap.get(String(rawUserId)) || Number(rawUserId)) : null;
+        if (!uId) continue;
+
+        const userExists = db.prepare('SELECT id FROM users WHERE id = ?').get(uId);
+        if (!userExists) continue;
+
+        const devId = dev.deviceId || dev.device_id || `dev_${uId}`;
+        const macAddr = dev.macAddress || dev.mac_address || null;
+        const devType = dev.deviceType || dev.device_type || 'Web Browser';
+        const devName = dev.deviceName || dev.device_name || 'Default Device';
+        const status = dev.status || 'bound';
+        const boundIp = dev.boundIp || dev.bound_ip || '127.0.0.1';
+        const regAt = dev.registeredAt || dev.registered_at || new Date().toISOString();
+        const lastLogin = dev.lastLoginAt || dev.last_login_at || new Date().toISOString();
+
+        try {
+          db.prepare(`
+            INSERT INTO employee_devices (user_id, device_id, mac_address, device_type, device_name, status, bound_ip, registered_at, last_login_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              device_id = excluded.device_id,
+              mac_address = excluded.mac_address,
+              device_type = excluded.device_type,
+              device_name = excluded.device_name,
+              status = excluded.status,
+              bound_ip = excluded.bound_ip,
+              registered_at = excluded.registered_at,
+              last_login_at = excluded.last_login_at
+          `).run(uId, devId, macAddr, devType, devName, status, boundIp, regAt, lastLogin);
+          restoredDevices++;
+        } catch (e) {
+          console.warn('Failed to restore device:', e.message);
+        }
+      }
+
+      // Phase 14: Restore Audit Logs (System Trail)
+      for (const [_, l] of auditLogsMap) {
+        if (!l) continue;
+        let rawCompId = l.companyId || l.company_id || null;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+
+        let rawUserId = l.userId || l.user_id;
+        let uId = rawUserId ? (userIdMap.get(String(rawUserId)) || Number(rawUserId)) : 1;
+        if (!db.prepare('SELECT id FROM users WHERE id = ?').get(uId)) uId = 1;
+
+        const userName = l.userName || l.user_name || 'System';
+        const role = l.role || 'system';
+        const panel = l.panel || 'General';
+        const action = l.action || 'OPERATION';
+        const targetEntity = l.targetEntity || l.target_entity || '';
+        const targetId = l.targetId || l.target_id || null;
+        const oldJson = l.old_values_json || (l.oldValues ? (typeof l.oldValues === 'string' ? l.oldValues : JSON.stringify(l.oldValues)) : null);
+        const newJson = l.new_values_json || (l.newValues ? (typeof l.newValues === 'string' ? l.newValues : JSON.stringify(l.newValues)) : null);
+        const reason = l.reason || 'Restored audit record';
+        const ipAddress = l.ipAddress || l.ip_address || '127.0.0.1';
+        const createdAt = l.createdAt || l.created_at || new Date().toISOString();
+
+        try {
+          db.prepare(`
+            INSERT INTO audit_logs (company_id, user_id, user_name, role, panel, action, target_entity, target_id, old_values_json, new_values_json, reason, ip_address, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(compId, uId, userName, role, panel, action, targetEntity, targetId ? String(targetId) : null, oldJson, newJson, reason, ipAddress, createdAt);
+          restoredAuditLogs++;
+        } catch (e) {}
+      }
     });
 
     db.pragma('foreign_keys = OFF');
@@ -2802,13 +3197,27 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       console.warn('Post-restore database sanitation notice:', e.message);
     }
 
+    // Auto-archive resolved/closed service requests older than 1 day
+    try {
+      db.prepare(`
+        UPDATE service_requests
+        SET is_archived = 1, archived_at = CURRENT_TIMESTAMP
+        WHERE is_archived = 0
+          AND status IN ('resolved', 'closed')
+          AND datetime(updated_at, '+1 day') <= datetime('now')
+      `).run();
+    } catch (e) {}
+
     return {
       success: true,
       restoredCompanies,
       restoredUsers,
       restoredEmployees,
       restoredAttendances,
-      message: `Successfully recovered all data from Firebase: ${restoredCompanies} companies, ${restoredEmployees} employees, ${restoredUsers} user accounts, and ${restoredAttendances} attendance records. All data is restored to the website and accounts can immediately log in!`
+      restoredDevices,
+      restoredServiceRequests,
+      restoredAuditLogs,
+      message: `Successfully recovered all data from Firebase: ${restoredCompanies} companies, ${restoredEmployees} employees, ${restoredUsers} user accounts, ${restoredAttendances} attendance records, ${restoredDevices} device locks, ${restoredServiceRequests} tickets, and ${restoredAuditLogs} audit logs. All data is restored to the website and accounts can immediately log in!`
     };
   } catch (err) {
     console.error('fetchAllFromFirebaseAndRestoreToDb error:', err);
@@ -2838,6 +3247,9 @@ module.exports = {
   syncCompanySettings,
   syncCompanyModules,
   syncSupportTicket,
+  syncServiceRequest,
+  syncServiceRequestMessage,
+  syncEmployeeDevice,
   syncAuditLog,
   syncCompany,
   syncEmployee,

@@ -232,6 +232,46 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [setAsFavicon, setSetAsFavicon] = useState(true);
 
+  // Manager Attendance Punch policy state
+  const [managerPunchEnabled, setManagerPunchEnabled] = useState(
+    company?.modules?.manager_punch === true
+  );
+  const [managerPunchUpdating, setManagerPunchUpdating] = useState(false);
+
+  useEffect(() => {
+    if (company?.modules?.manager_punch !== undefined) {
+      setManagerPunchEnabled(company.modules.manager_punch === true);
+    }
+  }, [company?.modules?.manager_punch]);
+
+  const handleToggleManagerPunch = async (newVal) => {
+    if (!company?.id) return;
+    setManagerPunchUpdating(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await apiRequest(`/companies/${company.id}/manager-punch`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: newVal })
+      });
+      setManagerPunchEnabled(res.enabled);
+      setSuccess(res.message || 'Manager attendance punch setting updated successfully.');
+      if (onUpdateCompany) {
+        onUpdateCompany({
+          ...company,
+          modules: {
+            ...company.modules,
+            manager_punch: res.enabled
+          }
+        });
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to update manager attendance punch setting.');
+    } finally {
+      setManagerPunchUpdating(false);
+    }
+  };
+
   const fetchData = async () => {
     setLoading(true);
     setError('');
@@ -1195,6 +1235,31 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   <Plus className="w-4 h-4" />
                   <span>Add Personnel / Staff</span>
                 </button>
+
+                {/* Manager Punch Quick Control */}
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-300 px-3 py-1.5">
+                  <span className="text-[11px] font-bold text-slate-700">Manager Punch:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleManagerPunch(!managerPunchEnabled)}
+                    disabled={managerPunchUpdating}
+                    className={`px-2.5 py-1 text-[11px] font-bold flex items-center gap-1.5 transition-all ${
+                      managerPunchEnabled
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                        : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                    }`}
+                    title="Enable or disable attendance punching for manager accounts"
+                  >
+                    {managerPunchUpdating ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : managerPunchEnabled ? (
+                      <CheckCircle2 className="w-3 h-3 text-white" />
+                    ) : (
+                      <Ban className="w-3 h-3 text-slate-500" />
+                    )}
+                    <span>{managerPunchEnabled ? 'Punch Allowed' : 'Punch Disabled'}</span>
+                  </button>
+                </div>
               </div>
 
               {/* Search Bar & Search Button placed directly beside */}
@@ -2792,6 +2857,62 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 </button>
               </div>
             </form>
+          </div>
+
+          {/* Manager Attendance Punch Policy Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4 lg:col-span-3">
+            <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-sky-600" />
+                <h3 className="text-sm font-bold text-slate-900">Manager Attendance Punch Policy</h3>
+              </div>
+              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                managerPunchEnabled
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : 'bg-amber-50 text-amber-700 border-amber-200'
+              }`}>
+                {managerPunchEnabled ? 'Punch Enabled for Managers' : 'Punch Disabled for Managers'}
+              </span>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-slate-800">
+                  Allow Reporting Managers to Record Attendance Punches
+                </h4>
+                <p className="text-xs text-slate-500 max-w-2xl">
+                  When enabled, reporting manager accounts have access to the GPS Attendance Punch In / Punch Out widget on their dashboard and their daily attendance is tracked in logs. When disabled, manager accounts can only approve and supervise their team, without individual punch requirements.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleToggleManagerPunch(!managerPunchEnabled)}
+                disabled={managerPunchUpdating}
+                className={`px-5 py-2.5 rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-2 shrink-0 ${
+                  managerPunchEnabled
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                }`}
+              >
+                {managerPunchUpdating ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Updating...</span>
+                  </>
+                ) : managerPunchEnabled ? (
+                  <>
+                    <Ban className="w-3.5 h-3.5" />
+                    <span>Disable Manager Punch</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Enable Manager Punch</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Subscription Plan Expiry Status Card */}
