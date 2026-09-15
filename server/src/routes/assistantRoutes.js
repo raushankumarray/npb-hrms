@@ -17,6 +17,26 @@ function format12Hr(time24) {
   return `${String(h).padStart(2, '0')}:${m} ${ampm}`;
 }
 
+// Helper: Extract clean human name (STRICTLY NEVER username, phone, or email)
+function getCleanDisplayName(user, isHindi) {
+  if (!user) return isHindi ? 'साथी' : 'Colleague';
+  let raw = user.full_name || user.fullName || '';
+
+  // Discard if it contains email, phone number, or system codes
+  if (raw.includes('@') || /^\+?[\d\s-]{7,}$/.test(raw.trim()) || /^(emp|usr|admin|user|staff)[_\d]/i.test(raw.trim())) {
+    raw = '';
+  }
+
+  // Strip non-letter characters
+  const clean = raw.replace(/[0-9_@.#$%&*!?/\\()\-]/g, '').trim();
+  if (clean) return clean;
+
+  const role = user.role_name || user.role;
+  if (role === 'manager') return isHindi ? 'मैनेजर' : 'Manager';
+  if (role === 'company_admin') return isHindi ? 'एडमिन' : 'Administrator';
+  return isHindi ? 'साथी' : 'Colleague';
+}
+
 // Helper: Normalize and parse date strings
 function parseDateStrings(input) {
   if (!input || typeof input !== 'string') return null;
@@ -160,11 +180,26 @@ router.post('/chat', verifyAuth, async (req, res) => {
     }
   }
 
-  let activeState = conversationState.actionState || null;
+  let activeState = (conversationState && conversationState.actionState) ? conversationState.actionState : null;
 
-  // 2. Action Flow: PUNCH IN / PUNCH OUT (with confirmation)
-  const isPunchInIntent = lowerMsg.includes('punch in') || lowerMsg.includes('punch-in') || lowerMsg.includes('पंच इन') || lowerMsg.includes('mark in') || lowerMsg.includes('start shift');
-  const isPunchOutIntent = lowerMsg.includes('punch out') || lowerMsg.includes('punch-out') || lowerMsg.includes('पंच आउट') || lowerMsg.includes('mark out') || lowerMsg.includes('end shift');
+  // Query Intent Guards (strictly prevent informational questions from triggering action modals)
+  const isQuestionOrStatus = lowerMsg.includes('time') || lowerMsg.includes('kab') || lowerMsg.includes('kahan') ||
+                             lowerMsg.includes('location') || lowerMsg.includes('status') || lowerMsg.includes('kya') ||
+                             lowerMsg.includes('what') || lowerMsg.includes('when') || lowerMsg.includes('where') ||
+                             lowerMsg.includes('history') || lowerMsg.includes('record') || lowerMsg.includes('did i') ||
+                             lowerMsg.includes('hours') || lowerMsg.includes('ghante') || lowerMsg.includes('kitna') ||
+                             lowerMsg.includes('check') || lowerMsg.includes('dikhao') || lowerMsg.includes('list');
+
+  // 2. Action Flow: PUNCH IN / PUNCH OUT (Strictly Action Confirmation only)
+  const isPunchInIntent = !isQuestionOrStatus && (
+    lowerMsg.includes('punch in') || lowerMsg.includes('punch-in') || lowerMsg.includes('punchin') ||
+    lowerMsg.includes('पंच इन') || lowerMsg.includes('mark in') || lowerMsg.includes('start shift')
+  );
+
+  const isPunchOutIntent = !isQuestionOrStatus && (
+    lowerMsg.includes('punch out') || lowerMsg.includes('punch-out') || lowerMsg.includes('punchout') ||
+    lowerMsg.includes('पंच आउट') || lowerMsg.includes('mark out') || lowerMsg.includes('end shift')
+  );
 
   if (isPunchInIntent && role === 'employee') {
     return res.json({
@@ -186,9 +221,15 @@ router.post('/chat', verifyAuth, async (req, res) => {
     });
   }
 
-  // 3. Action Flow: SUPPORT TICKET CREATION
-  const ticketKeywords = ['ticket', 'raise ticket', 'create ticket', 'complain', 'shikayat', 'support ticket', 'help ticket', 'टिकट'];
-  const wantsTicket = ticketKeywords.some(kw => lowerMsg.includes(kw));
+  // 3. Action Flow: SUPPORT TICKET CREATION (Only when creating a ticket, not querying tickets)
+  const isTicketQuery = lowerMsg.includes('status') || lowerMsg.includes('my ticket') || lowerMsg.includes('mera ticket') ||
+                        lowerMsg.includes('check ticket') || lowerMsg.includes('list') || lowerMsg.includes('dikhao') ||
+                        lowerMsg.includes('open ticket');
+  const ticketActionKeywords = ['raise ticket', 'create ticket', 'open ticket', 'complain', 'shikayat', 'support ticket', 'help ticket', 'टिकट बनाओ', 'शिकायत दर्ज'];
+  const wantsTicket = !isTicketQuery && (
+    ticketActionKeywords.some(kw => lowerMsg.includes(kw)) ||
+    lowerMsg === 'ticket' || lowerMsg === 'टिकट'
+  );
 
   if (wantsTicket && !activeState) {
     return res.json({
@@ -294,9 +335,10 @@ router.post('/chat', verifyAuth, async (req, res) => {
     }
   }
 
-  // 4. Action Flow: ATTENDANCE CORRECTION
-  const correctionKeywords = ['attendance correction', 'punch correction', 'correction request', 'करेक्शन', 'पंच सुधार', 'punch theek'];
-  const wantsCorrection = correctionKeywords.some(kw => lowerMsg.includes(kw));
+  // 4. Action Flow: ATTENDANCE CORRECTION (Action flow only, not status query)
+  const isCorrectionQuery = lowerMsg.includes('status') || lowerMsg.includes('approve') || lowerMsg.includes('kya hua') || lowerMsg.includes('check');
+  const correctionKeywords = ['attendance correction', 'punch correction', 'correction request', 'करेक्शन करो', 'पंच सुधार', 'punch theek'];
+  const wantsCorrection = !isCorrectionQuery && correctionKeywords.some(kw => lowerMsg.includes(kw));
 
   if (wantsCorrection && !activeState && role === 'employee') {
     return res.json({
@@ -417,9 +459,17 @@ router.post('/chat', verifyAuth, async (req, res) => {
     }
   }
 
-  // 5. Action Flow: LEAVE APPLICATION
-  const leaveKeywords = ['apply leave', 'apply my leave', 'chutti', 'leave chahiye', 'take leave', 'leave request', 'need leave', 'chhutti', 'छुट्टी'];
-  const wantsLeave = leaveKeywords.some(kw => lowerMsg.includes(kw));
+  // 5. Action Flow: LEAVE APPLICATION (Action flow only, not balance or status query)
+  const isLeaveQuery = lowerMsg.includes('balance') || lowerMsg.includes('status') || lowerMsg.includes('kitni') ||
+                       lowerMsg.includes('kitne') || lowerMsg.includes('bachi') || lowerMsg.includes('bache') ||
+                       lowerMsg.includes('available') || lowerMsg.includes('approve') || lowerMsg.includes('quota') ||
+                       lowerMsg.includes('शेष') || lowerMsg.includes('बैलेंस') || lowerMsg.includes('remaining');
+
+  const leaveActionKeywords = ['apply leave', 'apply my leave', 'leave chahiye', 'take leave', 'leave request', 'need leave', 'chutti chahiye', 'chhutti chahiye', 'छुट्टी अप्लाई', 'छुट्टी चाहिए', 'छुट्टी लेनी है'];
+  const wantsLeave = !isLeaveQuery && (
+    leaveActionKeywords.some(kw => lowerMsg.includes(kw)) ||
+    lowerMsg === 'apply leave' || lowerMsg === 'apply my leave' || lowerMsg === 'chutti' || lowerMsg === 'छुट्टी'
+  );
 
   if (wantsLeave && !activeState && role === 'employee') {
     const datesFound = parseDateStrings(rawMsg);
@@ -583,55 +633,223 @@ router.post('/chat', verifyAuth, async (req, res) => {
   // -------------------------------------------------------------
   // A. EMPLOYEE INTENTS
   // -------------------------------------------------------------
-  if (role === 'employee') {
-    // 1. Attendance & Punch Status Query
-    if (lowerMsg.includes('punch') || lowerMsg.includes('attendance') || lowerMsg.includes('present') || lowerMsg.includes('in time') || lowerMsg.includes('aaj ka') || lowerMsg.includes('status') || lowerMsg.includes('पंच')) {
-      const todayStr = new Date().toISOString().split('T')[0];
-      const todayRecord = db.prepare(`
-        SELECT * FROM attendance_records 
-        WHERE employee_id = ? AND date = ?
-      `).get(employeeId, todayStr);
+  // 7. Contextual Data Analysis by Role & Intent
+  const cleanDisplayName = getCleanDisplayName(user, isHindi);
 
-      if (!todayRecord || (!todayRecord.punch_in_time && !todayRecord.punch_out_time)) {
+  // -------------------------------------------------------------
+  // A. EMPLOYEE INTENTS (Accurate Live Database Analysis)
+  // -------------------------------------------------------------
+  if (role === 'employee') {
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // 1. Specific Punch-In Time Query
+    const isPunchInQuery = lowerMsg.includes('punch in time') || lowerMsg.includes('punch-in time') ||
+      lowerMsg.includes('kab punch in') || lowerMsg.includes('in time kya') || lowerMsg.includes('in time') ||
+      (lowerMsg.includes('punch in') && (lowerMsg.includes('time') || lowerMsg.includes('kab') || lowerMsg.includes('kahan') || lowerMsg.includes('where') || lowerMsg.includes('location') || lowerMsg.includes('status'))) ||
+      (lowerMsg.includes('punched in') && lowerMsg.includes('time')) ||
+      (lowerMsg.includes('time') && lowerMsg.includes('punch in'));
+
+    if (isPunchInQuery) {
+      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
+      if (todayRec && todayRec.punch_in_time) {
+        const inFormatted = format12Hr(todayRec.punch_in_time);
+        const loc = todayRec.punch_in_location || 'GPS Verified Site';
+        const coords = (todayRec.punch_in_lat && todayRec.punch_in_lng) ? `(${Number(todayRec.punch_in_lat).toFixed(4)}, ${Number(todayRec.punch_in_lng).toFixed(4)})` : '';
         return res.json({
           reply: isHindi
-            ? `📅 **आज की अटेंडेंस (${todayStr})**:\n\nआपने आज अभी तक पंच-इन नहीं किया है।\nआप मुझसे *"Punch In"* बोलकर सीधे यहाँ से GPS पंच-इन कर सकते हैं! ⏱️`
-            : `📅 **Today's Attendance (${todayStr})**:\n\nYou have not punched in yet today.\nYou can tell me *"Punch In"* to record attendance directly here with verified GPS! ⏱️`,
+            ? `⏱️ **आज का पंच-इन विवरण (${todayStr})**:\n\n• **पंच-इन समय**: \`${inFormatted}\`\n• **स्थान**: ${loc} ${coords}\n• **स्थिति**: \`${todayRec.status || 'Present'}\` ✅`
+            : `⏱️ **Your Punch-In Record for Today (${todayStr})**:\n\n• **Punch-In Time**: \`${inFormatted}\`\n• **Location**: ${loc} ${coords}\n• **Status**: \`${todayRec.status || 'Present'}\` ✅`,
+          action: 'PUNCH_IN_DETAILS'
+        });
+      } else {
+        return res.json({
+          reply: isHindi
+            ? `आपने आज (${todayStr}) अभी तक **पंच-इन** नहीं किया है। क्या आप अभी पंच-इन करना चाहते हैं? *"Punch In"* बोलें या कन्फर्म करें। ⏱️`
+            : `You have not recorded your **Punch-In** yet today (${todayStr}). Would you like to punch in now? Just say *"Punch In"*. ⏱️`,
           action: 'VIEW_PUNCH'
         });
       }
+    }
 
-      const inTime = todayRecord.punch_in_time ? format12Hr(todayRecord.punch_in_time) : '--:--';
-      const outTime = todayRecord.punch_out_time ? format12Hr(todayRecord.punch_out_time) : (isHindi ? 'अभी तक पंच-आउट नहीं हुआ' : 'Not Punched Out Yet');
-      const inLoc = todayRecord.punch_in_location || 'GPS Verified Site';
-      const outLoc = todayRecord.punch_out_location || '--';
-      const hours = todayRecord.total_hours || (todayRecord.punch_in_time && !todayRecord.punch_out_time ? 'In Progress' : '0.0');
-      const attStatus = todayRecord.status || 'Present';
+    // 2. Specific Punch-Out Time Query
+    const isPunchOutQuery = lowerMsg.includes('punch out time') || lowerMsg.includes('punch-out time') ||
+      lowerMsg.includes('kab punch out') || lowerMsg.includes('out time kya') || lowerMsg.includes('out time') ||
+      (lowerMsg.includes('punch out') && (lowerMsg.includes('time') || lowerMsg.includes('kab') || lowerMsg.includes('kahan') || lowerMsg.includes('where') || lowerMsg.includes('location') || lowerMsg.includes('status'))) ||
+      (lowerMsg.includes('punched out') && lowerMsg.includes('time')) ||
+      (lowerMsg.includes('time') && lowerMsg.includes('punch out'));
+
+    if (isPunchOutQuery) {
+      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
+      if (todayRec && todayRec.punch_out_time) {
+        const outFormatted = format12Hr(todayRec.punch_out_time);
+        const loc = todayRec.punch_out_location || 'GPS Verified Site';
+        return res.json({
+          reply: isHindi
+            ? `⏱️ **आज का पंच-आउट विवरण (${todayStr})**:\n\n• **पंच-आउट समय**: \`${outFormatted}\`\n• **स्थान**: ${loc}\n• **कुल कार्य अवधि**: \`${todayRec.total_hours || 0} hrs\` ✅\n\nआपकी आज की शिफ्ट सफलतापूर्वक पूर्ण हो चुकी है!`
+            : `⏱️ **Your Punch-Out Record for Today (${todayStr})**:\n\n• **Punch-Out Time**: \`${outFormatted}\`\n• **Location**: ${loc}\n• **Total Hours**: \`${todayRec.total_hours || 0} hrs\` ✅\n\nYour shift has ended successfully!`,
+          action: 'PUNCH_OUT_DETAILS'
+        });
+      } else if (todayRec && todayRec.punch_in_time) {
+        return res.json({
+          reply: isHindi
+            ? `आपने आज **पंच-इन** किया हुआ है (${format12Hr(todayRec.punch_in_time)}), लेकिन अभी तक **पंच-आउट नहीं किया है**। शिफ्ट समाप्त होने पर *"Punch Out"* बोलें। ⏱️`
+            : `You punched in at ${format12Hr(todayRec.punch_in_time)} today, but have **not punched out yet**. Say *"Punch Out"* when your shift concludes. ⏱️`,
+          action: 'VIEW_PUNCH'
+        });
+      } else {
+        return res.json({
+          reply: isHindi
+            ? `आपने आज अभी तक पंच-इन ही नहीं किया है, इसलिए पंच-आउट उपलब्ध नहीं है।`
+            : `You haven't punched in yet today, so no punch-out record is active.`,
+          action: 'VIEW_PUNCH'
+        });
+      }
+    }
+
+    // 3. Working Hours / Duration Analysis (Live calculation)
+    if (lowerMsg.includes('hours') || lowerMsg.includes('ghante') || lowerMsg.includes('घंटे') || lowerMsg.includes('घंटा') || lowerMsg.includes('कार्य समय') || lowerMsg.includes('duration') || lowerMsg.includes('kitna time') || lowerMsg.includes('work time')) {
+      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
+      const empShift = db.prepare(`
+        SELECT s.working_hours, s.start_time, s.end_time 
+        FROM employees e LEFT JOIN shifts s ON e.shift_id = s.id 
+        WHERE e.id = ?
+      `).get(employeeId);
+      const targetHours = empShift?.working_hours || 8.0;
+
+      if (!todayRec || !todayRec.punch_in_time) {
+        return res.json({
+          reply: isHindi
+            ? `आपने आज अभी तक पंच-इन नहीं किया है, इसलिए कार्य घंटे 0.0 hrs हैं। निर्धारित शिफ्ट लक्ष्य: ${targetHours} hrs।`
+            : `You haven't punched in yet today, so active hours are 0.0 hrs. Target shift duration: ${targetHours} hrs.`,
+          action: 'HOURS_ANALYSIS'
+        });
+      }
+
+      if (todayRec.punch_out_time) {
+        const hrs = todayRec.total_hours || 0;
+        return res.json({
+          reply: isHindi
+            ? `⏱️ **आज के कुल कार्य घंटे (${todayStr})**:\n\n• **कुल अवधि**: \`${hrs} hrs\`\n• **शिफ्ट लक्ष्य**: ${targetHours} hrs\n• **स्थिति**: ${Number(hrs) >= targetHours ? 'लक्ष्य पूरा हुआ ✅' : 'हाफ डे / आंशिक शिफ्ट ⚠️'}`
+            : `⏱️ **Your Completed Working Hours Today (${todayStr})**:\n\n• **Total Duration**: \`${hrs} hrs\`\n• **Shift Target**: ${targetHours} hrs\n• **Status**: ${Number(hrs) >= targetHours ? 'Target Achieved ✅' : 'Partial Shift / Half Day ⚠️'}`,
+          action: 'HOURS_ANALYSIS'
+        });
+      }
+
+      // Calculate live working hours since punch-in
+      const inParts = todayRec.punch_in_time.split(':');
+      const inDate = new Date();
+      inDate.setHours(parseInt(inParts[0], 10), parseInt(inParts[1], 10), parseInt(inParts[2] || 0, 10), 0);
+      const now = new Date();
+      const diffMs = Math.max(0, now - inDate);
+      const elapsedMinsTotal = Math.floor(diffMs / 60000);
+      const elHours = Math.floor(elapsedMinsTotal / 60);
+      const elMins = elapsedMinsTotal % 60;
+      const elDecimal = (elapsedMinsTotal / 60).toFixed(1);
 
       return res.json({
         reply: isHindi
-          ? `📊 **आपका आज का अटेंडेंस सारांश (${todayStr})**:\n\n` +
-            `• **स्थिति (Status)**: \`${attStatus}\`\n` +
-            `• **पंच-इन समय**: ${inTime}\n` +
-            `• **पंच-इन स्थान**: ${inLoc}\n` +
-            `• **पंच-आउट समय**: ${outTime}\n` +
-            (todayRecord.punch_out_time ? `• **पंच-आउट स्थान**: ${outLoc}\n` : '') +
-            `• **कार्य घंटे**: ${hours} hrs\n\n` +
-            (!todayRecord.punch_out_time ? `💡 *शिफ्ट समाप्त होने पर "Punch Out" बोलें या मुख्य बटन दबाएं।*` : `✅ *शिफ्ट पूर्ण हो चुकी है!*`)
-          : `📊 **Your Attendance Summary for Today (${todayStr})**:\n\n` +
-            `• **Status**: \`${attStatus}\`\n` +
-            `• **Punch-In Time**: ${inTime}\n` +
-            `• **Punch-In Location**: ${inLoc}\n` +
-            `• **Punch-Out Time**: ${outTime}\n` +
-            (todayRecord.punch_out_time ? `• **Punch-Out Location**: ${outLoc}\n` : '') +
-            `• **Working Hours**: ${hours} hrs\n\n` +
-            (!todayRecord.punch_out_time ? `💡 *Remember to say "Punch Out" or click the punch-out button when ending your shift.*` : `✅ *Shift completed successfully!*`),
-        action: 'ATTENDANCE_SUMMARY'
+          ? `⏱️ **लाइव कार्य अवधि (Live Working Duration)**:\n\n• **पंच-इन**: ${format12Hr(todayRec.punch_in_time)}\n• **बीता हुआ समय**: \`${elHours} घंटे ${elMins} मिनट\` (${elDecimal} hrs)\n• **शिफ्ट लक्ष्य**: ${targetHours} hrs\n• **शिफ्ट स्थिति**: \`जारी है (In Progress)\` ⏳`
+          : `⏱️ **Live Working Hours Elapsed**:\n\n• **Punched In**: ${format12Hr(todayRec.punch_in_time)}\n• **Time Elapsed**: \`${elHours} hrs ${elMins} mins\` (${elDecimal} hrs)\n• **Shift Target**: ${targetHours} hrs\n• **Shift Status**: \`Active & In Progress\` ⏳`,
+        action: 'HOURS_ANALYSIS'
       });
     }
 
-    // 2. Leave Balance Query
-    if (lowerMsg.includes('leave balance') || lowerMsg.includes('chutti kitni') || lowerMsg.includes('balance') || lowerMsg.includes('casual leave') || lowerMsg.includes('earned leave') || lowerMsg.includes('अवकाश शेष')) {
+    // 4. Late Arrival / Punctuality Query
+    if (lowerMsg.includes('late') || lowerMsg.includes('deri') || lowerMsg.includes('punctual') || lowerMsg.includes('time par tha')) {
+      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
+      const empShift = db.prepare(`
+        SELECT s.name, s.start_time, s.grace_time_mins 
+        FROM employees e LEFT JOIN shifts s ON e.shift_id = s.id 
+        WHERE e.id = ?
+      `).get(employeeId);
+
+      if (!todayRec || !todayRec.punch_in_time) {
+        return res.json({
+          reply: isHindi ? `आपने आज अभी तक पंच-इन नहीं किया है।` : `You haven't punched in yet today.`,
+          action: 'PUNCTUALITY'
+        });
+      }
+
+      const shiftStart = empShift?.start_time || '09:00:00';
+      const grace = empShift?.grace_time_mins || 15;
+      const [shH, shM] = shiftStart.split(':').map(Number);
+      const graceLimitMins = (shH * 60 + shM) + grace;
+
+      const [inH, inM] = todayRec.punch_in_time.split(':').map(Number);
+      const punchMins = inH * 60 + inM;
+      const isLate = punchMins > graceLimitMins;
+      const diffLate = punchMins - (shH * 60 + shM);
+
+      return res.json({
+        reply: isHindi
+          ? isLate
+            ? `⚠️ **लेट आगमन (Late Arrival)**:\n\n• **शिफ्ट शुरुआत**: ${format12Hr(shiftStart)} (${grace} मिनट ग्रेस)\n• **आपका पंच-इन**: ${format12Hr(todayRec.punch_in_time)}\n• **विलंब**: आप आज लगभग \`${diffLate} मिनट\` देरी से आए हैं।`
+            : `✅ **समय पर उपस्थिति (On Time)**:\n\n• **शिफ्ट शुरुआत**: ${format12Hr(shiftStart)} (${grace} मिनट ग्रेस)\n• **आपका पंच-इन**: ${format12Hr(todayRec.punch_in_time)}\n• आप बिल्कुल समय पर उपस्थित हुए हैं! शाबाश! 👏`
+          : isLate
+            ? `⚠️ **Late Arrival Notice**:\n\n• **Shift Start**: ${format12Hr(shiftStart)} (${grace} mins grace)\n• **Your Punch-In**: ${format12Hr(todayRec.punch_in_time)}\n• **Delay**: You were approx \`${diffLate} minutes\` late today.`
+            : `✅ **On Time Arrival**:\n\n• **Shift Start**: ${format12Hr(shiftStart)} (${grace} mins grace)\n• **Your Punch-In**: ${format12Hr(todayRec.punch_in_time)}\n• You arrived on time today! Great job! 👏`,
+        action: 'PUNCTUALITY'
+      });
+    }
+
+    // 5. Yesterday's Attendance Query
+    if (lowerMsg.includes('yesterday') || lowerMsg.includes('kal ka punch') || lowerMsg.includes('kal ki attendance') || lowerMsg.includes('beeta kal')) {
+      const yDate = new Date();
+      yDate.setDate(yDate.getDate() - 1);
+      const yDateStr = yDate.toISOString().split('T')[0];
+      const yRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, yDateStr);
+
+      if (!yRec || (!yRec.punch_in_time && !yRec.punch_out_time)) {
+        return res.json({
+          reply: isHindi
+            ? `📅 **कल की अटेंडेंस (${yDateStr})**:\n\nकल कोई पंच रिकॉर्ड नहीं मिला (स्थिति: \`${yRec?.status || 'Absent'}\`)। यदि आप उपस्थित थे तो "Attendance correction" अनुरोध कर सकते हैं।`
+            : `📅 **Yesterday's Attendance (${yDateStr})**:\n\nNo punch logged yesterday (Status: \`${yRec?.status || 'Absent'}\`). If you were present, you can request an "Attendance correction".`,
+          action: 'YESTERDAY_ATTENDANCE'
+        });
+      }
+
+      return res.json({
+        reply: isHindi
+          ? `📅 **कल की अटेंडेंस (${yDateStr})**:\n\n• **स्थिति**: \`${yRec.status || 'Present'}\`\n• **पंच-इन**: ${format12Hr(yRec.punch_in_time)}\n• **पंच-आउट**: ${format12Hr(yRec.punch_out_time)}\n• **कार्य घंटे**: ${yRec.total_hours || 0} hrs`
+          : `📅 **Yesterday's Attendance (${yDateStr})**:\n\n• **Status**: \`${yRec.status || 'Present'}\`\n• **Punch In**: ${format12Hr(yRec.punch_in_time)}\n• **Punch Out**: ${format12Hr(yRec.punch_out_time)}\n• **Total Hours**: ${yRec.total_hours || 0} hrs`,
+        action: 'YESTERDAY_ATTENDANCE'
+      });
+    }
+
+    // 6. Leave Request Status (Tracking applied leaves)
+    if ((lowerMsg.includes('leave') && lowerMsg.includes('status')) || lowerMsg.includes('chutti status') || lowerMsg.includes('leave request status') || lowerMsg.includes('chutti approve') || lowerMsg.includes('leave approve')) {
+      const recentLeaves = db.prepare(`
+        SELECT lr.*, lt.name as leave_type 
+        FROM leave_requests lr
+        JOIN leave_types lt ON lr.leave_type_id = lt.id
+        WHERE lr.employee_id = ?
+        ORDER BY lr.id DESC LIMIT 3
+      `).all(employeeId);
+
+      if (!recentLeaves || recentLeaves.length === 0) {
+        return res.json({
+          reply: isHindi
+            ? `आपने हाल ही में कोई लीव रिक्वेस्ट नहीं लगाई है। नई छुट्टी अप्लाई करने के लिए *"Apply my leave"* कहें।`
+            : `You have no recent leave requests on record. Say *"Apply my leave"* to apply anytime.`,
+          action: 'LEAVE_STATUS'
+        });
+      }
+
+      const lList = recentLeaves.map(l => {
+        const badge = l.status === 'approved' ? 'स्वीकृत ✅' : l.status === 'rejected' ? 'अस्वीकृत ❌' : 'लंबित (Pending Approval) ⏳';
+        return `• **${l.leave_type}**: ${l.start_date} से ${l.end_date} (${l.total_days} दिन) - \`${badge}\``;
+      }).join('\n');
+
+      return res.json({
+        reply: isHindi
+          ? `📅 **आपकी हालिया लीव रिक्वेस्ट की स्थिति**:\n\n${lList}`
+          : `📅 **Your Recent Leave Requests Status**:\n\n${lList}`,
+        action: 'LEAVE_STATUS'
+      });
+    }
+
+    // 7. Leave Balances Query
+    if (lowerMsg.includes('leave balance') || lowerMsg.includes('chutti kitni') || (lowerMsg.includes('leave') && lowerMsg.includes('balance')) || lowerMsg.includes('casual leave') || lowerMsg.includes('earned leave') || lowerMsg.includes('अवकाश शेष')) {
       const currentYear = new Date().getFullYear();
       const balances = db.prepare(`
         SELECT lb.*, lt.name as leave_type_name
@@ -659,47 +877,219 @@ router.post('/chat', verifyAuth, async (req, res) => {
       });
     }
 
-    // 3. Holidays Query
-    if (lowerMsg.includes('holiday') || lowerMsg.includes('chhutti') || lowerMsg.includes('festival') || lowerMsg.includes('छुट्टी कब')) {
-      const todayStr = new Date().toISOString().split('T')[0];
+    // 8. Attendance Correction Request Status Tracking
+    if ((lowerMsg.includes('correction') && lowerMsg.includes('status')) || lowerMsg.includes('sudhar status') || lowerMsg.includes('correction approve')) {
+      const recentCorrs = db.prepare(`
+        SELECT * FROM attendance_correction_requests 
+        WHERE employee_id = ? 
+        ORDER BY id DESC LIMIT 3
+      `).all(employeeId);
+
+      if (!recentCorrs || recentCorrs.length === 0) {
+        return res.json({
+          reply: isHindi
+            ? `आपने कोई अटेंडेंस करेक्शन रिक्वेस्ट नहीं लगाई है। यदि किसी दिन का पंच छूट गया हो तो *"Attendance correction"* कहें।`
+            : `You have no pending or recent attendance correction requests. Say *"Attendance correction"* if you missed a punch.`,
+          action: 'CORRECTION_STATUS'
+        });
+      }
+
+      const cList = recentCorrs.map(c => {
+        const badge = c.status === 'approved' ? 'स्वीकृत ✅' : c.status === 'rejected' ? 'अस्वीकृत ❌' : 'लंबित (Pending) ⏳';
+        return `• तारीख **${c.date}**: \`${badge}\` (अनुरोध: ${c.requested_punch_in || '--'} to ${c.requested_punch_out || '--'})`;
+      }).join('\n');
+
+      return res.json({
+        reply: isHindi
+          ? `✏️ **आपकी अटेंडेंस करेक्शन स्थिति**:\n\n${cList}`
+          : `✏️ **Your Attendance Correction Status**:\n\n${cList}`,
+        action: 'CORRECTION_STATUS'
+      });
+    }
+
+    // 9. Support Tickets Status
+    if ((lowerMsg.includes('ticket') && lowerMsg.includes('status')) || lowerMsg.includes('my ticket') || lowerMsg.includes('mera ticket') || lowerMsg.includes('shikayat status')) {
+      const recentTkts = db.prepare(`
+        SELECT * FROM service_requests 
+        WHERE employee_id = ? 
+        ORDER BY id DESC LIMIT 3
+      `).all(employeeId);
+
+      if (!recentTkts || recentTkts.length === 0) {
+        return res.json({
+          reply: isHindi
+            ? `आपका कोई सक्रिय सपोर्ट टिकट नहीं है। नया टिकट बनाने के लिए *"Create ticket"* कहें।`
+            : `You have no active support tickets. Say *"Create ticket"* to raise a ticket.`,
+          action: 'TICKET_STATUS'
+        });
+      }
+
+      const tList = recentTkts.map(t => {
+        const badge = t.status === 'resolved' ? 'हल हुआ ✅' : t.status === 'in_progress' ? 'प्रगति पर ⚙️' : 'लंबित (Pending) ⏳';
+        return `• **#TKT-${t.id}**: ${t.title} - \`${badge}\``;
+      }).join('\n');
+
+      return res.json({
+        reply: isHindi ? `🎫 **आपके सपोर्ट टिकट की स्थिति**:\n\n${tList}` : `🎫 **Your Support Tickets Status**:\n\n${tList}`,
+        action: 'TICKET_STATUS'
+      });
+    }
+
+    // 10. General Punch & Attendance Overview
+    if (lowerMsg.includes('punch') || lowerMsg.includes('attendance') || lowerMsg.includes('present') || lowerMsg.includes('attendance status') || lowerMsg.includes('punch status') || lowerMsg.includes('हाजिरी') || lowerMsg.includes('पंच')) {
+      const todayRecord = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
+
+      if (!todayRecord || (!todayRecord.punch_in_time && !todayRecord.punch_out_time)) {
+        return res.json({
+          reply: isHindi
+            ? `📅 **आज की अटेंडेंस (${todayStr})**:\n\nआपने आज अभी तक पंच-इन नहीं किया है।\nआप मुझसे *"Punch In"* बोलकर सीधे यहाँ से GPS पंच-इन कर सकते हैं! ⏱️`
+            : `📅 **Today's Attendance (${todayStr})**:\n\nYou have not punched in yet today.\nYou can tell me *"Punch In"* to record attendance directly here with verified GPS! ⏱️`,
+          action: 'VIEW_PUNCH'
+        });
+      }
+
+      const inTime = todayRecord.punch_in_time ? format12Hr(todayRecord.punch_in_time) : '--:--';
+      const outTime = todayRecord.punch_out_time ? format12Hr(todayRecord.punch_out_time) : (isHindi ? 'अभी तक पंच-आउट नहीं हुआ' : 'Not Punched Out Yet');
+      const inLoc = todayRecord.punch_in_location || 'GPS Verified Site';
+      const outLoc = todayRecord.punch_out_location || '--';
+      const hours = todayRecord.total_hours || (todayRecord.punch_in_time && !todayRecord.punch_out_time ? 'In Progress' : '0.0');
+      const attStatus = todayRecord.status || 'Present';
+
+      return res.json({
+        reply: isHindi
+          ? `📊 **आपका आज का अटेंडेंस सारांश (${todayStr})**:\n\n` +
+            `• **स्थिति (Status)**: \`${attStatus}\`\n` +
+            `• **पंच-इन समय**: ${inTime}\n` +
+            `• **पंच-इन स्थान**: ${inLoc}\n` +
+            `• **पंच-आउट समय**: ${outTime}\n` +
+            (todayRecord.punch_out_time ? `• **पंच-आउट स्थान**: ${outLoc}\n` : '') +
+            `• **कार्य घंटे**: ${hours} hrs\n\n` +
+            (!todayRecord.punch_out_time ? `💡 *शिफ्ट समाप्त होने पर "Punch Out" बोलें।*` : `✅ *शिफ्ट पूर्ण हो चुकी है!*`)
+          : `📊 **Your Attendance Summary for Today (${todayStr})**:\n\n` +
+            `• **Status**: \`${attStatus}\`\n` +
+            `• **Punch-In Time**: ${inTime}\n` +
+            `• **Punch-In Location**: ${inLoc}\n` +
+            `• **Punch-Out Time**: ${outTime}\n` +
+            `• **Working Hours**: ${hours} hrs\n\n` +
+            (!todayRecord.punch_out_time ? `💡 *Remember to say "Punch Out" when leaving.*` : `✅ *Shift completed successfully!*`),
+        action: 'ATTENDANCE_SUMMARY'
+      });
+    }
+
+    // 11. Assigned Manager / Supervisor Query
+    if (lowerMsg.includes('manager') || lowerMsg.includes('supervisor') || lowerMsg.includes('boss') || lowerMsg.includes('reporting officer')) {
+      const mapping = db.prepare(`
+        SELECT m.id, m.full_name, m.department, m.designation, m.employee_id as code
+        FROM employee_mappings em
+        JOIN employees m ON em.manager_id = m.id
+        WHERE em.employee_id = ? AND em.company_id = ?
+      `).get(employeeId, companyId);
+
+      if (mapping) {
+        return res.json({
+          reply: isHindi
+            ? `👔 **आपके रिपोर्टिंग मैनेजर (Reporting Supervisor)**:\n\n• **नाम**: ${mapping.full_name}\n• **पद**: ${mapping.designation || 'Manager'}\n• **विभाग**: ${mapping.department || 'Operations'}\n• **कोड**: ${mapping.code}`
+            : `👔 **Your Reporting Manager / Supervisor**:\n\n• **Name**: ${mapping.full_name}\n• **Designation**: ${mapping.designation || 'Manager'}\n• **Department**: ${mapping.department || 'Operations'}\n• **Code**: ${mapping.code}`,
+          action: 'MANAGER_INFO'
+        });
+      }
+
+      return res.json({
+        reply: isHindi
+          ? `आपकी प्रोफाइल सीधे **कंपनी एडमिनिस्ट्रेशन (Company Administration)** को रिपोर्ट करती है।`
+          : `Your profile currently reports directly to **Company Administration**.`,
+        action: 'MANAGER_INFO'
+      });
+    }
+
+    // 12. Office Geofence & Location Query
+    if (lowerMsg.includes('geofence') || lowerMsg.includes('office location') || lowerMsg.includes('boundary') || lowerMsg.includes('kahan punch karna')) {
+      const gf = db.prepare(`
+        SELECT location_name, latitude, longitude, radius, status 
+        FROM geofences 
+        WHERE company_id = ? AND status = 'active'
+        LIMIT 1
+      `).get(companyId);
+
+      if (gf) {
+        return res.json({
+          reply: isHindi
+            ? `📍 **आपकी निर्धारित ऑफिस लोकेशन (Geofence)**:\n\n• **स्थान**: ${gf.location_name}\n• **GPS परिधि**: ${gf.radius} मीटर\n• **कोऑर्डिनेट्स**: ${gf.latitude}, ${gf.longitude}\n\nपंच-इन करते समय आपका GPS स्थान स्वतः मान्य हो जाता है।`
+            : `📍 **Your Designated Office Geofence Location**:\n\n• **Location**: ${gf.location_name}\n• **Allowed Radius**: ${gf.radius} meters\n• **GPS Coordinates**: ${gf.latitude}, ${gf.longitude}\n\nYour punch is validated against this GPS boundary automatically.`,
+          action: 'GEOFENCE_INFO'
+        });
+      }
+
+      return res.json({
+        reply: isHindi
+          ? `आपकी कंपनी में फ्लेक्सिबल GPS पंचिंग सक्षम है। आप सीधे लोकेशन सत्यापन के साथ पंच कर सकते हैं।`
+          : `Flexible GPS punch verification is active for your company. Your live coordinates are captured during punch.`,
+        action: 'GEOFENCE_INFO'
+      });
+    }
+
+    // 13. Weekly Off Schedule
+    if (lowerMsg.includes('weekly off') || lowerMsg.includes('sunday') || lowerMsg.includes('off day') || lowerMsg.includes('weekend') || lowerMsg.includes('chhutti kab hai')) {
+      const empOff = db.prepare(`
+        SELECT w.name, w.off_days_json 
+        FROM employees e LEFT JOIN weekly_off_settings w ON e.weekly_off_id = w.id 
+        WHERE e.id = ?
+      `).get(employeeId);
+
+      let offDays = ['Sunday'];
+      if (empOff && empOff.off_days_json) {
+        try { offDays = JSON.parse(empOff.off_days_json); } catch (e) {}
+      } else {
+        const masterW = db.prepare('SELECT name, off_days_json FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(companyId);
+        if (masterW && masterW.off_days_json) {
+          try { offDays = JSON.parse(masterW.off_days_json); } catch (e) {}
+        }
+      }
+
+      return res.json({
+        reply: isHindi
+          ? `🏖️ **साप्ताहिक अवकाश (Weekly Off Schedule)**:\n\n• **नियत साप्ताहिक छुट्टी**: \`${offDays.join(', ')}\`\n• इन दिनों लीव कोटा से कोई कटौती नहीं होती।`
+          : `🏖️ **Your Weekly Off Schedule**:\n\n• **Assigned Off Days**: \`${offDays.join(', ')}\`\n• Weekly off days are excluded from leave quota deduction.`,
+        action: 'WEEKLY_OFF'
+      });
+    }
+
+    // 14. Holidays Query
+    if (lowerMsg.includes('holiday') || lowerMsg.includes('chhutti') || lowerMsg.includes('festival') || lowerMsg.includes('त्योहार')) {
       const upcoming = db.prepare(`
-        SELECT name, holiday_date, description
-        FROM holidays
-        WHERE company_id = ? AND holiday_date >= ?
-        ORDER BY holiday_date ASC
-        LIMIT 5
+        SELECT name, holiday_date 
+        FROM holidays 
+        WHERE company_id = ? AND holiday_date >= ? 
+        ORDER BY holiday_date ASC LIMIT 5
       `).all(companyId, todayStr);
 
       if (!upcoming || upcoming.length === 0) {
         return res.json({
-          reply: isHindi ? "इस महीने में कोई आगामी कंपनी छुट्टी नहीं है।" : "No upcoming company holidays scheduled this month.",
+          reply: isHindi ? "इस महीने में कोई आगामी सरकारी / कंपनी छुट्टी नहीं है।" : "No upcoming company holidays scheduled this month.",
           action: 'HOLIDAYS'
         });
       }
 
-      const hList = upcoming.map(h => `• **${h.holiday_date}**: ${h.name}${h.description ? ` (${h.description})` : ''}`).join('\n');
+      const hList = upcoming.map(h => `• **${h.holiday_date}**: ${h.name}`).join('\n');
       return res.json({
-        reply: isHindi
-          ? `🎉 **आने वाली छुट्टियां (Upcoming Holidays)**:\n\n${hList}`
-          : `🎉 **Upcoming Holidays**:\n\n${hList}`,
+        reply: isHindi ? `🎉 **आने वाली छुट्टियां (Upcoming Holidays)**:\n\n${hList}` : `🎉 **Upcoming Holidays**:\n\n${hList}`,
         action: 'HOLIDAYS'
       });
     }
 
-    // 4. Shift timings
+    // 15. Shift Details
     if (lowerMsg.includes('shift') || lowerMsg.includes('timing') || lowerMsg.includes('समय')) {
       const emp = db.prepare(`
-        SELECT e.*, s.name as shift_name, s.start_time, s.end_time, s.grace_time_mins, s.working_hours
-        FROM employees e
-        LEFT JOIN shifts s ON e.shift_id = s.id
+        SELECT e.*, s.name as shift_name, s.start_time, s.end_time, s.grace_time_mins, s.working_hours, s.break_time_mins
+        FROM employees e LEFT JOIN shifts s ON e.shift_id = s.id
         WHERE e.id = ?
       `).get(employeeId);
 
       if (emp && emp.shift_name) {
         return res.json({
           reply: isHindi
-            ? `⏰ **आपकी शिफ्ट जानकारी**:\n\n• **शिफ्ट**: ${emp.shift_name}\n• **समय**: ${format12Hr(emp.start_time)} से ${format12Hr(emp.end_time)}\n• **कार्य घंटे**: ${emp.working_hours || 8} hrs\n• **ग्रेस समय**: ${emp.grace_time_mins || 15} मिनट`
-            : `⏰ **Your Shift Details**:\n\n• **Shift Name**: ${emp.shift_name}\n• **Timing**: ${format12Hr(emp.start_time)} to ${format12Hr(emp.end_time)}\n• **Working Hours**: ${emp.working_hours || 8} hrs\n• **Grace Period**: ${emp.grace_time_mins || 15} minutes`,
+            ? `⏰ **आपकी शिफ्ट जानकारी**:\n\n• **शिफ्ट**: ${emp.shift_name}\n• **समय**: ${format12Hr(emp.start_time)} से ${format12Hr(emp.end_time)}\n• **कार्य घंटे**: ${emp.working_hours || 8} hrs\n• **ग्रेस समय**: ${emp.grace_time_mins || 15} मिनट\n• **लंच ब्रेक**: ${emp.break_time_mins || 45} मिनट`
+            : `⏰ **Your Shift Details**:\n\n• **Shift**: ${emp.shift_name}\n• **Timing**: ${format12Hr(emp.start_time)} to ${format12Hr(emp.end_time)}\n• **Working Hours**: ${emp.working_hours || 8} hrs\n• **Grace Period**: ${emp.grace_time_mins || 15} mins\n• **Break Duration**: ${emp.break_time_mins || 45} mins`,
           action: 'SHIFT_INFO'
         });
       }
@@ -710,27 +1100,40 @@ router.post('/chat', verifyAuth, async (req, res) => {
         action: 'SHIFT_INFO'
       });
     }
+
+    // 16. Profile / ID Query
+    if (lowerMsg.includes('my id') || lowerMsg.includes('employee id') || lowerMsg.includes('emp id') || lowerMsg.includes('mera code') || lowerMsg.includes('mera designation') || lowerMsg.includes('profile')) {
+      const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(employeeId);
+      if (emp) {
+        return res.json({
+          reply: isHindi
+            ? `👤 **आपकी कर्मचारी प्रोफाइल**:\n\n• **नाम**: ${emp.full_name}\n• **कर्मचारी कोड**: \`${emp.employee_id}\`\n• **पद**: ${emp.designation || 'Staff'}\n• **विभाग**: ${emp.department || 'General'}\n• **स्थिति**: \`${emp.status}\``
+            : `👤 **Your Employee Profile**:\n\n• **Name**: ${emp.full_name}\n• **Employee ID**: \`${emp.employee_id}\`\n• **Designation**: ${emp.designation || 'Staff'}\n• **Department**: ${emp.department || 'General'}\n• **Status**: \`${emp.status}\``,
+          action: 'PROFILE_INFO'
+        });
+      }
+    }
   }
 
   // -------------------------------------------------------------
-  // B. MANAGER INTENTS
+  // B. MANAGER INTENTS (Real Team Data Analysis)
   // -------------------------------------------------------------
   if (role === 'manager') {
-    if (lowerMsg.includes('absent') || lowerMsg.includes('kaun absent') || lowerMsg.includes('who is absent') || lowerMsg.includes('present') || lowerMsg.includes('team') || lowerMsg.includes('अनुपस्थित')) {
-      const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
 
+    // 1. Who is Absent Today
+    if (lowerMsg.includes('absent') || lowerMsg.includes('kaun absent') || lowerMsg.includes('who is absent') || lowerMsg.includes('anupasthit') || lowerMsg.includes('absent member')) {
       const teamEmps = db.prepare(`
         SELECT e.id, e.employee_id as code, e.full_name, e.department
-        FROM employees e
-        JOIN employee_mappings em ON e.id = em.employee_id
+        FROM employees e JOIN employee_mappings em ON e.id = em.employee_id
         WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
       `).all(employeeId, companyId);
 
       if (!teamEmps || teamEmps.length === 0) {
         return res.json({
           reply: isHindi
-            ? "आपके अंडर अभी कोई टीम सदस्य असाइन नहीं हैं। 'Employee Mapping' टैब से टीम जोड़ें।"
-            : "No team members are currently assigned under your profile. You can assign staff in the 'Employee Mapping' tab.",
+            ? "आपके अंतर्गत अभी कोई टीम सदस्य असाइन नहीं हैं। 'Employee Mapping' टैब से कर्मचारी जोड़ें।"
+            : "No team members are currently assigned under your manager profile.",
           action: 'TEAM_SUMMARY'
         });
       }
@@ -738,44 +1141,77 @@ router.post('/chat', verifyAuth, async (req, res) => {
       const teamIds = teamEmps.map(e => e.id);
       const placeholders = teamIds.map(() => '?').join(',');
       const records = db.prepare(`
-        SELECT employee_id, punch_in_time, punch_out_time, status 
-        FROM attendance_records
-        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders})
+        SELECT employee_id, punch_in_time FROM attendance_records
+        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders}) AND punch_in_time IS NOT NULL
+      `).all(companyId, todayStr, ...teamIds);
+
+      const presentSet = new Set(records.map(r => r.employee_id));
+      const absentMembers = teamEmps.filter(e => !presentSet.has(e.id));
+
+      return res.json({
+        reply: isHindi
+          ? `👥 **आज टीम में अनुपस्थित सदस्य (${todayStr})**:\n\n` +
+            `• **कुल टीम संख्या**: ${teamEmps.length}\n` +
+            `• **अनुपस्थित संख्या**: \`${absentMembers.length} सदस्य\`\n\n` +
+            (absentMembers.length > 0
+              ? `🔴 **अनुपस्थित सदस्यों की सूची**:\n${absentMembers.map(a => `  - **${a.full_name}** (${a.code || 'Staff'}) [${a.department || 'Team'}]`).join('\n')}`
+              : `🎉 **बधाई! आपकी पूरी टीम आज समय पर उपस्थित है!**`)
+          : `👥 **Team Members Absent Today (${todayStr})**:\n\n` +
+            `• **Total Team**: ${teamEmps.length}\n` +
+            `• **Absent Count**: \`${absentMembers.length} members\`\n\n` +
+            (absentMembers.length > 0
+              ? `🔴 **Absent Team Members**:\n${absentMembers.map(a => `  - **${a.full_name}** (${a.code || 'Staff'}) [${a.department || 'Team'}]`).join('\n')}`
+              : `🎉 **Great news! Your entire team is present today!**`),
+        action: 'TEAM_ABSENT'
+      });
+    }
+
+    // 2. Who is Present Today
+    if (lowerMsg.includes('who is present') || lowerMsg.includes('kaun present') || lowerMsg.includes('present today') || lowerMsg.includes('upasthit')) {
+      const teamEmps = db.prepare(`
+        SELECT e.id, e.employee_id as code, e.full_name, e.department
+        FROM employees e JOIN employee_mappings em ON e.id = em.employee_id
+        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
+      `).all(employeeId, companyId);
+
+      if (!teamEmps || teamEmps.length === 0) {
+        return res.json({
+          reply: isHindi ? "आपके अंतर्गत कोई टीम सदस्य असाइन नहीं हैं।" : "No team members are assigned under your manager profile.",
+          action: 'TEAM_SUMMARY'
+        });
+      }
+
+      const teamIds = teamEmps.map(e => e.id);
+      const placeholders = teamIds.map(() => '?').join(',');
+      const records = db.prepare(`
+        SELECT employee_id, punch_in_time, punch_in_location FROM attendance_records
+        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders}) AND punch_in_time IS NOT NULL
       `).all(companyId, todayStr, ...teamIds);
 
       const recordMap = new Map();
       records.forEach(r => recordMap.set(r.employee_id, r));
 
-      const presentList = [];
-      const absentList = [];
-
-      teamEmps.forEach(emp => {
-        const rec = recordMap.get(emp.id);
-        if (rec && rec.punch_in_time) {
-          presentList.push(`${emp.full_name} (${emp.code}) [In: ${format12Hr(rec.punch_in_time)}]`);
-        } else {
-          absentList.push(`${emp.full_name} (${emp.code})`);
+      const presentMembers = [];
+      teamEmps.forEach(e => {
+        const r = recordMap.get(e.id);
+        if (r) {
+          presentMembers.push(`• **${e.full_name}** (${e.code}) - In: \`${format12Hr(r.punch_in_time)}\` (${r.punch_in_location || 'GPS Verified'})`);
         }
       });
 
       return res.json({
         reply: isHindi
-          ? `👥 **टीम उपस्थिति विश्लेषण (${todayStr})**:\n\n` +
-            `• **कुल टीम सदस्य**: ${teamEmps.length}\n` +
-            `• **आज उपस्थित**: ${presentList.length}\n` +
-            `• **आज अनुपस्थित**: ${absentList.length}\n\n` +
-            (absentList.length > 0 ? `🔴 **अनुपस्थित सदस्य**:\n${absentList.map(a => `  - ${a}`).join('\n')}\n\n` : `🎉 *पूरी टीम उपस्थित है!*\n\n`) +
-            (presentList.length > 0 ? `🟢 **उपस्थित सदस्य**:\n${presentList.map(p => `  - ${p}`).join('\n')}` : '')
-          : `👥 **Team Attendance Analysis (${todayStr})**:\n\n` +
-            `• **Total Team Members**: ${teamEmps.length}\n` +
-            `• **Present Today**: ${presentList.length}\n` +
-            `• **Absent Today**: ${absentList.length}\n\n` +
-            (absentList.length > 0 ? `🔴 **Absent Team Members**:\n${absentList.map(a => `  - ${a}`).join('\n')}\n\n` : `🎉 *Entire team is present!*\n\n`) +
-            (presentList.length > 0 ? `🟢 **Present Team Members**:\n${presentList.map(p => `  - ${p}`).join('\n')}` : ''),
-        action: 'TEAM_ATTENDANCE'
+          ? `🟢 **आज उपस्थित टीम सदस्य (${todayStr})**:\n\n` +
+            `• **उपस्थित संख्या**: \`${presentMembers.length} / ${teamEmps.length}\`\n\n` +
+            (presentMembers.length > 0 ? presentMembers.join('\n') : 'अभी तक किसी सदस्य ने पंच-इन नहीं किया है।')
+          : `🟢 **Team Members Present Today (${todayStr})**:\n\n` +
+            `• **Present Count**: \`${presentMembers.length} / ${teamEmps.length}\`\n\n` +
+            (presentMembers.length > 0 ? presentMembers.join('\n') : 'No team member has punched in yet today.'),
+        action: 'TEAM_PRESENT'
       });
     }
 
+    // 3. Pending Approvals
     if (lowerMsg.includes('pending') || lowerMsg.includes('approval') || lowerMsg.includes('स्वीकृति')) {
       const pendingLeaves = db.prepare(`
         SELECT lr.*, e.full_name, e.employee_id as code, lt.name as leave_type
@@ -796,27 +1232,32 @@ router.post('/chat', verifyAuth, async (req, res) => {
 
       return res.json({
         reply: isHindi
-          ? `⏳ **लंबित स्वीकृतियां (Pending Approvals)**:\n\n` +
-            `• **लंबित लीव आवेदन**: ${pendingLeaves.length}\n` +
-            `• **लंबित पंच करेक्शन**: ${pendingCorrections.length}\n\n` +
-            `आप **Approvals** टैब पर जाकर 1-क्लिक में निर्णय ले सकते हैं।`
+          ? `⏳ **आपकी टीम की लंबित स्वीकृतियां (Pending Approvals)**:\n\n` +
+            `• **लंबित लीव आवेदन**: \`${pendingLeaves.length} अनुरोध\`\n` +
+            (pendingLeaves.length > 0 ? pendingLeaves.map(l => `  - ${l.full_name} (${l.leave_type}: ${l.start_date} to ${l.end_date})`).join('\n') + '\n' : '') +
+            `• **लंबित पंच सुधार**: \`${pendingCorrections.length} अनुरोध\`\n` +
+            (pendingCorrections.length > 0 ? pendingCorrections.map(c => `  - ${c.full_name} (तारीख: ${c.date})`).join('\n') + '\n' : '') +
+            `\nस्वीकृति देने हेतु सीधे 'Approval and Correction' टैब पर जाएं।`
           : `⏳ **Pending Approvals For Your Team**:\n\n` +
-            `• **Pending Leave Requests**: ${pendingLeaves.length}\n` +
-            `• **Pending Punch Correction Requests**: ${pendingCorrections.length}\n\n` +
-            `You can review and approve directly in the **Approvals** tab.`,
+            `• **Pending Leave Requests**: \`${pendingLeaves.length}\`\n` +
+            (pendingLeaves.length > 0 ? pendingLeaves.map(l => `  - ${l.full_name} (${l.leave_type}: ${l.start_date} to ${l.end_date})`).join('\n') + '\n' : '') +
+            `• **Pending Punch Corrections**: \`${pendingCorrections.length}\`\n` +
+            (pendingCorrections.length > 0 ? pendingCorrections.map(c => `  - ${c.full_name} (Date: ${c.date})`).join('\n') + '\n' : '') +
+            `\nYou can approve or reject these in the 'Approval and Correction' tab.`,
         action: 'VIEW_APPROVALS'
       });
     }
   }
 
   // -------------------------------------------------------------
-  // C. COMPANY ADMIN INTENTS
+  // C. COMPANY ADMIN INTENTS (Company-Wide Data Analytics)
   // -------------------------------------------------------------
   if (role === 'company_admin') {
-    if (lowerMsg.includes('attendance') || lowerMsg.includes('present') || lowerMsg.includes('overview') || lowerMsg.includes('stats') || lowerMsg.includes('कंप्यूटर') || lowerMsg.includes('कंपनी')) {
-      const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
 
-      const totalActiveEmployees = db.prepare(`
+    // Company Overview & Live Attendance
+    if (lowerMsg.includes('attendance') || lowerMsg.includes('present') || lowerMsg.includes('overview') || lowerMsg.includes('stats') || lowerMsg.includes('कंपनी') || lowerMsg.includes('rate')) {
+      const totalActive = db.prepare(`
         SELECT COUNT(*) as count FROM employees 
         WHERE company_id = ? AND status = 'active' AND is_deleted = 0
       `).get(companyId)?.count || 0;
@@ -831,21 +1272,42 @@ router.post('/chat', verifyAuth, async (req, res) => {
         WHERE company_id = ? AND status = 'pending'
       `).get(companyId)?.count || 0;
 
-      const attendancePct = totalActiveEmployees > 0 ? Math.round((todayPunches / totalActiveEmployees) * 100) : 0;
+      const pendingCorrections = db.prepare(`
+        SELECT COUNT(*) as count FROM attendance_correction_requests
+        WHERE company_id = ? AND status = 'pending'
+      `).get(companyId)?.count || 0;
+
+      const attendancePct = totalActive > 0 ? Math.round((todayPunches / totalActive) * 100) : 0;
 
       return res.json({
         reply: isHindi
           ? `🏢 **कंपनी लाइव HR स्थिति (${todayStr})**:\n\n` +
-            `• **कुल सक्रिय कर्मचारी**: ${totalActiveEmployees}\n` +
+            `• **कुल सक्रिय कर्मचारी**: ${totalActive}\n` +
             `• **आज पंच-इन किया**: ${todayPunches} (${attendancePct}% उपस्थिति दर)\n` +
-            `• **लंबित लीव आवेदन**: ${pendingLeaves}\n\n` +
-            `सभी डेटा GPS व Firebase Cloud Database के साथ सुरक्षित है।`
+            `• **आज अनुपस्थित / बाकी**: ${Math.max(0, totalActive - todayPunches)}\n` +
+            `• **लंबित लीव आवेदन**: ${pendingLeaves}\n` +
+            `• **लंबित पंच सुधार**: ${pendingCorrections}\n\n` +
+            `सभी डेटा GPS व Firebase Database के साथ लाइव सिंक है।`
           : `🏢 **Company Live HR Overview (${todayStr})**:\n\n` +
-            `• **Total Active Staff**: ${totalActiveEmployees}\n` +
+            `• **Total Active Staff**: ${totalActive}\n` +
             `• **Punched In Today**: ${todayPunches} (${attendancePct}% attendance rate)\n` +
-            `• **Pending Leave Requests**: ${pendingLeaves}\n\n` +
-            `All records are synchronized in real time with verified GPS and Firebase Cloud.`,
+            `• **Remaining / Absent**: ${Math.max(0, totalActive - todayPunches)}\n` +
+            `• **Pending Leave Requests**: ${pendingLeaves}\n` +
+            `• **Pending Punch Corrections**: ${pendingCorrections}\n\n` +
+            `All attendance data is authenticated with GPS coordinates and Firebase sync.`,
         action: 'COMPANY_OVERVIEW'
+      });
+    }
+
+    // Subscription & Plan Expiry
+    if (lowerMsg.includes('plan') || lowerMsg.includes('subscription') || lowerMsg.includes('expiry') || lowerMsg.includes('tenure') || lowerMsg.includes('renewal')) {
+      const comp = db.prepare('SELECT portal_name, plan_expiry_date FROM companies WHERE id = ?').get(companyId);
+      const expDate = comp?.plan_expiry_date || 'Lifetime / Active';
+      return res.json({
+        reply: isHindi
+          ? `📋 **कंपनी सब्सक्रिप्शन विवरण**:\n\n• **कंपनी**: ${comp?.portal_name || 'Organization'}\n• **प्लान समाप्ति तारीख**: \`${expDate}\`\n• **सिस्टम स्थिति**: सक्रिय व सुरक्षित`
+          : `📋 **Company Subscription Details**:\n\n• **Portal**: ${comp?.portal_name || 'Organization'}\n• **Plan Expiry Date**: \`${expDate}\`\n• **System Status**: Active & Protected`,
+        action: 'PLAN_INFO'
       });
     }
   }
@@ -859,30 +1321,29 @@ router.post('/chat', verifyAuth, async (req, res) => {
 
     return res.json({
       reply: isHindi
-        ? `🌐 **NPB HRMS ग्लोबल सिस्टम स्थिति**:\n\n• **पंजीकृत कंपनियां**: ${compCount}\n• **कुल कर्मचारी**: ${empCount}\n• **क्लाउड स्थिति**: एक्टिव व सुरक्षित`
-        : `🌐 **NPB HRMS Global System Status**:\n\n• **Registered Companies**: ${compCount}\n• **Total Staff**: ${empCount}\n• **Cloud Status**: Active & Synced`,
+        ? `🌐 **NPB HRMS ग्लोबल सिस्टम स्थिति**:\n\n• **पंजीकृत कंपनियां**: ${compCount}\n• **कुल पंजीकृत कर्मचारी**: ${empCount}\n• **क्लाउड स्थिति**: लाइव व सुरक्षित`
+        : `🌐 **NPB HRMS Global System Status**:\n\n• **Registered Companies**: ${compCount}\n• **Total Staff Registered**: ${empCount}\n• **Cloud Status**: Active & Synced`,
       action: 'SYSTEM_STATUS'
     });
   }
 
   // -------------------------------------------------------------
   // E. GENERAL SMART ASSISTANCE & GREETINGS
+  // (STRICTLY uses cleanDisplayName, NEVER username, phone, or email)
   // -------------------------------------------------------------
-  const nameToUse = user.full_name || user.username || (isHindi ? 'साथी' : 'there');
-
   if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('hey') || lowerMsg.includes('pihu') || lowerMsg.includes('नमस्ते')) {
     return res.json({
       reply: isHindi
-        ? `नमस्ते ${nameToUse}! 🌸 मैं हूँ **पिहू**, आपकी स्मार्ट AI सहायक।\n\nमैं आपकी अटेंडेंस दर्ज करने, छुट्टी अप्लाई करने, सपोर्ट टिकट बनाने, और डेटा रिपोर्ट विश्लेषण करने में तुरंत सहायता कर सकती हूँ।\n\nआप मुझसे कह सकते हैं:\n• *"Punch In"* (पंच दर्ज करने के लिए)\n• *"Apply my leave"* (छुट्टी अप्लाई करने के लिए)\n• *"Create ticket"* (सपोर्ट टिकट बनाने के लिए)\n• *"Attendance correction"* (पंच सुधार के लिए)\n• *"Data report analysis"* (मासिक रिपोर्ट विश्लेषण)\n\nबताइए, मैं आपकी क्या सहायता करूँ?`
-        : `Hi ${nameToUse}! 🌸 I am **PIHU**, your AI Assistant.\n\nI can help you record your Punch In/Out, apply for leaves, raise support tickets, correct attendance, and analyze monthly performance reports!\n\nYou can ask me:\n• *"Punch In"* / *"Punch Out"*\n• *"Apply my leave"*\n• *"Create ticket"*\n• *"Attendance correction"*\n• *"Data report analysis"*\n\nHow may I help you today?`,
+        ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, आपकी स्मार्ट AI सहायक।\n\nमैं आपकी अटेंडेंस दर्ज करने, छुट्टी अप्लाई करने, सपोर्ट टिकट बनाने, और डेटा रिपोर्ट विश्लेषण करने में तुरंत सहायता कर सकती हूँ।\n\nआप मुझसे पूछ सकते हैं:\n• *"Punch In"* / *"Punch Out"*\n• *"Aaj ka working hours"* (कार्य घंटे)\n• *"Mera leave balance"* (छुट्टी बैलेंस)\n• *"Apply my leave"* (छुट्टी अप्लाई करें)\n• *"Attendance correction"* (पंच सुधार)\n• *"Data report analysis"* (मासिक रिपोर्ट विश्लेषण)\n\nबताइए, आज मैं आपकी क्या सहायता करूँ?`
+        : `Hi ${cleanDisplayName}! 🌸 I am **PIHU**, your AI Assistant.\n\nI can help you record your Punch In/Out, track working hours, apply for leaves, raise support tickets, correct attendance, and analyze monthly performance reports!\n\nYou can ask me:\n• *"Punch In"* / *"Punch Out"*\n• *"How many hours have I worked today?"*\n• *"What is my leave balance?"*\n• *"Apply my leave"*\n• *"Attendance correction"*\n• *"Data report analysis"*\n\nHow may I help you today?`,
       action: 'GREETING'
     });
   }
 
   return res.json({
     reply: isHindi
-      ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nआप मुझसे यह मुख्य काम करा सकते हैं:\n1. ⏱️ **"Punch In"** या **"Punch Out"** (अटेंडेंस दर्ज करें)\n2. 📅 **"Apply my leave"** (छुट्टी अप्लाई करें)\n3. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)\n4. ✏️ **"Attendance correction"** (पंच सुधार अनुरोध)\n5. 📊 **"Data report analysis"** (मासिक रिपोर्ट विश्लेषण)`
-      : `I understand your query: "${rawMsg}".\n\nYou can perform these instant actions with me:\n1. ⏱️ **"Punch In"** or **"Punch Out"** (Record attendance with GPS)\n2. 📅 **"Apply my leave"** (Apply leave step-by-step)\n3. 🎫 **"Create ticket"** (Raise support ticket)\n4. ✏️ **"Attendance correction"** (Request punch correction)\n5. 📊 **"Data report analysis"** (Analyze monthly hours & attendance)`,
+      ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nआप मुझसे अपनी अटेंडेंस, वर्किंग ऑवर्स, छुट्टी बैलेंस, या रिपोर्ट का लाइव डेटा पूछ सकते हैं:\n1. ⏱️ **"Punch In"** या **"Punch Out"** (GPS सत्यापन)\n2. ⏳ **"Aaj kitne ghante kaam kiya"** (कार्य अवधि)\n3. 📅 **"Apply my leave"** (छुट्टी अप्लाई करें)\n4. 🏖️ **"Mera leave balance"** (अवकाश शेष)\n5. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)\n6. 📊 **"Data report analysis"** (मासिक विश्लेषण)`
+      : `I analyzed your query: "${rawMsg}".\n\nYou can ask for live attendance, working hours, leave balances, or reports:\n1. ⏱️ **"Punch In"** or **"Punch Out"** (GPS verified)\n2. ⏳ **"How many hours have I worked today?"** (Live duration)\n3. 📅 **"Apply my leave"** (Step-by-step leave apply)\n4. 🏖️ **"What is my leave balance?"** (CL / EL balance)\n5. 🎫 **"Create ticket"** (Raise support ticket)\n6. 📊 **"Data report analysis"** (Monthly report breakdown)`,
     action: 'HELP'
   });
 });

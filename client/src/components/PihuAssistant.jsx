@@ -129,57 +129,110 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
 
   const role = user?.role_name || user?.role || 'employee';
 
-  // Determine personalized account announcement name
+  // Determine personalized account announcement name (STRICTLY ONLY real human name, NEVER username, phone, or email)
   const getAccountAnnouncementName = () => {
-    if (role === 'super_admin') {
-      return language === 'hi' ? 'सुपर एडमिन' : 'Super Admin';
+    const raw = user?.fullName || user?.full_name || '';
+
+    // Check if raw name contains email (@), phone digits, or system codes (emp_12, user1, etc.)
+    const isEmail = raw.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw);
+    const isPhone = /^\+?[\d\s-]{7,}$/.test(raw.trim());
+    const isCode = /^(emp|usr|admin|user|staff)[_\d]/i.test(raw.trim());
+
+    if (!raw || isEmail || isPhone || isCode) {
+      if (role === 'super_admin') return language === 'hi' ? 'एडमिनिस्ट्रेटर' : 'Administrator';
+      if (role === 'company_admin') {
+        const comp = company?.portalName || company?.name;
+        return comp ? (language === 'hi' ? `${comp} एडमिन` : `${comp} Admin`) : (language === 'hi' ? 'एडमिन' : 'Administrator');
+      }
+      if (role === 'manager') return language === 'hi' ? 'मैनेजर' : 'Manager';
+      return language === 'hi' ? 'साथी' : 'Colleague';
     }
-    if (role === 'company_admin') {
-      const compName = company?.portalName || company?.name || 'Company';
-      return language === 'hi' ? `${compName} एडमिन` : `${compName} Admin`;
+
+    // Clean special characters, digits, or symbols - keep only letters and spaces
+    let clean = raw.replace(/[0-9_@.#$%&*!?/\\()\-]/g, '').trim();
+    if (!clean) {
+      if (role === 'manager') return language === 'hi' ? 'मैनेजर' : 'Manager';
+      if (role === 'company_admin') return language === 'hi' ? 'एडमिन' : 'Administrator';
+      return language === 'hi' ? 'साथी' : 'Colleague';
     }
+
     if (role === 'manager') {
-      const mName = user?.full_name || user?.username || 'Manager';
-      return language === 'hi' ? `मैनेजर ${mName}` : `Manager ${mName}`;
+      return language === 'hi' ? `मैनेजर ${clean}` : `Manager ${clean}`;
     }
-    return user?.full_name || user?.username || (language === 'hi' ? 'साथी' : 'Colleague');
+    return clean;
   };
 
-  // Speak aloud via Web Speech API with dual-language support (English / Hindi)
+  // Speak aloud via Web Speech API - STRICTLY FEMALE VOICE IN CLEAR AUDIO
   const speakVoice = (text, forcedLang = null) => {
     if (!voiceEnabled || !('speechSynthesis' in window)) return;
     try {
       window.speechSynthesis.cancel();
+
+      // Clean speech text: strip markdown, emojis, urls, emails, phones for crystal clear audio
       const cleanText = text
-        .replace(/[*_#`]/g, '')
-        .replace(/•/g, '')
         .replace(/https?:\/\/\S+/g, '')
+        .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '') // remove email addresses
+        .replace(/\b\+?\d[\d\s-]{7,}\d\b/g, '') // remove phone numbers
+        .replace(/[*_#`~]/g, '')
+        .replace(/[•\-><|]/g, ' ')
+        .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '')
+        .replace(/\s+/g, ' ')
         .trim();
+
+      if (!cleanText) return;
 
       const utterance = new SpeechSynthesisUtterance(cleanText);
       const activeLang = forcedLang || language;
 
-      utterance.rate = 0.95;
-      utterance.pitch = 1.1; // Friendly female pitch
-      utterance.volume = 1.0; // Loud and clear
+      utterance.rate = 0.95; // Well-paced, highly articulate
+      utterance.pitch = 1.15; // Pleasant, natural female pitch
+      utterance.volume = 1.0; // Clear, loud audio
 
       const voices = window.speechSynthesis.getVoices();
+
+      // Filter out male voices explicitly
+      const isMaleVoice = (name) => /david|mark|george|male|guy|richard|james|stefan|pavel|madhur|hemant|ravi|amit/i.test(name);
+
       if (activeLang === 'hi') {
         utterance.lang = 'hi-IN';
-        const hiVoice = voices.find(v => v.lang.includes('hi') || v.name.includes('Hindi') || v.name.includes('Kalpana'));
+        // Priority 1: Native Hindi female voice
+        let hiVoice = voices.find(v =>
+          v.lang.includes('hi') &&
+          !isMaleVoice(v.name) &&
+          (v.name.includes('Kalpana') || v.name.includes('Swara') || v.name.includes('Heera') || v.name.includes('Google') || v.name.includes('Female'))
+        );
+        // Priority 2: Any Hindi voice that is not male
+        if (!hiVoice) {
+          hiVoice = voices.find(v => v.lang.includes('hi') && !isMaleVoice(v.name));
+        }
+        // Priority 3: Natural Indian English female voice for clear Hindi pronunciation
+        if (!hiVoice) {
+          hiVoice = voices.find(v => (v.lang.includes('IN') || v.lang.includes('hi')) && (v.name.includes('Veena') || v.name.includes('Heera') || !isMaleVoice(v.name)));
+        }
+        // Priority 4: Standard clear English female voice if Hindi unavailable on device
+        if (!hiVoice) {
+          hiVoice = voices.find(v => !isMaleVoice(v.name) && (v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Samantha')));
+        }
         if (hiVoice) utterance.voice = hiVoice;
       } else {
         utterance.lang = 'en-US';
-        const enVoice = voices.find(v =>
-          v.lang.startsWith('en') && (
+        // Priority list of premium female voices
+        const enFemaleVoice = voices.find(v =>
+          !isMaleVoice(v.name) &&
+          (
             v.name.includes('Google UK English Female') ||
-            v.name.includes('Natural') ||
-            v.name.includes('Female') ||
+            v.name.includes('Google US English') ||
+            v.name.includes('Microsoft Zira') ||
+            v.name.includes('Microsoft Jenny') ||
             v.name.includes('Samantha') ||
-            v.name.includes('Zira')
+            v.name.includes('Victoria') ||
+            v.name.includes('Karen') ||
+            v.name.includes('Veena') ||
+            (v.lang.startsWith('en') && v.name.toLowerCase().includes('female'))
           )
-        );
-        if (enVoice) utterance.voice = enVoice;
+        ) || voices.find(v => v.lang.startsWith('en') && !isMaleVoice(v.name));
+
+        if (enFemaleVoice) utterance.voice = enFemaleVoice;
       }
 
       window.speechSynthesis.speak(utterance);
@@ -214,12 +267,17 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
     setInactivityNotice(false);
 
     const accountName = getAccountAnnouncementName();
+    const isGeneric = !accountName || accountName === 'साथी' || accountName === 'Colleague' || accountName === 'Team Member';
 
     if (language === 'hi') {
-      const audioHi = `नमस्ते ${accountName} जी, मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`;
+      const audioHi = isGeneric
+        ? `नमस्ते! मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`
+        : `नमस्ते ${accountName} जी! मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`;
       speakVoice(audioHi, 'hi');
     } else {
-      const audioEn = `Hi ${accountName}, I am Pihu, your AI assistant. May I help you?`;
+      const audioEn = isGeneric
+        ? `Hi, I am Pihu, your AI assistant. May I help you?`
+        : `Hi ${accountName}! I am Pihu, your AI assistant. May I help you?`;
       speakVoice(audioEn, 'en');
     }
 
