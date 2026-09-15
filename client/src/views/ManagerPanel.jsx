@@ -163,7 +163,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
         // fallback
       }
 
-      await apiRequest('/attendance/punch-in', {
+      const res = await apiRequest('/attendance/punch-in', {
         method: 'POST',
         body: {
           latitude: lat,
@@ -175,7 +175,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
         }
       });
 
-      setSuccess('Manager attendance punch-in recorded successfully via verified GPS.');
+      setSuccess(res?.message || 'Manager attendance punch-in recorded successfully via verified GPS.');
       fetchManagerTodayAttendance();
       fetchData();
     } catch (err) {
@@ -217,7 +217,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
         // fallback
       }
 
-      await apiRequest('/attendance/punch-out', {
+      const res = await apiRequest('/attendance/punch-out', {
         method: 'POST',
         body: {
           latitude: lat,
@@ -229,7 +229,7 @@ export default function ManagerPanel({ user, company, activeTab }) {
         }
       });
 
-      setSuccess('Manager attendance punch-out recorded successfully.');
+      setSuccess(res?.message || 'Manager attendance punch-out recorded successfully.');
       fetchManagerTodayAttendance();
       fetchData();
     } catch (err) {
@@ -625,6 +625,11 @@ export default function ManagerPanel({ user, company, activeTab }) {
                           <span className="text-slate-400">Not Punched In</span>
                         )}
                       </span>
+                      {managerAttendanceToday?.record?.punch_in_lat != null && managerAttendanceToday?.record?.punch_in_lng != null && (
+                        <span className="text-[10px] text-slate-500 block truncate mt-0.5">
+                          GPS: {Number(managerAttendanceToday.record.punch_in_lat).toFixed(4)}, {Number(managerAttendanceToday.record.punch_in_lng).toFixed(4)}
+                        </span>
+                      )}
                       {managerAttendanceToday?.record?.punch_in_location && (
                         <span className="text-[10px] text-slate-500 block truncate mt-0.5">
                           {managerAttendanceToday.record.punch_in_location}
@@ -644,6 +649,11 @@ export default function ManagerPanel({ user, company, activeTab }) {
                           <span className="text-slate-400">Not Punched Out</span>
                         )}
                       </span>
+                      {managerAttendanceToday?.record?.punch_out_lat != null && managerAttendanceToday?.record?.punch_out_lng != null && (
+                        <span className="text-[10px] text-slate-500 block truncate mt-0.5">
+                          GPS: {Number(managerAttendanceToday.record.punch_out_lat).toFixed(4)}, {Number(managerAttendanceToday.record.punch_out_lng).toFixed(4)}
+                        </span>
+                      )}
                       {managerAttendanceToday?.record?.punch_out_location && (
                         <span className="text-[10px] text-slate-500 block truncate mt-0.5">
                           {managerAttendanceToday.record.punch_out_location}

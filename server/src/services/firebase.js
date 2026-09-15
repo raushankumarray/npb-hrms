@@ -2009,6 +2009,20 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       } catch (e) {
         console.warn('Firestore fetch attendance notice:', e.message);
       }
+
+      // Check subcollection companies/{companyId}/attendance
+      for (const [compId] of companiesMap) {
+        try {
+          const compAttSnap = await firestoreDb.collection('companies').doc(String(compId)).collection('attendance').limit(1000).get();
+          compAttSnap.forEach(doc => {
+            const d = doc.data();
+            const key = `${d.companyId || d.company_id || compId}_${d.employeeId || d.employee_id}_${d.date}`;
+            if (!attendanceMap.has(key)) {
+              attendanceMap.set(key, { ...d, companyId: d.companyId || d.company_id || compId });
+            }
+          });
+        } catch (e) {}
+      }
     }
 
     // 2. Also check Realtime Database for any additional data
@@ -2104,11 +2118,44 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           });
         }
       } catch (e) {}
+
+      // Realtime Database companies/{compId}/attendance subpath fetch
+      for (const [compId] of companiesMap) {
+        try {
+          const compAttSnap = await realtimeDb.ref(`companies/${compId}/attendance`).once('value');
+          const compAttVal = compAttSnap.val();
+          if (compAttVal && typeof compAttVal === 'object') {
+            Object.entries(compAttVal).forEach(([dKey, empsOrAtt]) => {
+              if (empsOrAtt && typeof empsOrAtt === 'object') {
+                if (empsOrAtt.employeeId || empsOrAtt.employee_id) {
+                  const eId = empsOrAtt.employeeId || empsOrAtt.employee_id;
+                  const key = `${compId}_${eId}_${empsOrAtt.date || dKey}`;
+                  if (!attendanceMap.has(key)) {
+                    attendanceMap.set(key, { ...empsOrAtt, companyId: compId, employeeId: eId, date: empsOrAtt.date || dKey });
+                  }
+                } else {
+                  Object.entries(empsOrAtt).forEach(([eId, att]) => {
+                    if (att && typeof att === 'object') {
+                      const key = `${compId}_${eId}_${att.date || dKey}`;
+                      if (!attendanceMap.has(key)) {
+                        attendanceMap.set(key, { ...att, companyId: compId, employeeId: eId, date: att.date || dKey });
+                      }
+                    }
+                  });
+                }
+              }
+            });
+          }
+        } catch (e) {}
+      }
     }
 
     // Strict 1:1 Mirror: Purge existing local tenant data before restore so that local database
     // strictly mirrors Firebase with 0 ghost/leftover companies, while strictly preserving Super Admin `adminn`.
-    await wipeAllCompanyDataFromDb({ syncToFirebase: false });
+    // SAFETY GUARD: Only wipe if we actually found company, employee, user, or attendance data in Firebase to restore!
+    if (companiesMap.size > 0 || employeesMap.size > 0 || attendanceMap.size > 0 || usersMap.size > 0) {
+      await wipeAllCompanyDataFromDb({ syncToFirebase: false });
+    }
 
     // 3. Upsert into SQLite in transaction
     let restoredCompanies = 0;
@@ -3030,6 +3077,17 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
         let empId = rawEmpId ? (employeeIdMap.get(String(rawEmpId)) || Number(rawEmpId)) : null;
 
+        if (!compId && (att.companyCode || att.company_code)) {
+          const cCode = att.companyCode || att.company_code;
+          const foundComp = db.prepare('SELECT id FROM companies WHERE LOWER(code) = LOWER(?)').get(cCode);
+          if (foundComp) compId = foundComp.id;
+        }
+        if (compId && !empId && (att.employeeCode || att.employee_code || rawEmpId)) {
+          const empCode = att.employeeCode || att.employee_code || rawEmpId;
+          const foundEmp = db.prepare('SELECT id FROM employees WHERE company_id = ? AND LOWER(employee_id) = LOWER(?)').get(compId, String(empCode).trim());
+          if (foundEmp) empId = foundEmp.id;
+        }
+
         if (compId && empId && date && claimedCompanyIds.has(compId) && claimedEmployeeIds.has(empId)) {
           const compExists = db.prepare('SELECT id FROM companies WHERE id = ?').get(compId);
           const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
@@ -3403,11 +3461,8 @@ module.exports = {
     const ok = initFirebase();
     if (ok) {
       try {
-        const compCount = db.prepare('SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0').get()?.count || 0;
-        if (compCount === 0) {
-          console.log('[FirebaseConfig] 0 companies found locally. Auto-restoring from Firebase...');
-          await fetchAllFromFirebaseAndRestoreToDb();
-        }
+        console.log('[FirebaseConfig] Firebase successfully connected. Auto-restoring all saved data from Firebase...');
+        await fetchAllFromFirebaseAndRestoreToDb();
       } catch (e) {
         console.warn('Auto restore on config notice:', e.message);
       }

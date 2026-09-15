@@ -430,6 +430,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       } else {
         await fetchFirebaseStatus();
       }
+      await fetchData();
     } catch (err) {
       setError(err.message || 'Failed to update Firebase configuration');
     } finally {

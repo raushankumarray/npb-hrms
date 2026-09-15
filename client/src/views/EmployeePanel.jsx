@@ -912,7 +912,16 @@ Please deregister this device in Support Panel so I can register and log in on m
           punch_date: currentPunchDate
         }
       });
-      setSuccess(res.message);
+      setTodayRecord(prev => ({
+        ...(prev || {}),
+        date: currentPunchDate,
+        punch_in_time: currentPunchTime,
+        punch_in_lat: coords.latitude,
+        punch_in_lng: coords.longitude,
+        punch_in_location: locName,
+        status: 'Missing Punch Out'
+      }));
+      setSuccess(res.message || `Punched in successfully at ${format12Hour(currentPunchTime)} | GPS: ${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)} | Area: ${locName}`);
       await fetchData();
       try {
         localStorage.setItem('hrms_attendance_updated', Date.now().toString());
@@ -1007,7 +1016,16 @@ Please deregister this device in Support Panel so I can register and log in on m
           punch_date: currentPunchDate
         }
       });
-      setSuccess(res.message);
+      setTodayRecord(prev => ({
+        ...(prev || {}),
+        punch_out_time: currentPunchTime,
+        punch_out_lat: coords.latitude,
+        punch_out_lng: coords.longitude,
+        punch_out_location: locName,
+        total_hours: res.totalHours || prev?.total_hours,
+        status: res.status || 'Present'
+      }));
+      setSuccess(res.message || `Punched out successfully at ${format12Hour(currentPunchTime)} | GPS: ${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)} | Area: ${locName} | Total Hours: ${res.totalHours || ''} hrs (${res.status || 'Present'})`);
       await fetchData();
       try {
         localStorage.setItem('hrms_attendance_updated', Date.now().toString());
@@ -1603,6 +1621,14 @@ Please deregister this device in Support Panel so I can register and log in on m
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-rose-300 bg-rose-950/70 px-3 py-1.5 rounded-xl border border-rose-700/70 shadow-xs">
                         <X className="w-3.5 h-3.5 text-rose-400 shrink-0" strokeWidth={3} />
                         Device Location: <span className="text-white font-bold">DISABLED ✗</span>
+                      </span>
+                    )}
+
+                    {/* Live Area Address Indicator */}
+                    {isGpsEnabled && (
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-sky-200 bg-sky-950/70 px-3 py-1.5 rounded-xl border border-sky-500/40 shadow-xs max-w-full truncate" title={currentAddressName || myGeofence?.location_name || 'Detecting Area...'}>
+                        <MapPin className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                        <span className="truncate">Area: <strong className="text-white">{cleanAreaName(currentAddressName || myGeofence?.location_name || 'Office Location')}</strong></span>
                       </span>
                     )}
 

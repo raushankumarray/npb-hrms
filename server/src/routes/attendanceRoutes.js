@@ -478,10 +478,18 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     syncCompanyReports(companyId).catch(() => {});
   } catch (e) {}
 
+  const formattedInTime = format12Hour(nowTime);
+  const gpsCoordStr = (latitude && longitude) ? `${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}` : '--';
   res.json({
     success: true,
-    message: `Punched in successfully at ${nowTime}`,
+    message: `Punched in successfully at ${formattedInTime} | GPS: ${gpsCoordStr} | Address: ${resolvedLocation}`,
     punchInTime: nowTime,
+    punchInTime12: formattedInTime,
+    latitude,
+    longitude,
+    punchInLat: latitude,
+    punchInLng: longitude,
+    punchInLocation: resolvedLocation,
     location: resolvedLocation
   });
 });
@@ -666,10 +674,19 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     syncCompanyReports(companyId).catch(() => {});
   } catch (e) {}
 
+  const formattedOutTime = format12Hour(nowTime);
+  const gpsOutCoordStr = (latitude && longitude) ? `${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}` : '--';
   res.json({
     success: true,
-    message: `Punched out successfully at ${nowTime}. Total hours: ${totalHours} hrs (${attendanceStatus}).`,
+    message: `Punched out successfully at ${formattedOutTime} | GPS: ${gpsOutCoordStr} | Address: ${resolvedLocation} | Duration: ${totalHours} hrs (${attendanceStatus})`,
     punchOutTime: nowTime,
+    punchOutTime12: formattedOutTime,
+    latitude,
+    longitude,
+    punchOutLat: latitude,
+    punchOutLng: longitude,
+    punchOutLocation: resolvedLocation,
+    location: resolvedLocation,
     totalHours,
     status: attendanceStatus
   });
