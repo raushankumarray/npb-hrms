@@ -270,21 +270,58 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
     const isGeneric = !accountName || accountName === 'साथी' || accountName === 'Colleague' || accountName === 'Team Member';
 
     if (language === 'hi') {
-      const audioHi = isGeneric
-        ? `नमस्ते! मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`
-        : `नमस्ते ${accountName} जी! मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`;
+      let audioHi = '';
+      if (role === 'manager') {
+        audioHi = isGeneric
+          ? `नमस्ते! मैं पिहू हूँ, टीम प्रबंधन के लिए आपकी AI सहायक। क्या मैं आपकी टीम में कोई मदद कर सकती हूँ?`
+          : `नमस्ते ${accountName} जी! मैं पिहू हूँ, टीम प्रबंधन के लिए आपकी AI सहायक। आज टीम में क्या देखना चाहते हैं?`;
+      } else if (role === 'company_admin') {
+        audioHi = isGeneric
+          ? `नमस्ते! मैं पिहू हूँ, कंपनी प्रशासन के लिए आपकी AI सहायक। आज कंपनी का क्या विवरण देखना चाहते हैं?`
+          : `नमस्ते ${accountName} जी! मैं पिहू हूँ, कंपनी प्रशासन के लिए आपकी AI सहायक। आज कंपनी का कौन सा डेटा देखना चाहते हैं?`;
+      } else {
+        audioHi = isGeneric
+          ? `नमस्ते! मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`
+          : `नमस्ते ${accountName} जी! मैं पिहू हूँ, आपकी AI सहायक। क्या मैं आपकी कोई मदद कर सकती हूँ?`;
+      }
       speakVoice(audioHi, 'hi');
     } else {
-      const audioEn = isGeneric
-        ? `Hi, I am Pihu, your AI assistant. May I help you?`
-        : `Hi ${accountName}! I am Pihu, your AI assistant. May I help you?`;
+      let audioEn = '';
+      if (role === 'manager') {
+        audioEn = isGeneric
+          ? `Hi, I am Pihu, your AI assistant for team management. May I help you with your team today?`
+          : `Hi ${accountName}! I am Pihu, your AI assistant for team management. How may I assist your team today?`;
+      } else if (role === 'company_admin') {
+        audioEn = isGeneric
+          ? `Hi, I am Pihu, your executive AI assistant for company administration. What metrics would you like to view?`
+          : `Hi ${accountName}! I am Pihu, your executive AI assistant for company administration. What metrics would you like to view?`;
+      } else {
+        audioEn = isGeneric
+          ? `Hi, I am Pihu, your AI assistant. May I help you?`
+          : `Hi ${accountName}! I am Pihu, your AI assistant. May I help you?`;
+      }
       speakVoice(audioEn, 'en');
     }
 
     if (messages.length === 0) {
-      const welcomeText = language === 'hi'
-        ? `नमस्ते **${accountName}** जी! 🌸 मैं हूँ **पिहू**, आपकी स्मार्ट AI सहायक।\n\nमैं आपकी अटेंडेंस दर्ज करने, छुट्टी अप्लाई करने, सपोर्ट टिकट बनाने, और डेटा रिपोर्ट विश्लेषण करने में तुरंत सहायता कर सकती हूँ। बताइए, आज मैं आपकी क्या मदद करूँ?`
-        : `Hi **${accountName}**! 🌸 I am **PIHU**, your smart AI Assistant.\n\nI can help you record your Punch In/Out, apply for leaves, raise support tickets, correct attendance, and analyze monthly performance reports! How may I help you today?`;
+      let welcomeText = '';
+      if (role === 'manager') {
+        welcomeText = language === 'hi'
+          ? `नमस्ते **${accountName}** जी! 🌸 मैं हूँ **पिहू**, आपकी टीम प्रबंधन AI सहायक।\n\nमैं आपकी टीम की आज की उपस्थिति देखने, कौन उपस्थित/अनुपस्थित है जांचने, लंबित लीव व करेक्शन स्वीकृतियां प्रबंधित करने और टीम रिपोर्ट विश्लेषण में सहायता कर सकती हूँ। बताइए, आज टीम का क्या विवरण देखना चाहते हैं?`
+          : `Hi **${accountName}**! 🌸 I am **PIHU**, your AI Assistant for Team Management.\n\nI can help you monitor today's team attendance, check who is absent or present, manage pending team leave approvals, and analyze team performance reports! How may I assist you with your team today?`;
+      } else if (role === 'company_admin') {
+        welcomeText = language === 'hi'
+          ? `नमस्ते **${accountName}** जी! 🌸 मैं हूँ **पिहू**, कंपनी प्रशासन के लिए आपकी AI सहायक।\n\nमैं कंपनी की कुल उपस्थिति दर, सक्रिय कर्मचारी संख्या, कंपनी-व्यापी लंबित स्वीकृतियां, और एचआर एनालिटिक्स रिपोर्ट प्रदान कर सकती हूँ। बताइए, आज कंपनी का कौन सा डेटा देखना चाहते हैं?`
+          : `Hi **${accountName}**! 🌸 I am **PIHU**, your Executive AI Assistant for Company Administration.\n\nI can provide live company-wide attendance stats, active employee counts, pending leave & correction approvals, and overall HR analytics! What would you like to inspect today?`;
+      } else if (role === 'super_admin' || role === 'support') {
+        welcomeText = language === 'hi'
+          ? `नमस्ते **${accountName}** जी! 🌸 मैं हूँ **पिहू**, आपकी प्लेटफॉर्म एडमिनिस्ट्रेटिव AI सहायक।\n\nमैं हेल्पडेस्क टिकट्स, खातों की स्थिति और सिस्टम ऑपरेशंस में आपकी सहायता कर सकती हूँ। बताइए, आज क्या सहायता करूँ?`
+          : `Hi **${accountName}**! 🌸 I am **PIHU**, your Administrative AI Assistant.\n\nI can help you monitor system helpdesk tickets, account statuses, and platform operations. How may I assist you today?`;
+      } else {
+        welcomeText = language === 'hi'
+          ? `नमस्ते **${accountName}** जी! 🌸 मैं हूँ **पिहू**, आपकी स्मार्ट AI सहायक।\n\nमैं आपकी अटेंडेंस दर्ज करने, कार्य घंटे देखने, छुट्टी अप्लाई करने, सपोर्ट टिकट बनाने, और डेटा रिपोर्ट विश्लेषण करने में तुरंत सहायता कर सकती हूँ। बताइए, आज मैं आपकी क्या मदद करूँ?`
+          : `Hi **${accountName}**! 🌸 I am **PIHU**, your smart AI Assistant.\n\nI can help you record your Punch In/Out, track working hours, apply for leaves, raise support tickets, correct attendance, and analyze monthly performance reports! How may I help you today?`;
+      }
 
       setMessages([
         {
@@ -868,48 +905,28 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
                 e.stopPropagation();
                 handleRemoveFromScreen();
               }}
-              className="absolute -top-2 -left-2 w-5 h-5 bg-slate-900/90 hover:bg-rose-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-md border border-white/60 transition-all z-20 cursor-pointer"
+              className="absolute -top-1.5 -left-1.5 w-5 h-5 bg-slate-900/90 hover:bg-rose-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-md border border-white/60 transition-all z-20 cursor-pointer"
               title={language === 'hi' ? 'स्क्रीन से हटाएं' : 'Remove from screen'}
             >
               ✕
             </button>
 
+            {/* Circular Chatbot Button - ONLY ICON IN CIRCLE (NO TEXT, NO DOT) */}
             <button
               type="button"
+              data-pihu-fab="true"
               onClick={handleFabClick}
-              className="relative flex items-center gap-2 p-1.5 pr-3.5 bg-gradient-to-r from-pink-600 via-rose-600 to-indigo-600 text-white font-semibold rounded-full shadow-2xl hover:shadow-pink-500/40 hover:scale-105 active:scale-95 transition-all duration-300 border-2 border-white/40 cursor-grab active:cursor-grabbing"
-              title={language === 'hi' ? 'पिहू AI से बात करें (ड्रैग करके कहीं भी ले जाएं)' : 'Chat with PIHU AI (Drag anywhere to move)'}
+              className="relative w-14 h-14 rounded-full p-1 bg-gradient-to-tr from-pink-600 via-rose-500 to-indigo-600 text-white shadow-2xl hover:shadow-pink-500/50 hover:scale-110 active:scale-95 transition-all duration-300 border-2 border-white/80 cursor-grab active:cursor-grabbing flex items-center justify-center group/btn"
+              title={language === 'hi' ? 'पिहू AI (ड्रैग करके कहीं भी ले जाएं)' : 'PIHU AI (Drag anywhere to move)'}
             >
-              {/* Circular AI Girl Avatar inside */}
-              <div className="relative pointer-events-none">
-                <AiGirlAvatar size="w-11 h-11" border={false} />
-                <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-400 border-2 border-pink-700"></span>
-                </span>
-              </div>
-
-              <div className="flex flex-col items-start text-left pointer-events-none">
-                <div className="flex items-center gap-1">
-                  <span className="text-sm font-extrabold tracking-wide">PIHU AI</span>
-                  <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
-                </div>
-                <span className="text-[10px] text-pink-100 font-medium">
-                  {language === 'hi' ? 'सहायक AI' : 'Smart Assistant'}
-                </span>
-              </div>
-
-              {/* Move / Drag grip handle icon */}
-              <div
-                className="text-white/60 group-hover:text-white pl-1 pointer-events-none"
-                title={language === 'hi' ? 'ड्रैग करके ले जाएं' : 'Drag to move'}
-              >
-                <GripVertical className="w-4 h-4" />
+              {/* Circular AI Girl Avatar inside - PURE ICON IN CIRCLE, NO DOT, NO TEXT */}
+              <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center pointer-events-none shadow-inner">
+                <AiGirlAvatar size="w-full h-full" border={false} />
               </div>
 
               {/* Hover Tooltip */}
-              <span className="absolute -top-9 right-0 bg-slate-900 text-white text-[11px] font-medium px-2.5 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap">
-                {language === 'hi' ? 'नमस्ते! क्या मैं मदद करूँ? (ड्रैग कर सकते हैं)' : 'Hi! May I help you? (Draggable)'}
+              <span className="absolute -top-9 right-0 bg-slate-900/95 text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg shadow-lg opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none whitespace-nowrap border border-slate-700">
+                {language === 'hi' ? 'पिहू AI' : 'PIHU AI'}
               </span>
             </button>
           </div>
@@ -966,15 +983,13 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
             <div className="flex items-center gap-2.5">
               <div className="relative">
                 <AiGirlAvatar size="w-10 h-10" border={true} />
-                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-pink-700 rounded-full"></span>
               </div>
               <div>
                 <div className="flex items-center gap-1.5">
                   <h3 className="font-bold text-sm leading-tight tracking-wide">PIHU AI</h3>
                   <span className="text-[10px] bg-white/20 px-1.5 py-0.2 rounded font-medium">Assistant</span>
                 </div>
-                <p className="text-[11px] text-pink-100 leading-tight flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <p className="text-[11px] text-pink-100 leading-tight">
                   {language === 'hi' ? 'ऑनलाइन • 5m ऑटो-क्लियर' : 'Online • 5m Auto-Clear'}
                 </p>
               </div>
@@ -1204,8 +1219,10 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
                     ? (language === 'hi' ? 'समस्या का विवरण लिखें...' : 'Describe issue in detail...')
                     : conversationState.actionState === 'AWAITING_CORRECTION_DATE'
                     ? (language === 'hi' ? 'करेक्शन की तारीख (जैसे 2026-09-15)...' : 'Correction date (e.g. 2026-09-15)...')
-                    : conversationState.actionState === 'AWAITING_CORRECTION_TIMES'
-                    ? (language === 'hi' ? 'सही पंच समय (09:30 AM to 06:30 PM)...' : 'Correct times (09:30 AM to 06:30 PM)...')
+                    : role === 'manager'
+                    ? (language === 'hi' ? 'पिहू से पूछें (जैसे: Who is absent today?, Team report)...' : 'Ask PIHU (e.g. Who is absent today?, Team report)...')
+                    : role === 'company_admin'
+                    ? (language === 'hi' ? 'पिहू से पूछें (जैसे: Company attendance, Pending approvals)...' : 'Ask PIHU (e.g. Company attendance, Pending approvals)...')
                     : (language === 'hi' ? 'पिहू से कुछ भी पूछें (जैसे Punch In, Apply leave)...' : 'Ask PIHU anything (e.g. Punch In, Apply leave)...')
                 }
                 className="flex-1 text-xs px-3.5 py-2.5 bg-slate-100 border border-slate-300 rounded-full focus:outline-none focus:border-pink-500 focus:bg-white text-slate-900 transition-all placeholder:text-slate-400"

@@ -249,17 +249,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-sky-600' : ''}`} />
             </button>
 
-            {/* PIHU AI Assistant Quick Launcher in Header */}
-            <button
-              type="button"
-              onClick={() => window.dispatchEvent(new CustomEvent('pihu-toggle'))}
-              className="px-2.5 py-1.5 text-pink-600 hover:text-pink-700 hover:bg-pink-50 rounded-xl transition-all focus:outline-none flex items-center gap-1.5 border border-pink-200/80 bg-pink-50/50 shadow-2xs"
-              title="PIHU AI Assistant (Click to open / restore on screen)"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-pink-500 animate-pulse" />
-              <span className="hidden sm:inline text-xs font-bold text-pink-700">PIHU AI</span>
-            </button>
-
             {/* Notification Bell */}
             <NotificationDropdown />
 

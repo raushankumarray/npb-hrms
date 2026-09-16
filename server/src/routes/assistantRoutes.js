@@ -1134,7 +1134,7 @@ router.post('/chat', verifyAuth, async (req, res) => {
           reply: isHindi
             ? "आपके अंतर्गत अभी कोई टीम सदस्य असाइन नहीं हैं। 'Employee Mapping' टैब से कर्मचारी जोड़ें।"
             : "No team members are currently assigned under your manager profile.",
-          action: 'TEAM_SUMMARY'
+          action: 'TEAM_ABSENT'
         });
       }
 
@@ -1177,7 +1177,7 @@ router.post('/chat', verifyAuth, async (req, res) => {
       if (!teamEmps || teamEmps.length === 0) {
         return res.json({
           reply: isHindi ? "आपके अंतर्गत कोई टीम सदस्य असाइन नहीं हैं।" : "No team members are assigned under your manager profile.",
-          action: 'TEAM_SUMMARY'
+          action: 'TEAM_PRESENT'
         });
       }
 
@@ -1247,6 +1247,70 @@ router.post('/chat', verifyAuth, async (req, res) => {
         action: 'VIEW_APPROVALS'
       });
     }
+
+    // 4. Team Attendance Overview
+    if (lowerMsg.includes('attendance') || lowerMsg.includes('punch') || lowerMsg.includes('status') || lowerMsg.includes('उपस्थिति') || lowerMsg.includes('हाजिरी') || lowerMsg.includes('overview') || lowerMsg.includes('summary')) {
+      const teamEmps = db.prepare(`
+        SELECT e.id, e.employee_id as code, e.full_name, e.department
+        FROM employees e JOIN employee_mappings em ON e.id = em.employee_id
+        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
+      `).all(employeeId, companyId);
+
+      if (!teamEmps || teamEmps.length === 0) {
+        return res.json({
+          reply: isHindi ? "आपके अंतर्गत कोई टीम सदस्य असाइन नहीं हैं।" : "No team members are assigned under your manager profile.",
+          action: 'TEAM_SUMMARY'
+        });
+      }
+
+      const teamIds = teamEmps.map(e => e.id);
+      const placeholders = teamIds.map(() => '?').join(',');
+      const records = db.prepare(`
+        SELECT employee_id, punch_in_time FROM attendance_records
+        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders}) AND punch_in_time IS NOT NULL
+      `).all(companyId, todayStr, ...teamIds);
+
+      const presentCount = records.length;
+      const totalCount = teamEmps.length;
+      const absentCount = Math.max(0, totalCount - presentCount);
+      const attRate = totalCount > 0 ? Math.round((presentCount / totalCount) * 100) : 0;
+
+      return res.json({
+        reply: isHindi
+          ? `📊 **टीम अटेंडेंस लाइव सारांश (${todayStr})**:\n\n` +
+            `• **कुल टीम सदस्य**: ${totalCount}\n` +
+            `• **आज उपस्थित (Punched In)**: \`${presentCount} सदस्य\` (${attRate}% उपस्थिति दर)\n` +
+            `• **आज अनुपस्थित / बाकी**: \`${absentCount} सदस्य\`\n\n` +
+            `पूरा 11-कॉलम दैनिक लॉग और GPS लोकेशन देखने के लिए 'Daily Attendance Reports' टैब पर जाएं।`
+          : `📊 **Team Attendance Live Summary (${todayStr})**:\n\n` +
+            `• **Total Assigned Team**: ${totalCount}\n` +
+            `• **Present Today**: \`${presentCount} members\` (${attRate}% attendance rate)\n` +
+            `• **Absent / Remaining**: \`${absentCount} members\`\n\n` +
+            `Complete 11-column daily attendance logs with GPS coordinates are available in your Reports tab.`,
+        action: 'TEAM_SUMMARY'
+      });
+    }
+
+    // 5. Team Reports / Data Analysis
+    if (lowerMsg.includes('report') || lowerMsg.includes('analysis') || lowerMsg.includes('रिपोर्ट') || lowerMsg.includes('विश्लेषण')) {
+      const teamEmps = db.prepare(`
+        SELECT e.id FROM employees e
+        JOIN employee_mappings em ON e.id = em.employee_id
+        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
+      `).all(employeeId, companyId);
+      const teamCount = teamEmps.length;
+
+      return res.json({
+        reply: isHindi
+          ? `📊 **टीम डेटा रिपोर्ट विश्लेषण**:\n\n` +
+            `• **सक्रिय टीम सदस्य**: ${teamCount}\n` +
+            `• **मासिक डेटा रिपोर्ट**: विस्तृत 11-कॉलम दैनिक एवं मासिक लॉग 'Reports' टैब में उपलब्ध हैं।`
+          : `📊 **Team Data Report Analysis**:\n\n` +
+            `• **Active Team Members**: ${teamCount}\n` +
+            `• **Monthly Team Logs**: Full 11-column daily logs with verified GPS are viewable in the Reports tab.`,
+        action: 'REPORT_ANALYSIS'
+      });
+    }
   }
 
   // -------------------------------------------------------------
@@ -1310,6 +1374,45 @@ router.post('/chat', verifyAuth, async (req, res) => {
         action: 'PLAN_INFO'
       });
     }
+
+    // Pending Approvals (Company-Wide)
+    if (lowerMsg.includes('pending') || lowerMsg.includes('approval') || lowerMsg.includes('स्वीकृति')) {
+      const pendingLeaves = db.prepare(`
+        SELECT COUNT(*) as count FROM leave_requests WHERE company_id = ? AND status = 'pending'
+      `).get(companyId)?.count || 0;
+
+      const pendingCorrections = db.prepare(`
+        SELECT COUNT(*) as count FROM attendance_correction_requests WHERE company_id = ? AND status = 'pending'
+      `).get(companyId)?.count || 0;
+
+      return res.json({
+        reply: isHindi
+          ? `⏳ **कंपनी-व्यापी लंबित स्वीकृतियां (Pending Approvals)**:\n\n` +
+            `• **लंबित लीव आवेदन**: \`${pendingLeaves} अनुरोध\`\n` +
+            `• **लंबित पंच सुधार**: \`${pendingCorrections} अनुरोध\`\n\n` +
+            `स्वीकृति या अस्वीकृति देने के लिए 'Approval and Correction' टैब खोलें।`
+          : `⏳ **Company-Wide Pending Approvals**:\n\n` +
+            `• **Pending Leave Requests**: \`${pendingLeaves}\`\n` +
+            `• **Pending Punch Corrections**: \`${pendingCorrections}\`\n\n` +
+            `Manage and approve them in the 'Approval and Correction' tab.`,
+        action: 'VIEW_APPROVALS'
+      });
+    }
+
+    // Active Employees / Staff Count
+    if (lowerMsg.includes('employee') || lowerMsg.includes('staff') || lowerMsg.includes('कर्मचारी') || lowerMsg.includes('worker') || lowerMsg.includes('members')) {
+      const totalActive = db.prepare(`
+        SELECT COUNT(*) as count FROM employees 
+        WHERE company_id = ? AND status = 'active' AND is_deleted = 0
+      `).get(companyId)?.count || 0;
+
+      return res.json({
+        reply: isHindi
+          ? `👥 **कंपनी कर्मचारी विवरण**:\n\n• **सक्रिय कर्मचारी**: \`${totalActive} सदस्य\`\n• सभी कर्मचारियों की सूची देखने के लिए 'Employees & Staff' टैब पर जाएं।`
+          : `👥 **Company Staff Summary**:\n\n• **Total Active Employees**: \`${totalActive}\`\n• View the complete roster in the 'Employees & Staff' tab.`,
+        action: 'COMPANY_OVERVIEW'
+      });
+    }
   }
 
   // -------------------------------------------------------------
@@ -1332,6 +1435,34 @@ router.post('/chat', verifyAuth, async (req, res) => {
   // (STRICTLY uses cleanDisplayName, NEVER username, phone, or email)
   // -------------------------------------------------------------
   if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('hey') || lowerMsg.includes('pihu') || lowerMsg.includes('नमस्ते')) {
+    if (role === 'manager') {
+      return res.json({
+        reply: isHindi
+          ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, आपकी टीम प्रबंधन AI सहायक।\n\nआप मुझसे अपनी टीम के बारे में पूछ सकते हैं:\n• *"Who is absent today in my team?"* (आज कौन अनुपस्थित है?)\n• *"Who is present today?"* (आज कौन उपस्थित है?)\n• *"Pending leave approvals"* (लंबित स्वीकृतियां)\n• *"Team attendance report"* (टीम रिपोर्ट विश्लेषण)\n• *"Upcoming holidays"* (आगामी छुट्टियां)\n\nबताइए, आज टीम का क्या विवरण देखना चाहते हैं?`
+          : `Hi ${cleanDisplayName}! 🌸 I am **PIHU**, your AI Assistant for Team Management.\n\nYou can ask me:\n• *"Who is absent today in my team?"*\n• *"Who is present today?"*\n• *"Pending leave approvals"*\n• *"Team attendance report"*\n• *"Upcoming holidays"*\n\nHow may I assist you with your team today?`,
+        action: 'GREETING'
+      });
+    }
+
+    if (role === 'company_admin') {
+      return res.json({
+        reply: isHindi
+          ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, कंपनी प्रशासन के लिए आपकी AI सहायक।\n\nआप मुझसे कंपनी के बारे में पूछ सकते हैं:\n• *"Today company attendance overview"* (कंपनी उपस्थिति दर)\n• *"Active employees count"* (सक्रिय कर्मचारी संख्या)\n• *"Company pending approvals"* (लंबित स्वीकृतियां)\n• *"Subscription plan expiry"* (सब्सक्रिप्शन स्थिति)\n• *"Monthly attendance report"* (डेटा रिपोर्ट विश्लेषण)\n\nबताइए, आज कंपनी का कौन सा डेटा देखना चाहते हैं?`
+          : `Hi ${cleanDisplayName}! 🌸 I am **PIHU**, your Executive AI Assistant for Company Administration.\n\nYou can ask me:\n• *"Today company attendance overview"*\n• *"Active employees count"*\n• *"Company pending approvals"*\n• *"Subscription plan expiry"*\n• *"Monthly attendance report analysis"*\n\nWhat would you like to inspect today?`,
+        action: 'GREETING'
+      });
+    }
+
+    if (role === 'super_admin' || role === 'support') {
+      return res.json({
+        reply: isHindi
+          ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, आपकी प्लेटफॉर्म एडमिनिस्ट्रेटिव AI सहायक।\n\nआप मुझसे पूछ सकते हैं:\n• *"Platform system overview"*\n• *"Registered companies"*\n• *"Support tickets status"*\n\nबताइए, आज क्या सहायता करूँ?`
+          : `Hi ${cleanDisplayName}! 🌸 I am **PIHU**, your Administrative AI Assistant.\n\nYou can ask me:\n• *"Platform system overview"*\n• *"Registered companies overview"*\n• *"Support tickets status"*\n\nHow may I assist you today?`,
+        action: 'GREETING'
+      });
+    }
+
+    // Default: Employee Panel
     return res.json({
       reply: isHindi
         ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, आपकी स्मार्ट AI सहायक।\n\nमैं आपकी अटेंडेंस दर्ज करने, छुट्टी अप्लाई करने, सपोर्ट टिकट बनाने, और डेटा रिपोर्ट विश्लेषण करने में तुरंत सहायता कर सकती हूँ।\n\nआप मुझसे पूछ सकते हैं:\n• *"Punch In"* / *"Punch Out"*\n• *"Aaj ka working hours"* (कार्य घंटे)\n• *"Mera leave balance"* (छुट्टी बैलेंस)\n• *"Apply my leave"* (छुट्टी अप्लाई करें)\n• *"Attendance correction"* (पंच सुधार)\n• *"Data report analysis"* (मासिक रिपोर्ट विश्लेषण)\n\nबताइए, आज मैं आपकी क्या सहायता करूँ?`
@@ -1340,10 +1471,29 @@ router.post('/chat', verifyAuth, async (req, res) => {
     });
   }
 
+  // Role-Segregated Fallback Help
+  if (role === 'manager') {
+    return res.json({
+      reply: isHindi
+        ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nमैनेजर पैनल में आप मुझसे टीम डेटा पूछ सकते हैं:\n1. 👥 **"Who is absent today?"** (अनुपस्थित टीम सदस्य)\n2. 🟢 **"Who is present today?"** (उपस्थित सदस्य एवं समय)\n3. ⏳ **"Pending approvals"** (लंबित लीव व करेक्शन)\n4. 📊 **"Team attendance report"** (टीम रिपोर्ट विश्लेषण)\n5. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)`
+        : `I analyzed your query: "${rawMsg}".\n\nIn Manager Panel, you can ask for team management data:\n1. 👥 **"Who is absent today?"** (Absent team members)\n2. 🟢 **"Who is present today?"** (Present members & punch times)\n3. ⏳ **"Pending approvals"** (Team leave & punch requests)\n4. 📊 **"Team attendance report"** (Team analytics)\n5. 🎫 **"Create ticket"** (Technical support ticket)`,
+      action: 'HELP'
+    });
+  }
+
+  if (role === 'company_admin') {
+    return res.json({
+      reply: isHindi
+        ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nकंपनी एडमिन पैनल में आप मुझसे कंपनी डेटा पूछ सकते हैं:\n1. 🏢 **"Company attendance overview"** (लाइव उपस्थिति दर)\n2. ⏳ **"Company pending approvals"** (लंबित स्वीकृतियां)\n3. 📋 **"Subscription plan expiry"** (प्लान वैधता)\n4. 📊 **"Attendance report analysis"** (डेटा रिपोर्ट विश्लेषण)`
+        : `I analyzed your query: "${rawMsg}".\n\nIn Company Admin Panel, you can inspect company analytics:\n1. 🏢 **"Company attendance overview"** (Live staff attendance rate)\n2. ⏳ **"Pending approvals"** (All company pending requests)\n3. 📋 **"Subscription plan expiry"** (Plan renewal & validity)\n4. 📊 **"Attendance report analysis"** (Exportable analytics)`,
+      action: 'HELP'
+    });
+  }
+
   return res.json({
     reply: isHindi
-      ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nआप मुझसे अपनी अटेंडेंस, वर्किंग ऑवर्स, छुट्टी बैलेंस, या रिपोर्ट का लाइव डेटा पूछ सकते हैं:\n1. ⏱️ **"Punch In"** या **"Punch Out"** (GPS सत्यापन)\n2. ⏳ **"Aaj kitne ghante kaam kiya"** (कार्य अवधि)\n3. 📅 **"Apply my leave"** (छुट्टी अप्लाई करें)\n4. 🏖️ **"Mera leave balance"** (अवकाश शेष)\n5. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)\n6. 📊 **"Data report analysis"** (मासिक विश्लेषण)`
-      : `I analyzed your query: "${rawMsg}".\n\nYou can ask for live attendance, working hours, leave balances, or reports:\n1. ⏱️ **"Punch In"** or **"Punch Out"** (GPS verified)\n2. ⏳ **"How many hours have I worked today?"** (Live duration)\n3. 📅 **"Apply my leave"** (Step-by-step leave apply)\n4. 🏖️ **"What is my leave balance?"** (CL / EL balance)\n5. 🎫 **"Create ticket"** (Raise support ticket)\n6. 📊 **"Data report analysis"** (Monthly report breakdown)`,
+      ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nकर्मचारी पैनल में आप मुझसे लाइव डेटा पूछ सकते हैं:\n1. ⏱️ **"Punch In"** या **"Punch Out"** (GPS सत्यापन)\n2. ⏳ **"Aaj kitne ghante kaam kiya"** (कार्य अवधि)\n3. 📅 **"Apply my leave"** (छुट्टी अप्लाई करें)\n4. 🏖️ **"Mera leave balance"** (अवकाश शेष)\n5. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)\n6. 📊 **"Data report analysis"** (मासिक विश्लेषण)`
+      : `I analyzed your query: "${rawMsg}".\n\nIn Employee Panel, you can ask for live attendance and services:\n1. ⏱️ **"Punch In"** or **"Punch Out"** (GPS verified)\n2. ⏳ **"How many hours have I worked today?"** (Live duration)\n3. 📅 **"Apply my leave"** (Step-by-step leave apply)\n4. 🏖️ **"What is my leave balance?"** (CL / EL balance)\n5. 🎫 **"Create ticket"** (Raise support ticket)\n6. 📊 **"Data report analysis"** (Monthly report breakdown)`,
     action: 'HELP'
   });
 });
