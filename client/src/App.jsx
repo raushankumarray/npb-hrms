@@ -243,7 +243,7 @@ export default function App() {
           />
         );
       case 'support':
-        return <SupportPanel user={user} activeTab={activeTab} />;
+        return <SupportPanel user={user} activeTab={activeTab} onSelectTab={handleSelectTab} />;
       case 'company_admin':
         return (
           <CompanyAdminPanel

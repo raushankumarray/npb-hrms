@@ -879,5 +879,186 @@ router.post('/remote/quick-action', verifyAuth, requireSupportLevel(4), (req, re
   return res.status(400).json({ error: `Unknown remote action "${action}".` });
 });
 
+// --- SUSPENDED ACCOUNTS SEARCH & ACTIVATION HUB ---
+
+// Search & List Suspended Accounts (by Name, Username, Email, Phone, or Code)
+router.get('/suspended-accounts', verifyAuth, requireRole(['support', 'super_admin']), (req, res) => {
+  const { search, company_id } = req.query;
+
+  let query = `
+    SELECT e.id as employee_id, e.employee_id as employee_code, e.full_name, e.department, e.designation,
+           COALESCE(e.email, u.email, '') as email,
+           COALESCE(e.mobile, u.mobile, '') as mobile,
+           e.status as employee_status,
+           u.id as user_id, u.username, u.status as user_status, u.last_login_at,
+           c.id as company_id, c.name as company_name, c.code as company_code
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    LEFT JOIN companies c ON e.company_id = c.id
+    WHERE e.is_deleted = 0 AND u.is_deleted = 0
+      AND (
+        e.status IN ('suspended', 'disabled', 'inactive') OR
+        u.status IN ('suspended', 'disabled', 'inactive')
+      )
+  `;
+  const params = [];
+
+  if (company_id && company_id !== 'all') {
+    query += ' AND e.company_id = ?';
+    params.push(company_id);
+  }
+
+  if (search && search.trim()) {
+    const sTerm = `%${search.trim()}%`;
+    query += ` AND (
+      e.full_name LIKE ? OR
+      u.username LIKE ? OR
+      e.email LIKE ? OR
+      u.email LIKE ? OR
+      e.mobile LIKE ? OR
+      u.mobile LIKE ? OR
+      e.employee_id LIKE ?
+    )`;
+    params.push(sTerm, sTerm, sTerm, sTerm, sTerm, sTerm, sTerm);
+  }
+
+  query += ' ORDER BY e.updated_at DESC, e.id DESC LIMIT 100';
+
+  const accounts = db.prepare(query).all(...params);
+  res.json({ accounts });
+});
+
+// Enable / Activate Suspended Account (Support Team or Super Admin)
+router.post('/enable-account/:id', verifyAuth, requireRole(['support', 'super_admin']), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+
+  // Look up employee row first, or user row
+  let emp = db.prepare(`
+    SELECT e.*, u.id as user_id, u.username, u.email as user_email, u.mobile as user_mobile, u.status as user_status
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    WHERE e.id = ? AND e.is_deleted = 0
+  `).get(id);
+
+  if (!emp) {
+    emp = db.prepare(`
+      SELECT e.*, u.id as user_id, u.username, u.email as user_email, u.mobile as user_mobile, u.status as user_status
+      FROM users u
+      LEFT JOIN employees e ON u.id = e.user_id
+      WHERE u.id = ? AND u.is_deleted = 0
+    `).get(id);
+  }
+
+  if (!emp) {
+    return res.status(404).json({ error: 'Account not found.' });
+  }
+
+  const transaction = db.transaction(() => {
+    // 1. Activate employee record
+    if (emp.id) {
+      db.prepare("UPDATE employees SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(emp.id);
+    }
+    // 2. Activate user login account
+    db.prepare("UPDATE users SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(emp.user_id);
+
+    // 3. Log Audit
+    logAudit({
+      companyId: emp.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Support Account Enablement Hub',
+      action: 'SUSPENDED_ACCOUNT_ENABLED',
+      targetEntity: 'employees',
+      targetId: emp.id || emp.user_id,
+      oldValues: { employee_status: emp.status, user_status: emp.user_status },
+      newValues: { status: 'active' },
+      reason: `Suspended account restored and enabled by Support Team (${req.user.username})`
+    });
+  });
+
+  transaction();
+
+  // 4. Sync with Firebase (Realtime DB and Firestore)
+  try {
+    const { syncEmployee, realtimeDb, firestoreDb } = require('../services/firebase');
+    if (syncEmployee && emp.id) {
+      const freshEmp = db.prepare('SELECT * FROM employees WHERE id = ?').get(emp.id);
+      if (freshEmp) syncEmployee(freshEmp).catch(() => {});
+    }
+    if (realtimeDb) {
+      realtimeDb.ref(`users/${emp.user_id}/status`).set('active').catch(() => {});
+      if (emp.id) realtimeDb.ref(`employees/${emp.id}/status`).set('active').catch(() => {});
+    }
+    if (firestoreDb) {
+      firestoreDb.collection('users').doc(String(emp.user_id)).set({ status: 'active' }, { merge: true }).catch(() => {});
+      if (emp.id) firestoreDb.collection('employees').doc(String(emp.id)).set({ status: 'active' }, { merge: true }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('Firebase sync note on enable account:', e.message);
+  }
+
+  res.json({
+    success: true,
+    message: `Account for "${emp.full_name || emp.username}" has been successfully enabled and restored to Active.`,
+    account: {
+      employee_id: emp.id,
+      user_id: emp.user_id,
+      status: 'active'
+    }
+  });
+});
+
+// Permanent Delete Ticket History via Support endpoint (Level 4 Support or Super Admin)
+router.delete('/tickets/:id', verifyAuth, requireSupportLevel(4), (req, res) => {
+  const reqId = parseInt(req.params.id, 10);
+
+  const ticket = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+  if (!ticket) {
+    return res.status(404).json({ error: 'Ticket not found.' });
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare('DELETE FROM service_request_messages WHERE request_id = ?').run(reqId);
+    db.prepare('DELETE FROM service_requests WHERE id = ?').run(reqId);
+    try { db.prepare('DELETE FROM ticket_messages WHERE ticket_id = ?').run(reqId); } catch (e) {}
+    try { db.prepare('DELETE FROM support_tickets WHERE id = ?').run(reqId); } catch (e) {}
+
+    logAudit({
+      companyId: ticket.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Support L4 Operations Hub',
+      action: 'TICKET_PERMANENTLY_DELETED',
+      targetEntity: 'service_requests',
+      targetId: reqId,
+      oldValues: { title: ticket.title, request_type: ticket.request_type },
+      reason: `Permanent deletion of ticket #${reqId} and history by Level 4 Support`
+    });
+  });
+
+  transaction();
+
+  try {
+    const { deleteFromFirebase, realtimeDb } = require('../services/firebase');
+    if (deleteFromFirebase) {
+      deleteFromFirebase('service_requests', reqId).catch(() => {});
+      deleteFromFirebase('support_tickets', reqId).catch(() => {});
+    }
+    if (realtimeDb) {
+      realtimeDb.ref(`service_requests/${reqId}`).remove().catch(() => {});
+      realtimeDb.ref(`service_request_messages/${reqId}`).remove().catch(() => {});
+      realtimeDb.ref(`support_tickets/${reqId}`).remove().catch(() => {});
+      realtimeDb.ref(`ticket_messages/${reqId}`).remove().catch(() => {});
+    }
+  } catch (e) {}
+
+  res.json({
+    success: true,
+    message: `Ticket #${reqId} and its complete history have been permanently deleted from the database and all user accounts.`
+  });
+});
+
 module.exports = router;
 

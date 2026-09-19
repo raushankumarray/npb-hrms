@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
-const { getTenantCompanyId } = require('../middleware/rbac');
+const { getTenantCompanyId, requireSupportLevel } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { unbindUserDevice } = require('../services/deviceBinding');
 const { syncTicketMessage, syncSupportTicket, syncServiceRequest, syncServiceRequestMessage } = require('../services/firebase');
@@ -205,11 +205,11 @@ router.get('/service-requests', verifyAuth, (req, res) => {
     params.push(companyId);
   }
 
-  // If view is 'active', hide archived records (auto-archived after 1 day)
+  // If view is 'active', hide archived records and closed tickets across all panels
   if (view === 'active') {
-    query += ' AND sr.is_archived = 0';
+    query += " AND sr.is_archived = 0 AND sr.status NOT IN ('closed')";
   } else if (view === 'archived') {
-    query += ' AND sr.is_archived = 1';
+    query += " AND (sr.is_archived = 1 OR sr.status IN ('closed', 'resolved'))";
   }
 
   // If scope is explicitly 'own' or for specific employee
@@ -359,10 +359,6 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
   const reqId = parseInt(req.params.id, 10);
   const { status, resolution_notes } = req.body; // 'resolved' or 'closed'
 
-  if (!['resolved', 'closed', 'in_progress'].includes(status)) {
-    return res.status(400).json({ error: 'Status must be in_progress, resolved, or closed.' });
-  }
-
   const current = db.prepare(`
     SELECT sr.*, e.user_id, e.full_name
     FROM service_requests sr
@@ -374,15 +370,28 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
     return res.status(404).json({ error: 'Request not found.' });
   }
 
+  // Security & User Rule: Closed tickets can NEVER be reopened by Employee, Manager, or Company Admin
+  if (current.status === 'closed' && ['employee', 'manager', 'company_admin'].includes(req.user.role_name)) {
+    return res.status(403).json({
+      error: 'Closed tickets cannot be reopened. Please create a new ticket if you require further assistance.'
+    });
+  }
+
+  if (!['resolved', 'closed', 'in_progress'].includes(status)) {
+    return res.status(400).json({ error: 'Status must be in_progress, resolved, or closed.' });
+  }
+
   const transaction = db.transaction(() => {
     db.prepare(`
       UPDATE service_requests SET
         status = ?,
         resolved_by = ?,
         resolution_notes = COALESCE(?, resolution_notes),
+        is_archived = CASE WHEN ? IN ('resolved', 'closed') THEN 1 ELSE is_archived END,
+        archived_at = CASE WHEN ? IN ('resolved', 'closed') THEN CURRENT_TIMESTAMP ELSE archived_at END,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(status, req.user.id, resolution_notes, reqId);
+    `).run(status, req.user.id, resolution_notes, status, status, reqId);
 
     // If resolving a missing punch request, optionally correct attendance
     if (status === 'resolved' && current.request_type === 'missing_punch' && current.punch_date) {
@@ -583,10 +592,10 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
     }
   }
 
-  // Resolved / Closed check: Employees cannot reply to or reopen resolved/closed tickets
-  if (role === 'employee' && (ticket.status === 'closed' || ticket.status === 'resolved')) {
+  // Resolved / Closed check: Employees, Managers, and Company Admins cannot reply to or reopen closed tickets
+  if (['employee', 'manager', 'company_admin'].includes(role) && (ticket.status === 'closed' || ticket.status === 'resolved')) {
     return res.status(403).json({
-      error: 'This ticket has been marked as resolved or closed and cannot be reopened. Please create a new ticket if you require further assistance.'
+      error: 'This ticket is closed and cannot be reopened. Please create a new ticket if you require further assistance.'
     });
   }
 
@@ -626,9 +635,11 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
           status = ?,
           resolved_by = CASE WHEN ? IN ('resolved', 'closed') THEN ? ELSE resolved_by END,
           resolution_notes = CASE WHEN ? IN ('resolved', 'closed') THEN ? ELSE resolution_notes END,
+          is_archived = CASE WHEN ? IN ('resolved', 'closed') THEN 1 ELSE is_archived END,
+          archived_at = CASE WHEN ? IN ('resolved', 'closed') THEN CURRENT_TIMESTAMP ELSE archived_at END,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(status, status, req.user.id, status, message.trim(), reqId);
+      `).run(status, status, req.user.id, status, message.trim(), status, status, reqId);
 
       // Attendance adjustment on resolve
       if (status === 'resolved' && ticket.request_type === 'missing_punch' && ticket.punch_date) {
@@ -719,6 +730,71 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
       created_at: new Date().toISOString()
     },
     status: outcome.finalStatus
+  });
+});
+
+// Permanent Delete Ticket History (Level 4 Support or Super Admin only)
+// Permanently deletes from database and removes from all user accounts (Employee, Manager, Company Admin)
+router.delete('/service-requests/:id', verifyAuth, requireSupportLevel(4), async (req, res) => {
+  const reqId = parseInt(req.params.id, 10);
+
+  const ticket = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+  if (!ticket) {
+    return res.status(404).json({ error: 'Ticket not found.' });
+  }
+
+  const transaction = db.transaction(() => {
+    // 1. Delete all chat messages for this ticket
+    db.prepare('DELETE FROM service_request_messages WHERE request_id = ?').run(reqId);
+
+    // 2. Delete the ticket itself
+    db.prepare('DELETE FROM service_requests WHERE id = ?').run(reqId);
+
+    // 3. Clean from support_tickets and ticket_messages if existing
+    try {
+      db.prepare('DELETE FROM ticket_messages WHERE ticket_id = ?').run(reqId);
+    } catch (e) {}
+    try {
+      db.prepare('DELETE FROM support_tickets WHERE id = ?').run(reqId);
+    } catch (e) {}
+
+    // 4. Log Audit
+    logAudit({
+      companyId: ticket.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Technical Support L4 Console',
+      action: 'TICKET_PERMANENTLY_DELETED',
+      targetEntity: 'service_requests',
+      targetId: reqId,
+      oldValues: { title: ticket.title, request_type: ticket.request_type, employee_id: ticket.employee_id },
+      reason: `Permanent deletion of ticket #${reqId} and complete history by Level 4 Support`
+    });
+  });
+
+  transaction();
+
+  // 5. Delete from Firebase (Realtime DB and Firestore)
+  try {
+    const { deleteFromFirebase, realtimeDb } = require('../services/firebase');
+    if (deleteFromFirebase) {
+      deleteFromFirebase('service_requests', reqId).catch(() => {});
+      deleteFromFirebase('support_tickets', reqId).catch(() => {});
+    }
+    if (realtimeDb) {
+      realtimeDb.ref(`service_requests/${reqId}`).remove().catch(() => {});
+      realtimeDb.ref(`service_request_messages/${reqId}`).remove().catch(() => {});
+      realtimeDb.ref(`support_tickets/${reqId}`).remove().catch(() => {});
+      realtimeDb.ref(`ticket_messages/${reqId}`).remove().catch(() => {});
+    }
+  } catch (e) {
+    console.warn('Firebase sync note on ticket delete:', e.message);
+  }
+
+  res.json({
+    success: true,
+    message: `Ticket #${reqId} and its complete history have been permanently deleted from the database and all user accounts.`
   });
 });
 

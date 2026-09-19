@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Shield, Laptop, Ticket, Clock, CheckCircle, AlertTriangle,
   RefreshCw, Unlock, Edit3, Search, MessageSquare, CheckCheck, X, Building2, Copy, Lock,
-  Radio, Globe, Phone, Mail, User, Key, Send, Eye, MapPin, Check, Plus, AlertCircle, Play, ExternalLink, Power, UserX, UserCheck
+  Radio, Globe, Phone, Mail, User, Key, Send, Eye, MapPin, Check, Plus, AlertCircle, Play, ExternalLink, Power, UserX, UserCheck,
+  Trash2, Archive
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';
 import TicketChatModal from '../components/TicketChatModal';
 
-export default function SupportPanel({ user, activeTab }) {
+export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [devices, setDevices] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
@@ -16,6 +17,15 @@ export default function SupportPanel({ user, activeTab }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  // Ticket Filter: 'pending' or 'archived'
+  const [ticketSection, setTicketSection] = useState('pending');
+
+  // Account Enable State for Suspended Accounts
+  const [suspendedAccounts, setSuspendedAccounts] = useState([]);
+  const [suspendedSearch, setSuspendedSearch] = useState('');
+  const [suspendedLoading, setSuspendedLoading] = useState(false);
+  const [enablingId, setEnablingId] = useState(null);
 
   // Multi-Company Support Access
   const [companies, setCompanies] = useState([]);
@@ -119,9 +129,16 @@ export default function SupportPanel({ user, activeTab }) {
         const res = await apiRequest(buildUrl('/support/devices'));
         setDevices(res.devices || []);
       }
-      if (activeTab === 'tickets' || activeTab === 'dashboard') {
+      if (activeTab === 'dashboard') {
         const res = await apiRequest(buildUrl('/tickets/service-requests', 'view=active'));
+        // Strictly exclude closed/resolved and archived tickets from Support Dashboard
+        setTickets((res.requests || []).filter(t => t.status !== 'closed' && t.status !== 'resolved' && !t.is_archived));
+      } else if (activeTab === 'tickets') {
+        const res = await apiRequest(buildUrl('/tickets/service-requests', 'view=all'));
         setTickets(res.requests || []);
+      }
+      if (activeTab === 'account-enable') {
+        fetchSuspendedAccounts();
       }
       if (activeTab === 'attendance-support' || activeTab === 'dashboard') {
         const res = await apiRequest(buildUrl('/attendance/list', 'limit=50'));
@@ -138,6 +155,54 @@ export default function SupportPanel({ user, activeTab }) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePermanentDeleteTicket = async (ticketId) => {
+    if (!window.confirm(`Are you sure you want to permanently delete Ticket #${ticketId}? This will permanently delete all ticket history from the database and remove it from all user accounts (Employee, Manager, Company Admin). This cannot be undone.`)) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await apiRequest(`/tickets/service-requests/${ticketId}`, { method: 'DELETE' });
+      setTickets(prev => prev.filter(t => t.id !== ticketId));
+      setSuccess(res.message || `Ticket #${ticketId} permanently deleted.`);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to delete ticket.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchSuspendedAccounts = async (queryText = suspendedSearch) => {
+    setSuspendedLoading(true);
+    try {
+      const compParam = selectedCompanyId && selectedCompanyId !== 'all' ? `company_id=${selectedCompanyId}&` : '';
+      const sParam = queryText ? `search=${encodeURIComponent(queryText)}` : '';
+      const res = await apiRequest(`/support/suspended-accounts?${compParam}${sParam}`);
+      setSuspendedAccounts(res.accounts || []);
+    } catch (err) {
+      setError(err.message || 'Failed to load suspended accounts.');
+    } finally {
+      setSuspendedLoading(false);
+    }
+  };
+
+  const handleEnableAccount = async (account) => {
+    const targetId = account.employee_id || account.user_id;
+    if (!targetId) return;
+    setEnablingId(targetId);
+    try {
+      const res = await apiRequest(`/support/enable-account/${targetId}`, { method: 'POST' });
+      setSuccess(res.message || `Account for "${account.full_name || account.username}" has been enabled successfully.`);
+      setTimeout(() => setSuccess(''), 4000);
+      await fetchSuspendedAccounts(suspendedSearch);
+      window.dispatchEvent(new CustomEvent('master-refresh'));
+    } catch (err) {
+      setError(err.message || 'Failed to enable account.');
+    } finally {
+      setEnablingId(null);
     }
   };
 
@@ -620,43 +685,77 @@ export default function SupportPanel({ user, activeTab }) {
       {/* DASHBOARD TAB SUMMARY */}
       {/* ========================================================================= */}
       {activeTab === 'dashboard' && (
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-slate-500 uppercase">Bound Devices</span>
-              <Laptop className="w-5 h-5 text-purple-600" />
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-500 uppercase">Bound Devices</span>
+                <Laptop className="w-5 h-5 text-purple-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">{devices.length}</p>
+              <p className="text-[11px] text-slate-400 mt-1">Single-device locked accounts</p>
             </div>
-            <p className="text-2xl font-black text-slate-900 mt-2">{devices.length}</p>
-            <p className="text-[11px] text-slate-400 mt-1">Single-device locked accounts</p>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-500 uppercase">Active Tickets</span>
+                <Ticket className="w-5 h-5 text-sky-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">
+                {tickets.filter(t => t.status !== 'closed' && t.status !== 'resolved' && !t.is_archived).length}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Pending user service requests</p>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-500 uppercase">Support Action Logs</span>
+                <Clock className="w-5 h-5 text-emerald-600" />
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">{auditLogs.length}</p>
+              <p className="text-[11px] text-slate-400 mt-1">Audited operations</p>
+            </div>
+
+            <div className="bg-gradient-to-br from-purple-900 to-indigo-900 text-white p-5 rounded-2xl shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-purple-200 uppercase tracking-wider">Remote Access</span>
+                <Radio className="w-5 h-5 text-purple-300 animate-pulse" />
+              </div>
+              <p className="text-xl font-black mt-2">{pLevel >= 4 ? 'Level 4 Unlocked' : `Level ${pLevel} Active`}</p>
+              <p className="text-[11px] text-purple-200 mt-1">
+                {pLevel >= 4 ? 'Online Remote Console Enabled' : 'Level 4 Clearance Required'}
+              </p>
+            </div>
           </div>
 
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-slate-500 uppercase">Active Tickets</span>
-              <Ticket className="w-5 h-5 text-sky-600" />
+          {/* Dedicated Quick Action Banner to Account Enable */}
+          <div className="bg-gradient-to-r from-emerald-950 via-teal-950 to-slate-950 text-white p-4 rounded-2xl border border-emerald-800/60 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
+            <div className="flex items-center gap-3.5">
+              <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 shrink-0">
+                <UserCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  Suspended Accounts Activation Desk
+                  <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">
+                    Support Authority Active
+                  </span>
+                </h4>
+                <p className="text-xs text-emerald-200/80 mt-0.5">
+                  Search suspended accounts by Full Name, Username, Email, or Phone to locate and restore account access.
+                </p>
+              </div>
             </div>
-            <p className="text-2xl font-black text-slate-900 mt-2">{tickets.length}</p>
-            <p className="text-[11px] text-slate-400 mt-1">Pending user service requests</p>
-          </div>
-
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-slate-500 uppercase">Support Action Logs</span>
-              <Clock className="w-5 h-5 text-emerald-600" />
-            </div>
-            <p className="text-2xl font-black text-slate-900 mt-2">{auditLogs.length}</p>
-            <p className="text-[11px] text-slate-400 mt-1">Audited operations</p>
-          </div>
-
-          <div className="bg-gradient-to-br from-purple-900 to-indigo-900 text-white p-5 rounded-2xl shadow-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-purple-200 uppercase tracking-wider">Remote Access</span>
-              <Radio className="w-5 h-5 text-purple-300 animate-pulse" />
-            </div>
-            <p className="text-xl font-black mt-2">{pLevel >= 4 ? 'Level 4 Unlocked' : `Level ${pLevel} Active`}</p>
-            <p className="text-[11px] text-purple-200 mt-1">
-              {pLevel >= 4 ? 'Online Remote Console Enabled' : 'Level 4 Clearance Required'}
-            </p>
+            {onSelectTab && (
+              <button
+                type="button"
+                onClick={() => onSelectTab('account-enable')}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 shadow-sm transition-all shrink-0 hover:scale-105 active:scale-95"
+              >
+                <UserCheck className="w-4 h-4" />
+                <span>Account Enable</span>
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -737,98 +836,364 @@ export default function SupportPanel({ user, activeTab }) {
       {/* ========================================================================= */}
       {/* TICKETS & HELPDESK */}
       {/* ========================================================================= */}
-      {(activeTab === 'tickets' || activeTab === 'dashboard') && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900">Service Requests & Support Tickets</h3>
-            <span className="text-xs text-sky-600 font-semibold">1-Day Auto-Archival Rule Active</span>
+      {(activeTab === 'tickets' || activeTab === 'dashboard') && (() => {
+        const pendingTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'resolved' && !t.is_archived);
+        const archivedTickets = tickets.filter(t => t.status === 'closed' || t.status === 'resolved' || t.is_archived === 1);
+        const displayTickets = activeTab === 'dashboard'
+          ? pendingTickets
+          : (ticketSection === 'pending' ? pendingTickets : archivedTickets);
+
+        return (
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {activeTab === 'dashboard' ? 'Active Service Requests & Complaints' : 'Service Requests & Support Tickets'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {activeTab === 'dashboard'
+                      ? 'Live pending tickets requiring support action (Closed tickets are auto-archived)'
+                      : 'Review, chat, resolve, or permanently delete ticket history (Level 4 Support)'}
+                  </p>
+                </div>
+
+                {activeTab === 'tickets' ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTicketSection('pending')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        ticketSection === 'pending'
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <Clock className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Pending & Active ({pendingTickets.length})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTicketSection('archived')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                        ticketSection === 'archived'
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      <Archive className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Closed & Resolved Archive ({archivedTickets.length})</span>
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-sky-600 font-semibold bg-sky-50 px-2.5 py-1 rounded-lg border border-sky-200">
+                    {pendingTickets.length} Active Tickets
+                  </span>
+                )}
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                    <tr>
+                      <th className="p-3">Ticket / Type</th>
+                      <th className="p-3">Company</th>
+                      <th className="p-3">Employee / Raised By</th>
+                      <th className="p-3">Subject / Request</th>
+                      <th className="p-3">Punch Details</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {displayTickets.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50/50">
+                        <td className="p-3">
+                          <span className="font-bold text-slate-900">#{t.id}</span>
+                          <span className="block text-[10px] text-sky-600 uppercase font-semibold">{t.request_type ? t.request_type.replace('_', ' ') : 'GENERAL'}</span>
+                        </td>
+                        <td className="p-3 font-semibold text-purple-700">{t.company_name || 'N/A'}</td>
+                        <td className="p-3 font-medium text-slate-800">{t.employee_name || t.user_name || 'User'} ({t.employee_code || `ID:${t.user_id || t.employee_id}`})</td>
+                        <td className="p-3">
+                          <p className="font-semibold text-slate-900">{t.title}</p>
+                          {t.request_type === 'device_change' ? (
+                            <div className="mt-1 p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-[11px] text-amber-900 font-mono whitespace-pre-line leading-relaxed max-w-sm">
+                              {t.description}
+                            </div>
+                          ) : (
+                            <p className="text-[11px] text-slate-500 line-clamp-1">{t.description}</p>
+                          )}
+                        </td>
+                        <td className="p-3 text-slate-600">
+                          {t.punch_date ? `${t.punch_date} (${t.suggested_punch_in || '-'} to ${t.suggested_punch_out || '-'})` : '-'}
+                        </td>
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            t.status === 'pending' ? 'bg-amber-100 text-amber-700' :
+                            t.status === 'in_progress' ? 'bg-purple-100 text-purple-700' :
+                            t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'
+                          }`}>
+                            {t.status}
+                          </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setChatTicketId(t.id);
+                                setShowChatModal(true);
+                              }}
+                              className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow-sm transition-all"
+                              title="Open Ticket Chat to solve issue"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" />
+                              Chat & Solve
+                            </button>
+                            {t.status === 'pending' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedTicket(t);
+                                  setShowTicketModal(true);
+                                }}
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold"
+                                title="Quick Process"
+                              >
+                                Process
+                              </button>
+                            )}
+                            {t.request_type === 'device_change' && t.status !== 'resolved' && t.status !== 'closed' && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeregisterAndCloseTicket(t)}
+                                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow-xs transition-all"
+                                title="1-Click Deregister Device and Close Ticket"
+                              >
+                                <Unlock className="w-3.5 h-3.5" />
+                                Deregister & Close
+                              </button>
+                            )}
+                            {(pLevel >= 4 || user.role === 'super_admin') && (
+                              <button
+                                type="button"
+                                onClick={() => handlePermanentDeleteTicket(t.id)}
+                                className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold flex items-center gap-1 shadow-xs transition-all"
+                                title="Permanently Delete Ticket History (Level 4 Support / Super Admin)"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {displayTickets.length === 0 && (
+                      <tr>
+                        <td colSpan="7" className="p-8 text-center text-slate-400 text-xs">
+                          {activeTab === 'dashboard'
+                            ? 'No active tickets on dashboard. Closed tickets are automatically archived.'
+                            : (ticketSection === 'pending' ? 'No pending active tickets.' : 'No archived tickets found.')}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ========================================================================= */}
+      {/* ACCOUNT ENABLE & SUSPENDED ACCOUNTS ACTIVATION HUB */}
+      {/* ========================================================================= */}
+      {activeTab === 'account-enable' && (
+        <div className="space-y-4">
+          {/* Top Banner */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl border border-emerald-200 shadow-xs">
+                <UserCheck className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                  Suspended Accounts Activation Desk
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    Active Authority
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Search suspended accounts by Full Name, Username, Email, or Phone number to locate and enable employee access.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => fetchSuspendedAccounts(suspendedSearch)}
+              disabled={suspendedLoading}
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shrink-0 shadow-xs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${suspendedLoading ? 'animate-spin' : ''}`} />
+              <span>Refresh List</span>
+            </button>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Ticket / Type</th>
-                  <th className="p-3">Company</th>
-                  <th className="p-3">Employee / Raised By</th>
-                  <th className="p-3">Subject / Request</th>
-                  <th className="p-3">Punch Details</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {tickets.map(t => (
-                  <tr key={t.id} className="hover:bg-slate-50/50">
-                    <td className="p-3">
-                      <span className="font-bold text-slate-900">#{t.id}</span>
-                      <span className="block text-[10px] text-sky-600 uppercase font-semibold">{t.request_type.replace('_', ' ')}</span>
-                    </td>
-                    <td className="p-3 font-semibold text-purple-700">{t.company_name || 'N/A'}</td>
-                    <td className="p-3 font-medium text-slate-800">{t.employee_name || t.user_name || 'User'} ({t.employee_code || `ID:${t.user_id || t.employee_id}`})</td>
-                    <td className="p-3">
-                      <p className="font-semibold text-slate-900">{t.title}</p>
-                      {t.request_type === 'device_change' ? (
-                        <div className="mt-1 p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-[11px] text-amber-900 font-mono whitespace-pre-line leading-relaxed max-w-sm">
-                          {t.description}
-                        </div>
-                      ) : (
-                        <p className="text-[11px] text-slate-500 line-clamp-1">{t.description}</p>
-                      )}
-                    </td>
-                    <td className="p-3 text-slate-600">
-                      {t.punch_date ? `${t.punch_date} (${t.suggested_punch_in || '-'} to ${t.suggested_punch_out || '-'})` : '-'}
-                    </td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                        t.status === 'pending' ? 'bg-amber-100 text-amber-700' :
-                        t.status === 'in_progress' ? 'bg-purple-100 text-purple-700' :
-                        t.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'
-                      }`}>
-                        {t.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => {
-                            setChatTicketId(t.id);
-                            setShowChatModal(true);
-                          }}
-                          className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow-sm transition-all"
-                          title="Open Ticket Chat to solve issue"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          Chat & Solve
-                        </button>
-                        {t.status === 'pending' && (
-                          <button
-                            onClick={() => {
-                              setSelectedTicket(t);
-                              setShowTicketModal(true);
-                            }}
-                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold"
-                            title="Quick Process"
-                          >
-                            Process
-                          </button>
-                        )}
-                        {t.request_type === 'device_change' && t.status !== 'resolved' && t.status !== 'closed' && (
-                          <button
-                            onClick={() => handleDeregisterAndCloseTicket(t)}
-                            className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow-xs transition-all"
-                            title="1-Click Deregister Device and Close Ticket"
-                          >
-                            <Unlock className="w-3.5 h-3.5" />
-                            Deregister & Close
-                          </button>
-                        )}
-                      </div>
-                    </td>
+          {/* Search Bar */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                fetchSuspendedAccounts(suspendedSearch);
+              }}
+              className="flex flex-col sm:flex-row items-center gap-3"
+            >
+              <div className="relative flex-1 w-full">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={suspendedSearch}
+                  onChange={(e) => {
+                    setSuspendedSearch(e.target.value);
+                    fetchSuspendedAccounts(e.target.value);
+                  }}
+                  placeholder="Search suspended account by Full Name, Username, Email address, or Phone number..."
+                  className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
+                />
+                {suspendedSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSuspendedSearch('');
+                      fetchSuspendedAccounts('');
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={suspendedLoading}
+                className="w-full sm:w-auto px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all shrink-0"
+              >
+                <Search className="w-4 h-4" />
+                <span>Find Account</span>
+              </button>
+            </form>
+          </div>
+
+          {/* Results Table */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900">
+                  Suspended Accounts Found ({suspendedAccounts.length})
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  Accounts that are currently suspended or disabled. Click "Enable Account" to restore full platform access.
+                </p>
+              </div>
+              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+                {suspendedAccounts.length} Suspended
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
+                  <tr>
+                    <th className="p-3">Employee / Name</th>
+                    <th className="p-3">Username</th>
+                    <th className="p-3">Contact (Email & Phone)</th>
+                    <th className="p-3">Company</th>
+                    <th className="p-3">Department & Role</th>
+                    <th className="p-3">Status</th>
+                    <th className="p-3 text-right">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {suspendedAccounts.map(acc => (
+                    <tr key={acc.employee_id || acc.user_id} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="p-3">
+                        <div className="font-bold text-slate-900">{acc.full_name || acc.username}</div>
+                        <div className="text-[10px] font-mono text-slate-400">{acc.employee_code || `User #${acc.user_id}`}</div>
+                      </td>
+                      <td className="p-3 font-mono font-semibold text-purple-700">
+                        @{acc.username}
+                      </td>
+                      <td className="p-3 space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-medium">
+                          <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="truncate max-w-[180px]">{acc.email || 'No email'}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-slate-500 font-mono text-[11px]">
+                          <Phone className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span>{acc.mobile || 'No phone'}</span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="font-semibold text-slate-900">{acc.company_name || 'System / Platform'}</div>
+                        {acc.company_code && <span className="text-[10px] text-slate-400 font-mono">({acc.company_code})</span>}
+                      </td>
+                      <td className="p-3 text-slate-600">
+                        <div>{acc.department || 'General'}</div>
+                        <div className="text-[10px] text-slate-400">{acc.designation || 'Staff'}</div>
+                      </td>
+                      <td className="p-3">
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-rose-100 text-rose-700 border border-rose-200 inline-flex items-center gap-1">
+                          <UserX className="w-3 h-3" />
+                          {acc.employee_status || acc.user_status || 'Suspended'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleEnableAccount(acc)}
+                          disabled={enablingId === (acc.employee_id || acc.user_id)}
+                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-all hover:scale-105 active:scale-95"
+                          title="Restore and Enable Suspended Account"
+                        >
+                          {enablingId === (acc.employee_id || acc.user_id) ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <UserCheck className="w-3.5 h-3.5" />
+                          )}
+                          <span>Enable Account</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {suspendedAccounts.length === 0 && (
+                    <tr>
+                      <td colSpan="7" className="p-12 text-center text-slate-400">
+                        {suspendedLoading ? (
+                          <div className="flex flex-col items-center justify-center gap-2">
+                            <RefreshCw className="w-6 h-6 animate-spin text-emerald-500" />
+                            <p className="text-xs">Searching suspended accounts...</p>
+                          </div>
+                        ) : suspendedSearch ? (
+                          <div>
+                            <p className="font-semibold text-slate-700">No suspended accounts found matching "{suspendedSearch}".</p>
+                            <p className="text-xs text-slate-400 mt-1">Check spelling or try searching by email, username, or phone number.</p>
+                          </div>
+                        ) : (
+                          <div>
+                            <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                            <p className="font-semibold text-slate-700">No suspended accounts found.</p>
+                            <p className="text-xs text-slate-400 mt-1">All accounts are currently active in the selected company view.</p>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

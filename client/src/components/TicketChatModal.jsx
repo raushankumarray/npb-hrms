@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   MessageSquare, Send, CheckCircle, Clock, AlertCircle,
-  User, Shield, Building2, RefreshCw, X, ChevronDown, CheckCheck
+  User, Shield, Building2, RefreshCw, X, ChevronDown, CheckCheck, Trash2
 } from 'lucide-react';
 import { apiRequest } from '../api';
 
@@ -97,9 +97,32 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
     }
   };
 
+  const isL4OrSuperAdmin = currentUser && (
+    currentUser.role === 'super_admin' ||
+    (currentUser.role === 'support' && Number(currentUser.supportLevel ?? currentUser.support_level ?? 1) >= 4)
+  );
+
+  const handlePermanentDelete = async () => {
+    if (!window.confirm(`Are you sure you want to permanently delete Ticket #${ticketId}? This will permanently delete all ticket history from the database and remove it from all user accounts (Employee, Manager, Company Admin). This cannot be undone.`)) {
+      return;
+    }
+    setSending(true);
+    try {
+      await apiRequest(`/tickets/service-requests/${ticketId}`, { method: 'DELETE' });
+      if (onStatusUpdated) onStatusUpdated();
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Failed to delete ticket.');
+      setSending(false);
+    }
+  };
+
   if (!isOpen) return null;
 
-  const isStaffOrSupport = currentUser && ['super_admin', 'support', 'company_admin', 'manager'].includes(currentUser.role);
+  const canChangeStatus = currentUser && (
+    currentUser.role === 'super_admin' || currentUser.role === 'support' ||
+    (ticket?.status !== 'closed' && ['company_admin', 'manager'].includes(currentUser.role))
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
@@ -140,14 +163,30 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
           </div>
 
           <div className="flex items-center gap-2">
-            {isStaffOrSupport && ticket && (
+            {isL4OrSuperAdmin && (
+              <button
+                type="button"
+                onClick={handlePermanentDelete}
+                disabled={sending || loading}
+                className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors border border-rose-200 shadow-xs"
+                title="Permanently Delete Ticket History (Level 4 Support / Super Admin)"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+
+            {canChangeStatus && ticket && (
               <select
                 value={ticket.status}
                 onChange={(e) => handleQuickStatusChange(e.target.value)}
                 className="text-xs font-semibold px-2 py-1 border rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-purple-500"
               >
-                <option value="pending">Pending</option>
-                <option value="in_progress">In Progress</option>
+                {(!['employee', 'manager', 'company_admin'].includes(currentUser?.role) || ticket.status !== 'closed') && (
+                  <>
+                    <option value="pending">Pending</option>
+                    <option value="in_progress">In Progress</option>
+                  </>
+                )}
                 <option value="resolved">Resolved</option>
                 <option value="closed">Closed</option>
               </select>
@@ -266,14 +305,14 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
           <div ref={messagesEndRef} />
         </div>
 
-        {/* CHAT INPUT FORM OR RESOLVED BANNER */}
-        {currentUser?.role === 'employee' && (ticket?.status === 'resolved' || ticket?.status === 'closed') ? (
+        {/* CHAT INPUT FORM OR CLOSED/RESOLVED BANNER */}
+        {['employee', 'manager', 'company_admin'].includes(currentUser?.role) && (ticket?.status === 'resolved' || ticket?.status === 'closed') ? (
           <div className="p-4 border-t border-amber-200 bg-amber-50 text-amber-900 shrink-0 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div className="text-xs space-y-1">
-              <p className="font-bold">This ticket has been marked as {ticket?.status?.toUpperCase()}.</p>
+              <p className="font-bold">This ticket is {ticket?.status?.toUpperCase()} and permanently locked.</p>
               <p className="text-amber-700 leading-relaxed">
-                Resolved and closed tickets cannot be reopened. If you still need help or have another request, please submit a new ticket.
+                Closed tickets cannot be reopened by Employee, Manager, or Company Admin. If you require further assistance, please submit a new ticket.
               </p>
             </div>
           </div>
