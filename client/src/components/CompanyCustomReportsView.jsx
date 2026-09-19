@@ -64,8 +64,8 @@ export default function CompanyCustomReportsView({ user, company = {} }) {
     const loadDirectory = async () => {
       setLoadingDirectory(true);
       try {
-        const empRes = await apiRequest('/employees?limit=500');
-        const emps = empRes.employees || [];
+        const empRes = await apiRequest('/employees?limit=500&status=active');
+        const emps = (empRes.employees || []).filter(e => e.status === 'active');
         setAllEmployees(emps);
         // Filter out managers
         const mgrs = emps.filter(e => e.role_name === 'manager' || e.role === 'manager');

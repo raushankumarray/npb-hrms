@@ -566,6 +566,16 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
     if (currentEmp.role_name !== 'employee' || currentEmp.user_id === req.user.id || currentEmp.id === req.user.employee_id) {
       return res.status(403).json({ error: 'Managers can only modify subordinate employee accounts.' });
     }
+
+    // Managers can suspend employees, but CANNOT activate suspended accounts!
+    // Only Company Admin, Super Admin, and Support Team can activate suspended accounts.
+    if (status !== undefined) {
+      const isTargetActive = (status === 'active');
+      const isCurrentlySuspended = (currentEmp.status === 'suspended' || currentEmp.status === 'disabled' || currentEmp.status === 'inactive');
+      if (isTargetActive && isCurrentlySuspended) {
+        return res.status(403).json({ error: 'Managers cannot activate suspended employee accounts. Only Company Administrator or Support Team can activate suspended accounts.' });
+      }
+    }
   }
 
   // Username update permission check:
@@ -756,6 +766,15 @@ router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'man
   }
 
   const targetStatus = status || (emp.status === 'active' ? 'suspended' : 'active');
+
+  // Security: Managers CAN suspend employees, but CANNOT activate suspended accounts!
+  // Only Company Admin, Super Admin, and Support Team can activate suspended accounts.
+  if (req.user.role_name === 'manager') {
+    if (targetStatus === 'active' || emp.status !== 'active') {
+      return res.status(403).json({ error: 'Managers cannot activate suspended employee accounts. Only Company Administrator or Support Team can activate suspended accounts.' });
+    }
+  }
+
   const dbStatus = (targetStatus === 'suspended' || targetStatus === 'disabled') ? 'disabled' : 'active';
   const userStatus = dbStatus;
 
@@ -856,7 +875,13 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'm
 });
 
 // Permanent Delete Employee (Cannot be backed up / permanently deleted from database)
-router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
+// Strictly Company Admin and Super Admin (Managers are NOT allowed to delete employees)
+router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', 'support']), (req, res) => {
+  // Security: Managers are strictly NOT allowed to delete employees. Only Company Admin can delete employee data.
+  if (req.user.role_name === 'manager') {
+    return res.status(403).json({ error: 'Managers are not allowed to delete employee data. Only Company Administrator can delete employee accounts.' });
+  }
+
   const empId = parseInt(req.params.id, 10);
   const emp = db.prepare(`
     SELECT e.*, r.name as role_name
@@ -873,13 +898,6 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'supe
   // Security: Company Administrator and Super Admin accounts cannot be deleted as employees
   if (emp.role_name === 'company_admin' || emp.role_name === 'super_admin') {
     return res.status(403).json({ error: 'Company Administrator accounts cannot be deleted as employees. Manage companies in Super Admin panel.' });
-  }
-
-  // Security: Managers can only delete subordinate employees, never managers or themselves!
-  if (req.user.role_name === 'manager') {
-    if (emp.role_name !== 'employee' || emp.user_id === req.user.id || emp.id === req.user.employee_id) {
-      return res.status(403).json({ error: 'Managers can only delete subordinate employee accounts.' });
-    }
   }
 
   const transaction = db.transaction(() => {

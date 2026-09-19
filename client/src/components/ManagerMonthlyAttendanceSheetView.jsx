@@ -49,8 +49,8 @@ export default function ManagerMonthlyAttendanceSheetView({ user, company = {} }
   // Fetch Team Employee Directory for filter dropdown
   const fetchTeamList = async () => {
     try {
-      const res = await apiRequest('/employees?limit=250');
-      setTeamEmployees(res.employees || []);
+      const res = await apiRequest('/employees?limit=250&status=active');
+      setTeamEmployees((res.employees || []).filter(e => e.status === 'active'));
     } catch (err) {
       console.error('Failed to load team list for monthly sheet:', err);
     }

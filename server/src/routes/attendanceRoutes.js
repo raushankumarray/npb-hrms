@@ -217,7 +217,7 @@ router.get('/calendar', verifyAuth, (req, res) => {
              e.full_name as employee_name, e.employee_id as employee_code, e.department
       FROM attendance_records ar
       JOIN employees e ON ar.employee_id = e.id
-      WHERE ar.date LIKE ? AND ar.company_id = ?
+      WHERE ar.date LIKE ? AND ar.company_id = ? AND e.is_deleted = 0 AND e.status = 'active'
     `;
     const params = [`${datePrefix}%`, companyId];
 
@@ -237,8 +237,21 @@ router.get('/calendar', verifyAuth, (req, res) => {
   let employmentStartDate = null;
   let employmentEndDate = null;
   if (employeeId) {
-    const emp = db.prepare('SELECT created_at, employment_start_date, employment_end_date FROM employees WHERE id = ?').get(employeeId);
+    const emp = db.prepare('SELECT status, created_at, employment_start_date, employment_end_date FROM employees WHERE id = ?').get(employeeId);
     if (emp) {
+      if (emp.status !== 'active') {
+        // Suspended accounts: do not show attendance logs by default
+        return res.json({
+          year,
+          month,
+          holidays,
+          offDays,
+          isCustomWeeklyOff,
+          weeklyOffName,
+          accountSuspended: true,
+          records: []
+        });
+      }
       if (emp.created_at) {
         employeeCreatedAt = String(emp.created_at).split('T')[0].split(' ')[0];
       }
@@ -892,7 +905,7 @@ router.get('/list', verifyAuth, (req, res) => {
     JOIN companies c ON a.company_id = c.id
     LEFT JOIN shifts s ON a.shift_id = s.id
     LEFT JOIN employees m ON e.manager_id = m.id
-    WHERE e.is_deleted = 0
+    WHERE e.is_deleted = 0 AND e.status = 'active'
       AND (e.employment_start_date IS NULL OR a.date >= e.employment_start_date)
       AND (e.employment_end_date IS NULL OR a.date <= e.employment_end_date)
   `;
@@ -1910,7 +1923,7 @@ router.post('/export', verifyAuth, (req, res) => {
       FROM employees e
       JOIN companies c ON e.company_id = c.id
       LEFT JOIN shifts s ON e.shift_id = s.id
-      WHERE e.id = ?
+      WHERE e.id = ? AND e.is_deleted = 0 AND e.status = 'active'
     `).get(targetEmpId);
 
     if (emp) {
@@ -2063,7 +2076,7 @@ router.post('/export', verifyAuth, (req, res) => {
     JOIN companies c ON a.company_id = c.id
     LEFT JOIN shifts s ON a.shift_id = s.id
     LEFT JOIN employees m ON e.manager_id = m.id
-    WHERE e.is_deleted = 0
+    WHERE e.is_deleted = 0 AND e.status = 'active'
   `;
   const params = [];
 
@@ -2235,11 +2248,11 @@ router.post('/monthly-matrix-pdf', verifyAuth, (req, res) => {
     SELECT e.*, c.name as company_name
     FROM employees e
     JOIN companies c ON e.company_id = c.id
-    WHERE e.id = ? AND e.is_deleted = 0
+    WHERE e.id = ? AND e.is_deleted = 0 AND e.status = 'active'
   `).get(employeeId);
 
   if (!emp) {
-    return res.status(404).json({ error: 'Employee not found.' });
+    return res.status(404).json({ error: 'Active employee not found. Attendance sheets are only generated for active accounts.' });
   }
 
   // Fetch holidays for this month

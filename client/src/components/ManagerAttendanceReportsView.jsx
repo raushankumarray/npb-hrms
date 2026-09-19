@@ -211,8 +211,8 @@ export default function ManagerAttendanceReportsView({ user, company = {}, onSta
   const fetchTeamEmployees = async () => {
     setLoadingTeam(true);
     try {
-      const res = await apiRequest('/employees?limit=250');
-      const list = res.employees || [];
+      const res = await apiRequest('/employees?limit=250&status=active');
+      const list = (res.employees || []).filter(e => e.status === 'active');
       setTeamEmployees(list);
     } catch (err) {
       console.error('Failed to load team employees:', err);

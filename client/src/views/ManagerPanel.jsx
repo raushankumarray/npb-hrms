@@ -409,26 +409,16 @@ export default function ManagerPanel({ user, company, activeTab }) {
   };
 
   const handleToggleStatus = async (emp) => {
+    if (emp.status !== 'active') {
+      setError('Managers cannot activate suspended employee accounts. Only Company Administrator or Support Team can activate suspended accounts.');
+      return;
+    }
     try {
-      const nextStatus = emp.status === 'active' ? 'suspended' : 'active';
       const res = await apiRequest(`/employees/${emp.id}/toggle-status`, {
         method: 'POST',
-        body: { status: nextStatus }
+        body: { status: 'suspended' }
       });
       setSuccess(res.message);
-      fetchData();
-    } catch (err) {
-      setError(err.message);
-    }
-  };
-
-  const handleDeleteEmployee = async (empId, name) => {
-    if (!window.confirm(`Are you sure you want to delete employee "${name}"? This will deactivate the account.`)) return;
-    try {
-      await apiRequest(`/employees/${empId}`, {
-        method: 'DELETE'
-      });
-      setSuccess(`Employee "${name}" deleted.`);
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -1097,29 +1087,26 @@ export default function ManagerPanel({ user, company, activeTab }) {
                             <span>Edit</span>
                           </button>
 
-                          {/* 2. Active / Suspend Toggle */}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleStatus(e)}
-                            className={`px-2 py-1 border rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 shadow-xs transition-colors ${
-                              e.status === 'active'
-                                ? 'text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200'
-                                : 'text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
-                            }`}
-                            title={e.status === 'active' ? 'Suspend Account' : 'Activate Account'}
-                          >
-                            {e.status === 'active' ? (
-                              <>
-                                <Ban className="w-3.5 h-3.5 text-amber-600" />
-                                <span>Suspend</span>
-                              </>
-                            ) : (
-                              <>
-                                <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                                <span>Activate</span>
-                              </>
-                            )}
-                          </button>
+                          {/* 2. Suspend Action (Active accounts only) */}
+                          {e.status === 'active' ? (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleStatus(e)}
+                              className="px-2 py-1 text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 shadow-xs transition-colors"
+                              title="Suspend Account"
+                            >
+                              <Ban className="w-3.5 h-3.5 text-amber-600" />
+                              <span>Suspend</span>
+                            </button>
+                          ) : (
+                            <span
+                              className="px-2 py-1 border border-slate-200 bg-slate-100 text-slate-400 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 cursor-not-allowed select-none"
+                              title="Suspended accounts can only be activated by Company Administrator or Support Team"
+                            >
+                              <Ban className="w-3.5 h-3.5 text-slate-400" />
+                              <span>Suspended (Locked)</span>
+                            </span>
+                          )}
 
                           {/* 3. Change Password Button */}
                           <button
@@ -1133,17 +1120,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
                           >
                             <Key className="w-3.5 h-3.5 text-indigo-600" />
                             <span>Password</span>
-                          </button>
-
-                          {/* 4. Delete Button */}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteEmployee(e.id, e.full_name)}
-                            className="px-2 py-1 text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 shadow-xs transition-colors"
-                            title="Delete Account"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-                            <span>Delete</span>
                           </button>
                         </div>
                       </td>
@@ -2190,15 +2166,21 @@ export default function ManagerPanel({ user, company, activeTab }) {
                 </div>
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Account Status</label>
-                  <select
-                    value={editEmpForm.status}
-                    onChange={(e) => setEditEmpForm({ ...editEmpForm, status: e.target.value })}
-                    className="w-full p-2 border rounded-lg bg-white font-medium"
-                  >
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                    <option value="suspended">Suspended</option>
-                  </select>
+                  {editEmpForm.status !== 'active' ? (
+                    <div className="p-2 border border-slate-200 bg-slate-50 rounded-lg text-slate-500 font-semibold flex items-center justify-between" title="Suspended accounts can only be reactivated by Company Administrator or Support Team">
+                      <span className="capitalize text-slate-700">{editEmpForm.status} (Locked)</span>
+                      <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 font-medium">Admin Only</span>
+                    </div>
+                  ) : (
+                    <select
+                      value={editEmpForm.status}
+                      onChange={(e) => setEditEmpForm({ ...editEmpForm, status: e.target.value })}
+                      className="w-full p-2 border rounded-lg bg-white font-medium"
+                    >
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspend Account</option>
+                    </select>
+                  )}
                 </div>
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Reset Password</label>

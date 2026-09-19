@@ -14,7 +14,7 @@ function fetchReportDataset({ companyId, from_date, to_date, month, year, depart
     JOIN companies c ON a.company_id = c.id
     LEFT JOIN shifts s ON a.shift_id = s.id
     LEFT JOIN employees m ON e.manager_id = m.id
-    WHERE e.is_deleted = 0
+    WHERE e.is_deleted = 0 AND e.status = 'active'
   `;
   const params = [];
 
