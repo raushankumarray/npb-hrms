@@ -345,13 +345,9 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
           insertMapping.run(companyId, finalManagerId, empDbId, adminUser.id);
         }
 
-        // Seed initial leave balances
-        leaveTypes.forEach(lt => {
-          let quota = 12.0;
-          if (lt.name.includes('Earned') || lt.name === 'EL') quota = 0;
-          else if (lt.name.includes('Paid')) quota = 10.0;
-          insertLeaveBal.run(empDbId, lt.id, currentYear, quota, quota);
-        });
+        // Seed initial leave balances (strictly CL and EL)
+        const { autoCreditEmployeeLeaves } = require('./leaveService');
+        autoCreditEmployeeLeaves(empDbId, companyId, adminUser.id);
 
         createdCount++;
       }
@@ -386,7 +382,7 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
           if (mapRecord) syncEmployeeMapping(mapRecord).catch(() => {});
         }
         const balRecords = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ?').all(empId);
-        balRecords.forEach(lb => syncLeaveBalance(lb.employee_id, lb.leave_type_id).catch(() => {}));
+        balRecords.forEach(lb => syncLeaveBalance(lb).catch(() => {}));
       }
     });
   } catch (e) {

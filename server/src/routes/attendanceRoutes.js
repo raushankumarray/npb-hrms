@@ -2839,6 +2839,8 @@ router.post('/correction-request', verifyAuth, (req, res) => {
     autoCalculatedStatus = 'Present';
   }
 
+  const finalRequestedStatus = (req.body.requested_status || autoCalculatedStatus || 'Present').trim();
+
   // Prevent duplicate pending requests for the same date and employee
   const existingPending = db.prepare(`
     SELECT id FROM attendance_correction_requests
@@ -2974,8 +2976,8 @@ router.get('/correction-requests', verifyAuth, (req, res) => {
 });
 
 // Review Attendance Correction Request (Approve or Reject/Cancel)
-// Company Admin, Manager, Super Admin
-router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
+// Company Admin, Manager, Super Admin, Support
+router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
   const requestId = parseInt(req.params.id, 10);
   const { status, review_notes } = req.body; // 'approved' or 'rejected'
 

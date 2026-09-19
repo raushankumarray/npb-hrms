@@ -246,14 +246,14 @@ router.post('/types', verifyAuth, requireRole(['company_admin', 'super_admin']),
 
 // Get Leave Balances for an Employee (or logged in employee)
 router.get('/balances', verifyAuth, (req, res) => {
-  let empId = req.query.employee_id;
-  if (req.user.role_name === 'employee') {
-    empId = req.user.employee_id;
-  }
+  let empId = req.query.employee_id || (req.user.role_name === 'employee' ? req.user.employee_id : null) || req.user.employee_id;
 
   if (!empId) {
     return res.status(400).json({ error: 'employee_id is required.' });
   }
+
+  const { checkAndRunMonthlyAccrual, autoCreditEmployeeLeaves } = require('../services/leaveService');
+  checkAndRunMonthlyAccrual();
 
   const currentYear = new Date().getFullYear();
 
@@ -264,13 +264,28 @@ router.get('/balances', verifyAuth, (req, res) => {
     )
   `).run(empId);
 
-  const balances = db.prepare(`
+  let balances = db.prepare(`
     SELECT lb.*, lt.name as leave_type_name, lt.default_yearly_quota, lt.monthly_accrual_rate, lt.is_carry_forward
     FROM leave_balances lb
     JOIN leave_types lt ON lb.leave_type_id = lt.id
     WHERE lb.employee_id = ? AND lb.year = ? AND lt.name NOT LIKE '%Paid Leave%'
     ORDER BY lt.id ASC
   `).all(empId, currentYear);
+
+  // If no balances found, auto-credit CL and EL for this employee
+  if (balances.length === 0) {
+    const emp = db.prepare('SELECT id, company_id FROM employees WHERE id = ?').get(empId);
+    if (emp) {
+      autoCreditEmployeeLeaves(emp.id, emp.company_id, req.user.id);
+      balances = db.prepare(`
+        SELECT lb.*, lt.name as leave_type_name, lt.default_yearly_quota, lt.monthly_accrual_rate, lt.is_carry_forward
+        FROM leave_balances lb
+        JOIN leave_types lt ON lb.leave_type_id = lt.id
+        WHERE lb.employee_id = ? AND lb.year = ? AND lt.name NOT LIKE '%Paid Leave%'
+        ORDER BY lt.id ASC
+      `).all(empId, currentYear);
+    }
+  }
 
   // Fetch month-wise Earned Leave accrual history for employee
   const accrualLogs = db.prepare(`
@@ -283,6 +298,19 @@ router.get('/balances', verifyAuth, (req, res) => {
   `).all(empId);
 
   res.json({ balances, accrualHistory: accrualLogs });
+});
+
+// Trigger Monthly Earned Leave Accrual on Demand
+// Accessible by Company Admin, Manager, Super Admin, Support
+router.post('/accrue-monthly', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
+  const { year, month } = req.body;
+  const { accrueMonthlyEarnedLeave } = require('../services/leaveService');
+  const result = accrueMonthlyEarnedLeave(year, month, req.user.id);
+  res.json({
+    success: true,
+    message: `Earned Leave credited to ${result.totalEmployeesAccrued} active employee(s) for ${result.monthName} ${result.year}.`,
+    result
+  });
 });
 
 // Submit Leave Request (Employee)

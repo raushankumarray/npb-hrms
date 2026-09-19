@@ -800,31 +800,63 @@ async function syncLeaveType(leaveType) {
   }
 }
 
-async function syncLeaveBalance(balance) {
+async function syncLeaveBalance(balance, leaveTypeIdParam = null) {
   if (!firebaseStatus.connected || !balance) return null;
   try {
-    const empId = balance.employee_id || balance.employeeId;
-    const ltId = balance.leave_type_id || balance.leaveTypeId;
-    const yr = balance.year;
+    let empId, ltId, yr, opening, accrued, used, bal, compId;
+    if (typeof balance === 'number' && leaveTypeIdParam) {
+      empId = balance;
+      ltId = leaveTypeIdParam;
+      yr = new Date().getFullYear();
+      const row = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(empId, ltId, yr);
+      if (row) {
+        opening = row.opening_balance;
+        accrued = row.accrued;
+        used = row.used;
+        bal = row.balance;
+      }
+    } else {
+      empId = balance.employee_id || balance.employeeId;
+      ltId = balance.leave_type_id || balance.leaveTypeId;
+      yr = balance.year || new Date().getFullYear();
+      opening = balance.opening_balance ?? balance.openingBalance ?? 0.0;
+      accrued = balance.accrued ?? 0.0;
+      used = balance.used ?? 0.0;
+      bal = balance.balance !== undefined ? balance.balance : (Number(opening) + Number(accrued) - Number(used));
+      compId = balance.company_id || balance.companyId;
+    }
+    if (!compId && empId) {
+      const emp = db.prepare('SELECT company_id FROM employees WHERE id = ?').get(empId);
+      if (emp) compId = emp.company_id;
+    }
     const key = `${empId}_${ltId}_${yr}`;
     const payload = {
-      id: balance.id || key,
+      id: key,
+      companyId: compId,
+      company_id: compId,
       employeeId: empId,
       employee_id: empId,
       leaveTypeId: ltId,
       leave_type_id: ltId,
       year: yr,
-      openingBalance: balance.opening_balance || 0.0,
-      accrued: balance.accrued || 0.0,
-      used: balance.used || 0.0,
-      balance: balance.balance || 0.0,
+      openingBalance: Number(opening || 0),
+      opening_balance: Number(opening || 0),
+      accrued: Number(accrued || 0),
+      used: Number(used || 0),
+      balance: Number(bal || 0),
       syncedAt: new Date().toISOString()
     };
     if (firestoreDb) {
       await firestoreDb.collection('leave_balances').doc(key).set(payload, { merge: true });
+      if (compId) {
+        await firestoreDb.collection('companies').doc(String(compId)).collection('leave_balances').doc(key).set(payload, { merge: true });
+      }
     }
     if (realtimeDb) {
       await realtimeDb.ref(`leave_balances/${empId}/${ltId}_${yr}`).set(payload);
+      if (compId) {
+        await realtimeDb.ref(`companies/${compId}/leave_balances/${empId}/${ltId}_${yr}`).set(payload);
+      }
     }
     return true;
   } catch (err) {
@@ -2996,11 +3028,15 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       for (const [_, lb] of leaveBalancesMap) {
         let rawCompId = lb.companyId || lb.company_id;
         let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
-        if (!compId || !claimedCompanyIds.has(compId)) continue;
         let empId = lb.employeeId || lb.employee_id;
         if (empId) empId = employeeIdMap.get(String(empId)) || Number(empId);
         let ltId = lb.leaveTypeId || lb.leave_type_id;
         if (ltId) ltId = leaveTypeIdMap.get(String(ltId)) || Number(ltId);
+        if (!compId && empId) {
+          const emp = db.prepare('SELECT company_id FROM employees WHERE id = ?').get(empId);
+          if (emp) compId = emp.company_id;
+        }
+        if (!compId || !claimedCompanyIds.has(compId)) continue;
 
         if (empId && ltId && claimedEmployeeIds.has(empId)) {
           const empExists = db.prepare('SELECT id FROM employees WHERE id = ? AND company_id = ?').get(empId, compId);
@@ -3052,6 +3088,21 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           }
         }
       }
+
+      // Ensure all restored active employees for claimed companies have CL and EL auto-credited if missing
+      try {
+        const { autoCreditEmployeeLeaves, checkAndRunMonthlyAccrual } = require('./leaveService');
+        const activeEmps = db.prepare("SELECT id, company_id FROM employees WHERE status = 'active' AND is_deleted = 0").all();
+        for (const ae of activeEmps) {
+          if (claimedCompanyIds.has(ae.company_id)) {
+            const hasBal = db.prepare('SELECT id FROM leave_balances WHERE employee_id = ? AND year = ?').get(ae.id, currentYear);
+            if (!hasBal) {
+              autoCreditEmployeeLeaves(ae.id, ae.company_id);
+            }
+          }
+        }
+        checkAndRunMonthlyAccrual();
+      } catch (e) {}
 
       // Phase 9: Restore Attendance Corrections & Attendance Records
       for (const [_, cr] of correctionsMap) {

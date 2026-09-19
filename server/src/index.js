@@ -13,6 +13,20 @@ seedDatabase();
 const { sanitizeDatabase } = require('./services/sanitize');
 sanitizeDatabase();
 
+// Check and auto-credit monthly Earned Leaves across companies
+try {
+  const { checkAndRunMonthlyAccrual } = require('./services/leaveService');
+  checkAndRunMonthlyAccrual();
+  // Check hourly for month rollover
+  setInterval(() => {
+    try {
+      checkAndRunMonthlyAccrual();
+    } catch (e) {}
+  }, 3600000);
+} catch (e) {
+  console.warn('Initial leave accrual notice:', e.message);
+}
+
 // Middlewares
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));

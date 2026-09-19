@@ -468,20 +468,9 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
       `).run(companyId, finalManagerId, empDbId, req.user.id);
     }
 
-    // 4. Initialize leave balances (strictly Casual Leave = 12, Earned Leave = 0 [earned 1.25/mo])
-    const leaveTypes = db.prepare("SELECT id, name FROM leave_types WHERE company_id = ? AND name NOT LIKE '%Paid Leave%'").all(companyId);
-    const insertLeaveBal = db.prepare(`
-      INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
-      VALUES (?, ?, ?, ?, 0, 0, ?)
-    `);
-
-    leaveTypes.forEach(lt => {
-      let quota = 12.0;
-      if (lt.name.includes('Earned') || lt.name === 'EL') {
-        quota = 0; // EL is accrued month-wise (1.25/mo) or manually added
-      }
-      insertLeaveBal.run(empDbId, lt.id, currentYear, quota, quota);
-    });
+    // 4. Auto-credit portal leaves (CL and EL) and record transactions
+    const { autoCreditEmployeeLeaves } = require('../services/leaveService');
+    autoCreditEmployeeLeaves(empDbId, companyId, req.user.id);
 
     logAudit({
       companyId,
@@ -527,7 +516,7 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
       if (mapRecord) syncEmployeeMapping(mapRecord).catch(() => {});
     }
     const balRecords = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ?').all(createdId);
-    balRecords.forEach(lb => syncLeaveBalance(lb.employee_id, lb.leave_type_id).catch(() => {}));
+    balRecords.forEach(lb => syncLeaveBalance(lb).catch(() => {}));
   } catch (e) {}
 
   res.status(201).json({ success: true, employeeId: createdId, employeeCode: finalEmpId, message: 'Personnel added successfully.' });
