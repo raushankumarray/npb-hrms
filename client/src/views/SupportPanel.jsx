@@ -3,7 +3,7 @@ import {
   Shield, Laptop, Ticket, Clock, CheckCircle, AlertTriangle,
   RefreshCw, Unlock, Edit3, Search, MessageSquare, CheckCheck, X, Building2, Copy, Lock,
   Radio, Globe, Phone, Mail, User, Key, Send, Eye, MapPin, Check, Plus, AlertCircle, Play, ExternalLink, Power, UserX, UserCheck,
-  Trash2, Archive
+  Trash2, Archive, Calendar, Filter, FileSpreadsheet, Layers
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';
@@ -34,6 +34,18 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   // Ticket Chat State
   const [chatTicketId, setChatTicketId] = useState(null);
   const [showChatModal, setShowChatModal] = useState(false);
+
+  // L4 Audit Reports & System Logs State
+  const [auditView, setAuditView] = useState('today'); // 'today' | 'archived' | 'all'
+  const [auditDayFilter, setAuditDayFilter] = useState('');
+  const [auditMonthFilter, setAuditMonthFilter] = useState('');
+  const [auditActionFilter, setAuditActionFilter] = useState('');
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditCounts, setAuditCounts] = useState({ total: 0, today: 0, archived: 0, filtered: 0 });
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [showDeleteAuditModal, setShowDeleteAuditModal] = useState(false);
+  const [deleteAuditConfig, setDeleteAuditConfig] = useState({ mode: 'day', date: '', month: '', count: 0, title: '' });
+  const [deletingAudit, setDeletingAudit] = useState(false);
 
   // Modals & Forms
   const [selectedDevice, setSelectedDevice] = useState(null);
@@ -94,7 +106,84 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [remoteAlertData, setRemoteAlertData] = useState({ title: '', message: '' });
   const [remoteSimulatePortal, setRemoteSimulatePortal] = useState(false);
 
-  const pLevel = Number(user.supportLevel ?? user.support_level ?? 1);
+  const pLevel = user.role === 'super_admin' ? 4 : Number(user.supportLevel ?? user.support_level ?? 1);
+
+  const fetchAuditReports = async () => {
+    setAuditLoading(true);
+    try {
+      const q = [];
+      if (auditView) q.push(`view=${auditView}`);
+      if (auditDayFilter) q.push(`date=${auditDayFilter}`);
+      if (auditMonthFilter) q.push(`month=${auditMonthFilter}`);
+      if (auditActionFilter) q.push(`action=${encodeURIComponent(auditActionFilter)}`);
+      if (selectedCompanyId && selectedCompanyId !== 'all') q.push(`company_id=${selectedCompanyId}`);
+      if (auditSearch.trim()) q.push(`search=${encodeURIComponent(auditSearch.trim())}`);
+      q.push('limit=100');
+
+      const res = await apiRequest(`/support/audit-reports?${q.join('&')}`);
+      setAuditLogs(res.logs || []);
+      if (res.counts) {
+        setAuditCounts(res.counts);
+      }
+    } catch (err) {
+      console.error('Failed to fetch audit reports:', err);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'audit-reports' || activeTab === 'audit-logs') {
+      fetchAuditReports();
+    }
+  }, [activeTab, auditView, auditDayFilter, auditMonthFilter, auditActionFilter, selectedCompanyId]);
+
+  const triggerDeleteAudit = (mode, date = '', month = '', title = '', count = 0) => {
+    setDeleteAuditConfig({ mode, date, month, title, count });
+    setShowDeleteAuditModal(true);
+  };
+
+  const confirmDeleteAudit = async () => {
+    setDeletingAudit(true);
+    try {
+      const res = await apiRequest('/support/audit-logs', {
+        method: 'DELETE',
+        body: {
+          mode: deleteAuditConfig.mode,
+          date: deleteAuditConfig.date || undefined,
+          month: deleteAuditConfig.month || undefined,
+          id: deleteAuditConfig.id || undefined,
+          view: auditView,
+          action: auditActionFilter || undefined,
+          company_id: selectedCompanyId !== 'all' ? selectedCompanyId : undefined,
+          search: auditSearch.trim() || undefined
+        }
+      });
+      setSuccess(res.message || 'Audit logs deleted successfully.');
+      setShowDeleteAuditModal(false);
+      fetchAuditReports();
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to delete audit logs.');
+    } finally {
+      setDeletingAudit(false);
+    }
+  };
+
+  const handleDeleteSingleLog = async (logId) => {
+    if (!window.confirm(`Permanently delete audit log entry #${logId}?`)) return;
+    try {
+      const res = await apiRequest('/support/audit-logs', {
+        method: 'DELETE',
+        body: { mode: 'single', id: logId }
+      });
+      setSuccess(res.message || 'Log entry deleted.');
+      fetchAuditReports();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.message || 'Failed to delete log entry.');
+    }
+  };
 
   // Close search dropdown on click outside
   useEffect(() => {
@@ -144,9 +233,8 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         const res = await apiRequest(buildUrl('/attendance/list', 'limit=50'));
         setAttendanceRecords(res.records || []);
       }
-      if (activeTab === 'audit-logs' || activeTab === 'dashboard') {
-        const res = await apiRequest(buildUrl('/support/audit-logs', 'limit=50'));
-        setAuditLogs(res.logs || []);
+      if (activeTab === 'audit-reports' || activeTab === 'audit-logs' || activeTab === 'dashboard') {
+        fetchAuditReports();
       }
       if (activeTab === 'remote-access' && pLevel >= 4) {
         fetchRemoteTargets();
@@ -1279,44 +1367,468 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       )}
 
       {/* ========================================================================= */}
-      {/* AUDIT LOGS VIEW */}
+      {/* LEVEL 4 AUDIT REPORTS & AUTO-LOGS CONSOLE */}
       {/* ========================================================================= */}
-      {activeTab === 'audit-logs' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900">Support Operations & Security Audit Logs</h3>
-            <span className="text-xs text-slate-500 font-semibold">{auditLogs.length} recent operations</span>
-          </div>
+      {(activeTab === 'audit-reports' || activeTab === 'audit-logs') && (
+        <div>
+          {pLevel < 4 ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-xl mx-auto space-y-4 shadow-sm">
+              <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto shadow-inner">
+                <Lock className="w-7 h-7" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900">Level 4 Support Clearance Required</h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                The Cross-Tenant Audit Reports & System Auto-Logs Console is strictly reserved for Level 4 Lead Technical Support Engineers and Super Admins.
+                Your current authorization profile is <span className="font-bold text-purple-700">Authority Level {pLevel}</span>.
+              </p>
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-800 font-medium">
+                To access platform security audit reports, inspect auto-archived logs older than 1 day, and execute day/month-wise lifecycle log pruning, request Super Admin to elevate your support permission level to 4.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* TOP HEADER & ACTION BAR */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 rounded-xl bg-purple-100 text-purple-700 font-bold">
+                      <FileSpreadsheet className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-base font-bold text-slate-900">Audit Reports & System Auto-Logs</h2>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-100 text-purple-800 border border-purple-200">
+                          Level 4 Console
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        Live system activity logs, automatic 1-day archival segregation, and day/month lifecycle pruning.
+                      </p>
+                    </div>
+                  </div>
+                </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Timestamp</th>
-                  <th className="p-3">Authorizer / Support Agent</th>
-                  <th className="p-3">Action</th>
-                  <th className="p-3">Company</th>
-                  <th className="p-3">Target Entity / ID</th>
-                  <th className="p-3">Reason / Details</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {auditLogs.map(log => (
-                  <tr key={log.id} className="hover:bg-slate-50/50">
-                    <td className="p-3 text-slate-500 font-mono text-[11px] whitespace-nowrap">{log.created_at}</td>
-                    <td className="p-3 font-semibold text-slate-800">{log.user_name} ({log.role})</td>
-                    <td className="p-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-50 text-purple-700 border border-purple-200">
-                        {log.action}
+                {/* VIEW TABS SWITCHER */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="p-1 bg-slate-100 rounded-xl flex items-center gap-1 border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setAuditView('today')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        auditView === 'today'
+                          ? 'bg-white text-emerald-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Today's Auto-Logs</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-50 text-emerald-700 font-extrabold border border-emerald-200">
+                        {auditCounts.today ?? 0}
                       </span>
-                    </td>
-                    <td className="p-3 text-slate-600">{log.company_name || 'System / All'}</td>
-                    <td className="p-3 font-mono text-slate-600">{log.target_entity} #{log.target_id || '-'}</td>
-                    <td className="p-3 text-slate-700 max-w-sm">{log.reason || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setAuditView('archived')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        auditView === 'archived'
+                          ? 'bg-white text-amber-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Archive className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Archived Logs (&gt; 1 Day)</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-50 text-amber-700 font-extrabold border border-amber-200">
+                        {auditCounts.archived ?? 0}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setAuditView('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                        auditView === 'all'
+                          ? 'bg-white text-purple-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Layers className="w-3.5 h-3.5 text-purple-600" />
+                      <span>All System Logs</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-purple-50 text-purple-700 font-extrabold border border-purple-200">
+                        {auditCounts.total ?? 0}
+                      </span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={fetchAuditReports}
+                    disabled={auditLoading}
+                    className="p-2 text-slate-500 hover:text-purple-600 bg-white border border-slate-200 hover:bg-purple-50 rounded-xl transition-colors shadow-xs"
+                    title="Refresh Audit Logs"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${auditLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              {/* METRIC SUMMARY CARDS */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="bg-emerald-50/60 border border-emerald-100 p-3.5 rounded-2xl flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider">Today's Auto-Logs</span>
+                    <p className="text-2xl font-black text-emerald-950 mt-1">{auditCounts.today ?? 0}</p>
+                    <span className="text-[10px] text-emerald-700 font-medium">Logged today (auto-segregated)</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-emerald-100 text-emerald-700">
+                    <Clock className="w-5 h-5" />
+                  </div>
+                </div>
+
+                <div className="bg-amber-50/60 border border-amber-100 p-3.5 rounded-2xl flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Auto-Archived (&gt; 1 Day)</span>
+                    <p className="text-2xl font-black text-amber-950 mt-1">{auditCounts.archived ?? 0}</p>
+                    <span className="text-[10px] text-amber-700 font-medium">Auto-archived after 24 hours</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-amber-100 text-amber-700">
+                    <Archive className="w-5 h-5" />
+                  </div>
+                </div>
+
+                <div className="bg-sky-50/60 border border-sky-100 p-3.5 rounded-2xl flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] font-bold text-sky-800 uppercase tracking-wider">Filtered View Records</span>
+                    <p className="text-2xl font-black text-sky-950 mt-1">{auditCounts.filtered ?? auditLogs.length}</p>
+                    <span className="text-[10px] text-sky-700 font-medium">Matching filter criteria</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-sky-100 text-sky-700">
+                    <Filter className="w-5 h-5" />
+                  </div>
+                </div>
+
+                <div className="bg-purple-50/60 border border-purple-100 p-3.5 rounded-2xl flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] font-bold text-purple-800 uppercase tracking-wider">Total Stored Audits</span>
+                    <p className="text-2xl font-black text-purple-950 mt-1">{auditCounts.total ?? 0}</p>
+                    <span className="text-[10px] text-purple-700 font-medium">Complete platform audit ledger</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-purple-100 text-purple-700">
+                    <FileSpreadsheet className="w-5 h-5" />
+                  </div>
+                </div>
+              </div>
+
+              {/* FILTER TOOLBAR & PRUNING DELETION CONTROLS */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  {/* Left Filters */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {/* Day-wise Filter */}
+                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl">
+                      <Calendar className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-[11px] font-bold text-slate-600">Day:</span>
+                      <input
+                        type="date"
+                        value={auditDayFilter}
+                        onChange={(e) => setAuditDayFilter(e.target.value)}
+                        className="text-xs bg-transparent border-0 focus:ring-0 p-0 text-slate-700 font-semibold cursor-pointer"
+                        title="Day-wise Filter"
+                      />
+                      {auditDayFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setAuditDayFilter('')}
+                          className="text-slate-400 hover:text-slate-600 text-xs ml-1"
+                        >
+                          &times;
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Month-wise Filter */}
+                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-xl">
+                      <Calendar className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-[11px] font-bold text-slate-600">Month:</span>
+                      <input
+                        type="month"
+                        value={auditMonthFilter}
+                        onChange={(e) => setAuditMonthFilter(e.target.value)}
+                        className="text-xs bg-transparent border-0 focus:ring-0 p-0 text-slate-700 font-semibold cursor-pointer"
+                        title="Month-wise Filter"
+                      />
+                      {auditMonthFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setAuditMonthFilter('')}
+                          className="text-slate-400 hover:text-slate-600 text-xs ml-1"
+                        >
+                          &times;
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Action Filter */}
+                    <select
+                      value={auditActionFilter}
+                      onChange={(e) => setAuditActionFilter(e.target.value)}
+                      className="text-xs px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    >
+                      <option value="">All Action Types</option>
+                      <option value="USER_LOGIN">User Login</option>
+                      <option value="DEVICE_UNBOUND">Device Unbind</option>
+                      <option value="ACCOUNT_ENABLED">Account Enabled</option>
+                      <option value="USER_PROFILE_UPDATED">User Profile Updated</option>
+                      <option value="ATTENDANCE_CORRECTED">Attendance Corrected</option>
+                      <option value="SERVICE_REQUEST_RESOLVED">Ticket Resolved</option>
+                      <option value="TICKET_PERMANENTLY_DELETED">Ticket Deleted</option>
+                      <option value="AUDIT_LOGS_DELETED">Audit Logs Deleted</option>
+                    </select>
+
+                    {/* Search Input */}
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+                      <input
+                        type="text"
+                        placeholder="Search user, reason, IP, target..."
+                        value={auditSearch}
+                        onChange={(e) => setAuditSearch(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') fetchAuditReports();
+                        }}
+                        className="text-xs pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 placeholder-slate-400 w-52 sm:w-64 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+
+                    {(auditDayFilter || auditMonthFilter || auditActionFilter || auditSearch) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuditDayFilter('');
+                          setAuditMonthFilter('');
+                          setAuditActionFilter('');
+                          setAuditSearch('');
+                        }}
+                        className="px-2.5 py-1 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+                      >
+                        Clear Filters
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Right Deletion Actions (Level 4 Support Pruning) */}
+                  <div className="flex items-center gap-2 flex-wrap shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetDay = auditDayFilter || (auditView === 'today' ? new Date().toISOString().split('T')[0] : '');
+                        if (!targetDay) {
+                          alert('Please select a specific Day using the Day filter to delete day-wise logs.');
+                          return;
+                        }
+                        triggerDeleteAudit('day', targetDay, '', `All audit logs for day: ${targetDay}`);
+                      }}
+                      className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-xs"
+                      title="Delete all audit logs for the selected day"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Day Logs</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetMonth = auditMonthFilter || new Date().toISOString().slice(0, 7);
+                        triggerDeleteAudit('month', '', targetMonth, `All audit logs for month: ${targetMonth}`);
+                      }}
+                      className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-xs"
+                      title="Delete all audit logs for the selected month"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Month Logs</span>
+                    </button>
+
+                    {(auditDayFilter || auditMonthFilter || auditActionFilter || auditSearch || (selectedCompanyId && selectedCompanyId !== 'all')) && (
+                      <button
+                        type="button"
+                        onClick={() => triggerDeleteAudit('filtered', '', '', 'Audit records matching active filter')}
+                        className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                        title="Delete all logs currently matching filters"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Filtered Records</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* AUDIT LOGS TABLE */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-900">
+                      {auditView === 'today' ? "Today's Auto-Logs" : auditView === 'archived' ? 'Archived Logs (> 1 Day)' : 'All System Audit Reports'}
+                    </h3>
+                    <span className="text-xs text-slate-500 font-semibold">
+                      ({auditLogs.length} records shown)
+                    </span>
+                  </div>
+                  {auditLoading && (
+                    <span className="text-xs text-purple-600 font-bold flex items-center gap-1">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Updating...
+                    </span>
+                  )}
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                      <tr>
+                        <th className="p-3">Timestamp</th>
+                        <th className="p-3">Authorizer / Agent</th>
+                        <th className="p-3">Action</th>
+                        <th className="p-3">Company</th>
+                        <th className="p-3">Target Entity / ID</th>
+                        <th className="p-3">Details / Reason</th>
+                        <th className="p-3">IP Address</th>
+                        <th className="p-3 text-right">Delete</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {auditLogs.map(log => {
+                        const isDeletedAction = log.action?.includes('DELETE') || log.action?.includes('UNBOUND');
+                        const isSuccessAction = log.action?.includes('RESOLVED') || log.action?.includes('ENABLE') || log.action?.includes('CORRECT');
+
+                        return (
+                          <tr key={log.id} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="p-3 text-slate-500 font-mono text-[11px] whitespace-nowrap">
+                              {log.created_at ? new Date(log.created_at).toLocaleString() : '-'}
+                            </td>
+                            <td className="p-3 font-semibold text-slate-800 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span>{log.user_name}</span>
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                                  {log.role}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="p-3 whitespace-nowrap">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                                isDeletedAction
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : isSuccessAction
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : 'bg-purple-50 text-purple-700 border-purple-200'
+                              }`}>
+                                {log.action}
+                              </span>
+                            </td>
+                            <td className="p-3 text-slate-600 whitespace-nowrap">
+                              {log.company_name || 'System / All'}
+                            </td>
+                            <td className="p-3 font-mono text-slate-600 whitespace-nowrap">
+                              {log.target_entity} {log.target_id ? `#${log.target_id}` : ''}
+                            </td>
+                            <td className="p-3 text-slate-700 max-w-sm break-words">
+                              {log.reason || '-'}
+                            </td>
+                            <td className="p-3 font-mono text-slate-400 text-[11px] whitespace-nowrap">
+                              {log.ip_address || '127.0.0.1'}
+                            </td>
+                            <td className="p-3 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSingleLog(log.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                                title="Permanently delete this audit log record"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {auditLogs.length === 0 && !auditLoading && (
+                        <tr>
+                          <td colSpan={8} className="p-10 text-center text-slate-400">
+                            <FileSpreadsheet className="w-8 h-8 mx-auto text-slate-300 mb-2 stroke-1" />
+                            <p className="font-semibold text-slate-600">No audit records found matching the active criteria.</p>
+                            <p className="text-[11px] mt-1 text-slate-400">
+                              {auditView === 'today'
+                                ? "No new operations logged yet today."
+                                : auditView === 'archived'
+                                ? "No archived logs older than 1 day exist."
+                                : "No audit reports available."}
+                            </p>
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CONFIRMATION MODAL: DELETE AUDIT LOGS (L4) */}
+      {showDeleteAuditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
+              <div className="p-2.5 rounded-xl bg-rose-100 text-rose-600 shrink-0">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Confirm Audit Log Deletion</h3>
+                <span className="text-[10px] font-extrabold uppercase text-rose-600 tracking-wider">Level 4 Support Action</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs text-rose-900 space-y-1">
+              <p className="font-bold">Caution: This action is permanent and cannot be undone.</p>
+              <p className="text-rose-700 leading-relaxed">
+                {deleteAuditConfig.title || 'Selected audit log records will be permanently deleted from the database.'}
+              </p>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <p className="text-slate-600">
+                Are you sure you want to execute this lifecycle deletion? An audit trail entry will record this purge action.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowDeleteAuditModal(false)}
+                disabled={deletingAudit}
+                className="px-4 py-2 text-slate-600 hover:text-slate-800 text-xs font-semibold rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteAudit}
+                disabled={deletingAudit}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
+              >
+                {deletingAudit ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Confirm & Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

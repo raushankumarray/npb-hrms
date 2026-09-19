@@ -328,9 +328,9 @@ router.get('/devices', verifyAuth, requireSupportLevel(1), (req, res) => {
   res.json({ devices });
 });
 
-// Audit Logs View (Support Level 1+ or Super Admin)
-router.get('/audit-logs', verifyAuth, requireSupportLevel(1), (req, res) => {
-  const { company_id, action, search, limit = 50, offset = 0 } = req.query;
+// Audit Logs & System Reports View (Support Level 1+ or Super Admin)
+const handleGetAuditLogs = (req, res) => {
+  const { view = 'all', date, month, company_id, action, search, limit = 50, offset = 0 } = req.query;
 
   let query = `
     SELECT a.*, c.name as company_name
@@ -339,6 +339,27 @@ router.get('/audit-logs', verifyAuth, requireSupportLevel(1), (req, res) => {
     WHERE 1=1
   `;
   const params = [];
+
+  // Automatic 1-day archival segregation
+  // Today's auto-logs: logs created today
+  // Archived logs: logs older than 1 day
+  if (view === 'today') {
+    query += " AND date(a.created_at) = date('now', 'localtime')";
+  } else if (view === 'archived') {
+    query += " AND date(a.created_at) < date('now', 'localtime')";
+  }
+
+  // Day-wise filter (exact date match YYYY-MM-DD)
+  if (date) {
+    query += " AND date(a.created_at) = date(?)";
+    params.push(date);
+  }
+
+  // Month-wise filter (exact month match YYYY-MM)
+  if (month) {
+    query += " AND strftime('%Y-%m', a.created_at) = ?";
+    params.push(month);
+  }
 
   if (company_id) {
     query += ' AND a.company_id = ?';
@@ -351,17 +372,141 @@ router.get('/audit-logs', verifyAuth, requireSupportLevel(1), (req, res) => {
   }
 
   if (search) {
-    query += ' AND (a.user_name LIKE ? OR a.reason LIKE ? OR a.target_id LIKE ?)';
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    query += ' AND (a.user_name LIKE ? OR a.reason LIKE ? OR a.target_id LIKE ? OR a.target_entity LIKE ? OR a.ip_address LIKE ? OR a.panel LIKE ? OR c.name LIKE ?)';
+    const term = `%${search}%`;
+    params.push(term, term, term, term, term, term, term);
   }
 
+  // Count matching current filter
+  const countQuery = query.replace('SELECT a.*, c.name as company_name', 'SELECT COUNT(*) as count');
+  const filteredCount = db.prepare(countQuery).get(...params)?.count || 0;
+
   query += ' ORDER BY a.created_at DESC LIMIT ? OFFSET ?';
-  params.push(parseInt(limit, 10), parseInt(offset, 10));
+  const queryParams = [...params, parseInt(limit, 10), parseInt(offset, 10)];
 
-  const logs = db.prepare(query).all(...params);
-  const totalCount = db.prepare('SELECT COUNT(*) as count FROM audit_logs').get().count;
+  const logs = db.prepare(query).all(...queryParams);
 
-  res.json({ logs, total: totalCount });
+  // Global metric counters
+  const totalCount = db.prepare('SELECT COUNT(*) as count FROM audit_logs').get()?.count || 0;
+  const todayCount = db.prepare("SELECT COUNT(*) as count FROM audit_logs WHERE date(created_at) = date('now', 'localtime')").get()?.count || 0;
+  const archivedCount = db.prepare("SELECT COUNT(*) as count FROM audit_logs WHERE date(created_at) < date('now', 'localtime')").get()?.count || 0;
+
+  res.json({
+    logs,
+    total: totalCount,
+    counts: {
+      total: totalCount,
+      today: todayCount,
+      archived: archivedCount,
+      filtered: filteredCount
+    }
+  });
+};
+
+router.get('/audit-logs', verifyAuth, requireSupportLevel(1), handleGetAuditLogs);
+router.get('/audit-reports', verifyAuth, requireSupportLevel(1), handleGetAuditLogs);
+
+// Delete Audit Logs (Level 4 Support or Super Admin only)
+// Supports Day-wise, Month-wise, Filtered, and Single-row deletion
+router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
+  const payload = { ...(req.body || {}), ...(req.query || {}) };
+  const { mode = 'single', id, date, month, company_id, action, search, view } = payload;
+
+  let deleteSql = 'DELETE FROM audit_logs WHERE ';
+  const params = [];
+  let description = '';
+
+  if (mode === 'single') {
+    if (!id) {
+      return res.status(400).json({ error: 'Audit log ID is required for single deletion.' });
+    }
+    deleteSql += 'id = ?';
+    params.push(id);
+    description = `Single audit record #${id}`;
+  } else if (mode === 'day') {
+    if (!date) {
+      return res.status(400).json({ error: 'Target date (YYYY-MM-DD) is required for day-wise deletion.' });
+    }
+    deleteSql += 'date(created_at) = date(?)';
+    params.push(date);
+    description = `All audit logs for day ${date}`;
+  } else if (mode === 'month') {
+    if (!month) {
+      return res.status(400).json({ error: 'Target month (YYYY-MM) is required for month-wise deletion.' });
+    }
+    deleteSql += "strftime('%Y-%m', created_at) = ?";
+    params.push(month);
+    description = `All audit logs for month ${month}`;
+  } else if (mode === 'filtered') {
+    const conditions = ['1=1'];
+    if (view === 'today') {
+      conditions.push("date(created_at) = date('now', 'localtime')");
+    } else if (view === 'archived') {
+      conditions.push("date(created_at) < date('now', 'localtime')");
+    }
+    if (date) {
+      conditions.push("date(created_at) = date(?)");
+      params.push(date);
+    }
+    if (month) {
+      conditions.push("strftime('%Y-%m', created_at) = ?");
+      params.push(month);
+    }
+    if (company_id) {
+      conditions.push('company_id = ?');
+      params.push(company_id);
+    }
+    if (action) {
+      conditions.push('action = ?');
+      params.push(action);
+    }
+    if (search) {
+      conditions.push('(user_name LIKE ? OR reason LIKE ? OR target_id LIKE ? OR target_entity LIKE ? OR ip_address LIKE ? OR panel LIKE ?)');
+      const term = `%${search}%`;
+      params.push(term, term, term, term, term, term);
+    }
+    if (conditions.length === 1) {
+      return res.status(400).json({ error: 'At least one filter condition required for filtered deletion.' });
+    }
+    deleteSql += conditions.join(' AND ');
+    description = 'Audit logs matching active filters';
+  } else if (mode === 'all') {
+    deleteSql = 'DELETE FROM audit_logs';
+    description = 'All audit records in system';
+  } else {
+    return res.status(400).json({ error: `Invalid deletion mode: ${mode}` });
+  }
+
+  try {
+    const result = db.prepare(deleteSql).run(...params);
+    const deletedCount = result.changes;
+
+    logAudit({
+      companyId: null,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Support L4 Audit Console',
+      action: 'AUDIT_LOGS_DELETED',
+      targetEntity: 'audit_logs',
+      targetId: String(mode === 'single' ? id : mode),
+      newValues: { mode, deletedCount, date, month },
+      reason: `Deleted ${deletedCount} record(s): ${description} by Level 4 Support`
+    });
+
+    res.json({
+      success: true,
+      deletedCount,
+      message: `Successfully deleted ${deletedCount} audit log record(s) (${description}).`
+    });
+  } catch (err) {
+    console.error('Failed to delete audit logs:', err.message);
+    res.status(500).json({ error: `Failed to delete audit logs: ${err.message}` });
+  }
+});
+router.delete('/audit-reports', verifyAuth, requireSupportLevel(4), (req, res, next) => {
+  req.url = '/audit-logs';
+  router.handle(req, res, next);
 });
 
 // --- UNIVERSAL INSTANT SEARCH & RESOLUTION ---

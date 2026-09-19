@@ -212,25 +212,27 @@ router.get('/service-requests', verifyAuth, (req, res) => {
     query += " AND (sr.is_archived = 1 OR sr.status IN ('closed', 'resolved'))";
   }
 
-  // If scope is explicitly 'own' or for specific employee
-  if (req.query.scope === 'own') {
+  // User Rule: Creator Isolation
+  // If Employee A creates ticket -> only Employee A sees it (no other employee, manager, or company admin sees it).
+  // If Manager creates ticket -> only that Manager sees it.
+  // If Company Admin creates ticket -> only that Company Admin sees it.
+  // Support team and Super Admin see all tickets.
+  if (req.user.role_name === 'employee') {
     query += ' AND (sr.employee_id = ? OR e.user_id = ?)';
-    params.push(req.user.employee_id, req.user.id);
-  } else if (req.user.role_name === 'manager' || req.query.scope === 'team' || req.query.scope === 'reporting') {
-    if (req.user.role_name === 'manager') {
-      query += ` AND (
-        e.manager_id = ? 
-        OR e.id IN (SELECT employee_id FROM employee_mappings WHERE manager_id = ?)
-        OR (sr.assigned_role = 'manager' AND (sr.assigned_to = ? OR sr.assigned_to IS NULL))
-        OR sr.employee_id = ?
-        OR e.user_id = ?
-      )`;
-      params.push(req.user.employee_id, req.user.employee_id, req.user.id, req.user.employee_id, req.user.id);
-    }
+    params.push(req.user.employee_id || 0, req.user.id);
+  } else if (req.user.role_name === 'manager') {
+    query += ' AND (sr.employee_id = ? OR e.user_id = ?)';
+    params.push(req.user.employee_id || 0, req.user.id);
+  } else if (req.user.role_name === 'company_admin') {
+    query += ' AND (e.user_id = ? OR sr.employee_id = ?)';
+    params.push(req.user.id, req.user.employee_id || 0);
   } else if (req.user.role_name === 'support') {
-    if (req.query.scope === 'support' || !req.query.scope) {
+    if (req.query.scope === 'support') {
       query += " AND (sr.assigned_role = 'support' OR sr.assigned_role IS NULL)";
     }
+  } else if (req.query.scope === 'own') {
+    query += ' AND (sr.employee_id = ? OR e.user_id = ?)';
+    params.push(req.user.employee_id || 0, req.user.id);
   }
 
   if (req.query.assigned_role) {
@@ -370,10 +372,17 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
     return res.status(404).json({ error: 'Request not found.' });
   }
 
-  // Security & User Rule: Closed tickets can NEVER be reopened by Employee, Manager, or Company Admin
-  if (current.status === 'closed' && ['employee', 'manager', 'company_admin'].includes(req.user.role_name)) {
+  // User Rule: ONLY Technical Support Team (and Super Admin) can directly solve or close tickets
+  if (!['support', 'super_admin'].includes(req.user.role_name)) {
     return res.status(403).json({
-      error: 'Closed tickets cannot be reopened. Please create a new ticket if you require further assistance.'
+      error: 'Only Technical Support Team is authorized to solve or close service tickets.'
+    });
+  }
+
+  // Security & User Rule: Resolved/Closed tickets can NEVER be reopened by Employee, Manager, or Company Admin
+  if (['resolved', 'closed'].includes(current.status) && ['employee', 'manager', 'company_admin'].includes(req.user.role_name)) {
+    return res.status(403).json({
+      error: 'Closed or resolved tickets cannot be reopened. Please create a new ticket if you require further assistance.'
     });
   }
 
@@ -540,14 +549,17 @@ router.get('/service-requests/:id/messages', verifyAuth, (req, res) => {
     return res.status(404).json({ error: 'Ticket not found.' });
   }
 
-  // Authorization check
+  // Authorization check: Non-support users can ONLY access tickets created by themselves
   const role = req.user.role_name;
   if (role !== 'super_admin' && role !== 'support') {
     if (ticket.company_id !== req.user.company_id) {
       return res.status(403).json({ error: 'Access denied to tickets of other companies.' });
     }
-    if (role === 'employee' && req.user.employee_id !== ticket.employee_id) {
-      return res.status(403).json({ error: 'Access denied to other employee tickets.' });
+    const isOwner = (req.user.employee_id && ticket.employee_id === req.user.employee_id) ||
+                    (ticket.emp_user_id && ticket.emp_user_id === req.user.id) ||
+                    (ticket.user_id && ticket.user_id === req.user.id);
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Access denied. You can only view tickets created by yourself.' });
     }
   }
 
@@ -581,21 +593,24 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
     return res.status(404).json({ error: 'Ticket not found.' });
   }
 
-  // Authorization check
+  // Authorization check: Non-support users can ONLY access tickets created by themselves
   const role = req.user.role_name;
   if (role !== 'super_admin' && role !== 'support') {
     if (ticket.company_id !== req.user.company_id) {
       return res.status(403).json({ error: 'Access denied.' });
     }
-    if (role === 'employee' && req.user.employee_id !== ticket.employee_id) {
-      return res.status(403).json({ error: 'Access denied.' });
+    const isOwner = (req.user.employee_id && ticket.employee_id === req.user.employee_id) ||
+                    (ticket.emp_user_id && ticket.emp_user_id === req.user.id) ||
+                    (ticket.user_id && ticket.user_id === req.user.id);
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Access denied. You can only reply to tickets created by yourself.' });
     }
   }
 
-  // Resolved / Closed check: Employees, Managers, and Company Admins cannot reply to or reopen closed tickets
+  // Resolved / Closed check: Employees, Managers, and Company Admins cannot reply to or reopen closed/resolved tickets
   if (['employee', 'manager', 'company_admin'].includes(role) && (ticket.status === 'closed' || ticket.status === 'resolved')) {
     return res.status(403).json({
-      error: 'This ticket is closed and cannot be reopened. Please create a new ticket if you require further assistance.'
+      error: 'This ticket has been resolved/closed by Technical Support and cannot be reopened. Please create a new ticket if you require further assistance.'
     });
   }
 
@@ -627,8 +642,8 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
 
     let finalStatus = ticket.status;
 
-    // 2. If status change requested
-    if (status && ['pending', 'in_progress', 'resolved', 'closed'].includes(status)) {
+    // 2. If status change requested (ONLY Support and Super Admin authorized to alter ticket status)
+    if (status && ['pending', 'in_progress', 'resolved', 'closed'].includes(status) && (role === 'support' || role === 'super_admin')) {
       finalStatus = status;
       db.prepare(`
         UPDATE service_requests SET
@@ -662,8 +677,8 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
           );
         }
       }
-    } else if (ticket.status === 'pending' && (role === 'support' || role === 'manager' || role === 'company_admin')) {
-      // Automatically switch from pending to in_progress when support/admin replies
+    } else if (ticket.status === 'pending' && (role === 'support' || role === 'super_admin')) {
+      // Automatically switch from pending to in_progress when support replies
       finalStatus = 'in_progress';
       db.prepare("UPDATE service_requests SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(reqId);
     }

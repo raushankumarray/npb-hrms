@@ -120,8 +120,7 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
   if (!isOpen) return null;
 
   const canChangeStatus = currentUser && (
-    currentUser.role === 'super_admin' || currentUser.role === 'support' ||
-    (ticket?.status !== 'closed' && ['company_admin', 'manager'].includes(currentUser.role))
+    currentUser.role === 'super_admin' || currentUser.role === 'support'
   );
 
   return (
@@ -355,7 +354,7 @@ export default function TicketChatModal({ ticketId, isOpen, onClose, currentUser
                   Shift + Enter for new line
                 </span>
 
-                {isStaffOrSupport && ticket && ticket.status !== 'resolved' && (
+                {canChangeStatus && ticket && ticket.status !== 'resolved' && ticket.status !== 'closed' && (
                   <button
                     type="button"
                     disabled={sending}

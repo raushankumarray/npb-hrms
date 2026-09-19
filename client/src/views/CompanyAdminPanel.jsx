@@ -1828,19 +1828,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                               <MessageSquare className="w-3.5 h-3.5" />
                               Chat
                             </button>
-
-                            {ticketSection === 'pending' && (
-                              <button
-                                onClick={() => {
-                                  setSelectedTicket(t);
-                                  setResolutionNotes(t.resolution_notes || '');
-                                  setShowSolveTicketModal(true);
-                                }}
-                                className="px-3 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 font-bold rounded-lg text-xs border border-sky-200"
-                              >
-                                Solve Ticket
-                              </button>
-                            )}
                           </div>
                         </td>
                       </tr>
@@ -3566,91 +3553,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         </div>
       )}
 
-      {/* MODAL: SOLVE HELPDESK TICKET */}
-      {showSolveTicketModal && selectedTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold text-sky-600 bg-sky-50 px-2 py-0.5 rounded">
-                    Ticket #{selectedTicket.id}
-                  </span>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
-                    selectedTicket.status === 'resolved' ? 'bg-emerald-50 text-emerald-700' :
-                    selectedTicket.status === 'in_progress' ? 'bg-amber-50 text-amber-700' :
-                    'bg-rose-50 text-rose-700'
-                  }`}>
-                    {selectedTicket.status}
-                  </span>
-                </div>
-                <h3 className="text-base font-bold text-slate-900 mt-1">{selectedTicket.title}</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSolveTicketModal(false)}
-                className="text-slate-400 hover:text-slate-600 p-1"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            <div className="bg-slate-50 p-3 rounded-xl space-y-2 text-xs">
-              <div className="grid grid-cols-2 gap-2 text-slate-600">
-                <div><span className="font-semibold text-slate-800">Submitted By:</span> {selectedTicket.employee_name || 'Staff'} ({selectedTicket.employee_id || 'N/A'})</div>
-                <div><span className="font-semibold text-slate-800">Category:</span> {selectedTicket.category || selectedTicket.request_type}</div>
-                <div><span className="font-semibold text-slate-800">Priority:</span> <span className="capitalize font-medium">{selectedTicket.priority || 'Normal'}</span></div>
-                <div><span className="font-semibold text-slate-800">Date:</span> {new Date(selectedTicket.created_at).toLocaleDateString()}</div>
-              </div>
-              {selectedTicket.description && (
-                <div className="pt-2 border-t border-slate-200/60">
-                  <span className="font-semibold text-slate-800 block mb-1">Issue Description:</span>
-                  <p className="text-slate-700 bg-white p-2 rounded border border-slate-200">{selectedTicket.description}</p>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <label className="font-semibold text-slate-700 block">
-                Resolution & Helpdesk Notes *
-              </label>
-              <textarea
-                rows="3"
-                value={resolutionNotes}
-                onChange={(e) => setResolutionNotes(e.target.value)}
-                placeholder="Enter resolution notes, root cause, or actions taken to resolve this ticket..."
-                className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowSolveTicketModal(false)}
-                className="px-4 py-2 text-slate-600 hover:text-slate-800 text-xs font-medium"
-              >
-                Cancel
-              </button>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleResolveTicket('in_progress')}
-                  className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl text-xs font-semibold"
-                >
-                  Mark In Progress
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleResolveTicket('resolved')}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow-sm"
-                >
-                  Resolve & Close Ticket
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* MODAL: RAISE COMPLAINT TO SUPPORT */}
       {showRaiseComplaintModal && (

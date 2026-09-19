@@ -121,7 +121,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'device-support', label: 'Device Binding & Unlock', icon: Laptop },
           { id: 'calendar', label: 'Operations Calendar', icon: Calendar },
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
-          { id: 'audit-logs', label: 'Support Audit Logs', icon: FileSpreadsheet },
+          { id: 'audit-reports', label: 'Audit Reports & Logs', icon: FileSpreadsheet, badge: 'Level 4' },
           { id: 'remote-access', label: 'Remote Access', icon: Radio, badge: 'Level 4' }
         ];
 
