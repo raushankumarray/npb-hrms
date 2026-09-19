@@ -52,6 +52,14 @@ try {
 } catch (e) {}
 
 try {
+  db.prepare("ALTER TABLE attendance_records ADD COLUMN punch_in_area TEXT").run();
+} catch (e) {}
+
+try {
+  db.prepare("ALTER TABLE attendance_records ADD COLUMN punch_out_area TEXT").run();
+} catch (e) {}
+
+try {
   const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='attendance_correction_requests'").get();
   if (tableSql && tableSql.sql && !tableSql.sql.includes("'Absent'")) {
     db.exec(`

@@ -431,6 +431,12 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         await fetchFirebaseStatus();
       }
       await fetchData();
+      window.dispatchEvent(new CustomEvent('master-refresh', { detail: { source: 'firebase-restore' } }));
+      try {
+        const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+        bc.postMessage({ type: 'FIREBASE_RESTORED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
     } catch (err) {
       setError(err.message || 'Failed to update Firebase configuration');
     } finally {
@@ -498,6 +504,12 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         setFirebaseSummary(res);
         await fetchData(); // Refreshes all companies, employees, users, and attendances in website
         await fetchFirebaseStatus();
+        window.dispatchEvent(new CustomEvent('master-refresh', { detail: { source: 'firebase-restore' } }));
+        try {
+          const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+          bc.postMessage({ type: 'FIREBASE_RESTORED', timestamp: Date.now() });
+          bc.close();
+        } catch (e) {}
       } else {
         setError(res.error || 'Failed to fetch data from Firebase');
       }
@@ -530,6 +542,12 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setFirebaseSummary(null);
       await fetchFirebaseStatus();
       await fetchData(); // Automatically refresh local tables to show zero company data
+      window.dispatchEvent(new CustomEvent('master-refresh', { detail: { source: 'firebase-reset' } }));
+      try {
+        const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+        bc.postMessage({ type: 'FIREBASE_DISCONNECTED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
     } catch (err) {
       setError(err.message || 'Failed to reset Firebase configuration');
     } finally {

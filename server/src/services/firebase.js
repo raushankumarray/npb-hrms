@@ -237,8 +237,9 @@ function initFirebase() {
     setTimeout(() => {
       try {
         const compCount = db.prepare('SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0').get()?.count || 0;
-        if (compCount === 0) {
-          console.log('🔄 Local DB has 0 companies. Auto-fetching and restoring all data from Firebase...');
+        const attCount = db.prepare('SELECT COUNT(*) as count FROM attendance_records').get()?.count || 0;
+        if (compCount === 0 || attCount === 0) {
+          console.log(`🔄 Local DB has ${compCount} companies, ${attCount} attendances. Auto-fetching and restoring all data from Firebase...`);
           fetchAllFromFirebaseAndRestoreToDb().then(res => {
             if (res.success) {
               console.log(`🚀 Firebase Auto-Restore Complete: ${res.restoredCompanies} companies, ${res.restoredEmployees} employees, ${res.restoredUsers} users, ${res.restoredAttendances} attendances restored.`);
@@ -344,35 +345,7 @@ async function syncTicketMessage(ticketId, messageData) {
   }
 }
 
-/**
- * Real-time sync: Attendance Punch
- */
-async function syncAttendancePunch(companyId, employeeId, punchData) {
-  if (!firebaseStatus.connected) return null;
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const payload = {
-      companyId,
-      employeeId,
-      date: today,
-      punchInTime: punchData.punch_in_time || null,
-      punchOutTime: punchData.punch_out_time || null,
-      status: punchData.status || 'Present',
-      syncedAt: new Date().toISOString()
-    };
-
-    if (realtimeDb) {
-      await realtimeDb.ref(`attendance_punches/${companyId}/${employeeId}/${today}`).set(payload);
-    }
-    if (firestoreDb) {
-      await firestoreDb.collection('attendance_punches').doc(`${companyId}_${employeeId}_${today}`).set(payload, { merge: true });
-    }
-    return true;
-  } catch (err) {
-    console.warn('Firebase syncAttendancePunch error:', err.message);
-    return false;
-  }
-}
+// (Note: Comprehensive syncAttendancePunch supporting all lat, long, area_name, and punch timings is implemented below)
 
 /**
  * Real-time sync: Company record
@@ -604,6 +577,9 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
   if (!firebaseStatus.connected) return null;
   try {
     const today = punchData.date || new Date().toISOString().split('T')[0];
+    const resolvedInLocation = punchData.punch_in_area || punchData.punchInArea || punchData.punch_in_location || punchData.punchInLocation || punchData.area_name || punchData.areaName || punchData.location_name || punchData.location || null;
+    const resolvedOutLocation = punchData.punch_out_area || punchData.punchOutArea || punchData.punch_out_location || punchData.punchOutLocation || (punchData.punch_out_time ? (punchData.area_name || punchData.areaName || punchData.location_name || punchData.location) : null);
+
     const payload = {
       companyId,
       company_id: companyId,
@@ -614,20 +590,48 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
       punch_in_time: punchData.punch_in_time || punchData.punchInTime || null,
       punchOutTime: punchData.punch_out_time || punchData.punchOutTime || null,
       punch_out_time: punchData.punch_out_time || punchData.punchOutTime || null,
-      punchInLat: punchData.punch_in_lat ?? punchData.punchInLat ?? null,
-      punch_in_lat: punchData.punch_in_lat ?? punchData.punchInLat ?? null,
-      punchInLng: punchData.punch_in_lng ?? punchData.punchInLng ?? null,
-      punch_in_lng: punchData.punch_in_lng ?? punchData.punchInLng ?? null,
-      punchInLocation: punchData.punch_in_location || punchData.punchInLocation || punchData.punch_in_address || null,
-      punch_in_location: punchData.punch_in_location || punchData.punchInLocation || punchData.punch_in_address || null,
-      punch_in_address: punchData.punch_in_location || punchData.punchInLocation || punchData.punch_in_address || null,
-      punchOutLat: punchData.punch_out_lat ?? punchData.punchOutLat ?? null,
-      punch_out_lat: punchData.punch_out_lat ?? punchData.punchOutLat ?? null,
-      punchOutLng: punchData.punch_out_lng ?? punchData.punchOutLng ?? null,
-      punch_out_lng: punchData.punch_out_lng ?? punchData.punchOutLng ?? null,
-      punchOutLocation: punchData.punch_out_location || punchData.punchOutLocation || punchData.punch_out_address || null,
-      punch_out_location: punchData.punch_out_location || punchData.punchOutLocation || punchData.punch_out_address || null,
-      punch_out_address: punchData.punch_out_location || punchData.punchOutLocation || punchData.punch_out_address || null,
+
+      // Universal Latitude & Longitude
+      latitude: punchData.punch_in_lat ?? punchData.punchInLat ?? punchData.latitude ?? punchData.lat ?? null,
+      longitude: punchData.punch_in_lng ?? punchData.punchInLng ?? punchData.longitude ?? punchData.lng ?? null,
+      lat: punchData.punch_in_lat ?? punchData.punchInLat ?? punchData.latitude ?? punchData.lat ?? null,
+      lng: punchData.punch_in_lng ?? punchData.punchInLng ?? punchData.longitude ?? punchData.lng ?? null,
+
+      // Punch In Coordinates
+      punchInLat: punchData.punch_in_lat ?? punchData.punchInLat ?? punchData.latitude ?? punchData.lat ?? null,
+      punch_in_lat: punchData.punch_in_lat ?? punchData.punchInLat ?? punchData.latitude ?? punchData.lat ?? null,
+      punchInLng: punchData.punch_in_lng ?? punchData.punchInLng ?? punchData.longitude ?? punchData.lng ?? null,
+      punch_in_lng: punchData.punch_in_lng ?? punchData.punchInLng ?? punchData.longitude ?? punchData.lng ?? null,
+
+      // Punch In Area Name & Location
+      areaName: resolvedInLocation,
+      area_name: resolvedInLocation,
+      location_name: resolvedInLocation,
+      punchInLocation: resolvedInLocation,
+      punch_in_location: resolvedInLocation,
+      punchInArea: resolvedInLocation,
+      punch_in_area: resolvedInLocation,
+      punch_in_area_name: resolvedInLocation,
+      punch_in_address: resolvedInLocation,
+      punchInAccuracy: punchData.punch_in_accuracy ?? punchData.punchInAccuracy ?? punchData.accuracy ?? 10,
+      punch_in_accuracy: punchData.punch_in_accuracy ?? punchData.punchInAccuracy ?? punchData.accuracy ?? 10,
+
+      // Punch Out Coordinates
+      punchOutLat: punchData.punch_out_lat ?? punchData.punchOutLat ?? (punchData.punch_out_time ? (punchData.latitude ?? punchData.lat) : null),
+      punch_out_lat: punchData.punch_out_lat ?? punchData.punchOutLat ?? (punchData.punch_out_time ? (punchData.latitude ?? punchData.lat) : null),
+      punchOutLng: punchData.punch_out_lng ?? punchData.punchOutLng ?? (punchData.punch_out_time ? (punchData.longitude ?? punchData.lng) : null),
+      punch_out_lng: punchData.punch_out_lng ?? punchData.punchOutLng ?? (punchData.punch_out_time ? (punchData.longitude ?? punchData.lng) : null),
+
+      // Punch Out Area Name & Location
+      punchOutLocation: resolvedOutLocation,
+      punch_out_location: resolvedOutLocation,
+      punchOutArea: resolvedOutLocation,
+      punch_out_area: resolvedOutLocation,
+      punch_out_area_name: resolvedOutLocation,
+      punch_out_address: resolvedOutLocation,
+      punchOutAccuracy: punchData.punch_out_accuracy ?? punchData.punchOutAccuracy ?? (punchData.punch_out_time ? (punchData.accuracy ?? 10) : null),
+      punch_out_accuracy: punchData.punch_out_accuracy ?? punchData.punchOutAccuracy ?? (punchData.punch_out_time ? (punchData.accuracy ?? 10) : null),
+
       totalHours: Number(punchData.total_hours ?? punchData.totalHours ?? punchData.working_hours ?? 0.0),
       total_hours: Number(punchData.total_hours ?? punchData.totalHours ?? punchData.working_hours ?? 0.0),
       working_hours: Number(punchData.total_hours ?? punchData.totalHours ?? punchData.working_hours ?? 0.0),
@@ -646,6 +650,7 @@ async function syncAttendancePunch(companyId, employeeId, punchData) {
     }
     if (firestoreDb) {
       await firestoreDb.collection('attendance_punches').doc(`${companyId}_${employeeId}_${today}`).set(payload, { merge: true });
+      await firestoreDb.collection('attendance_records').doc(`${companyId}_${employeeId}_${today}`).set(payload, { merge: true });
       if (companyId) {
         await firestoreDb.collection('companies').doc(String(companyId)).collection('attendance').doc(`${today}_${employeeId}`).set(payload, { merge: true });
       }
@@ -3104,15 +3109,17 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
 
             const pIn = att.punchInTime || att.punch_in_time || null;
             const pOut = att.punchOutTime || att.punch_out_time || null;
-            const inLat = att.punchInLat ?? att.punch_in_lat ?? null;
-            const inLng = att.punchInLng ?? att.punch_in_lng ?? null;
-            const inLoc = att.punchInLocation || att.punch_in_location || att.punchInAddress || att.punch_in_address || null;
-            const inAcc = att.punchInAccuracy ?? att.punch_in_accuracy ?? 10;
+            const inLat = att.punchInLat ?? att.punch_in_lat ?? att.latitude ?? att.lat ?? null;
+            const inLng = att.punchInLng ?? att.punch_in_lng ?? att.longitude ?? att.lng ?? null;
+            const inLoc = att.punchInLocation || att.punch_in_location || att.punchInAddress || att.punch_in_address || att.punchInArea || att.punch_in_area || att.area_name || att.areaName || att.location_name || null;
+            const inArea = att.punchInArea || att.punch_in_area || att.punch_in_area_name || att.area_name || att.areaName || inLoc;
+            const inAcc = att.punchInAccuracy ?? att.punch_in_accuracy ?? att.accuracy ?? 10;
             const outLat = att.punchOutLat ?? att.punch_out_lat ?? null;
             const outLng = att.punchOutLng ?? att.punch_out_lng ?? null;
-            const outLoc = att.punchOutLocation || att.punch_out_location || att.punchOutAddress || att.punch_out_address || null;
+            const outLoc = att.punchOutLocation || att.punch_out_location || att.punchOutAddress || att.punch_out_address || att.punchOutArea || att.punch_out_area || null;
+            const outArea = att.punchOutArea || att.punch_out_area || att.punch_out_area_name || outLoc;
             const outAcc = att.punchOutAccuracy ?? att.punch_out_accuracy ?? 10;
-            const tHours = Number(att.totalHours ?? att.total_hours ?? att.working_hours ?? 8.0);
+            const tHours = Number(att.totalHours ?? att.total_hours ?? att.working_hours ?? (pIn && pOut ? 8.0 : 0.0));
             const existingAtt = db.prepare('SELECT id FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?').get(compId, empId, date);
 
             if (existingAtt) {
@@ -3123,27 +3130,29 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
                   punch_in_lat = COALESCE(?, punch_in_lat),
                   punch_in_lng = COALESCE(?, punch_in_lng),
                   punch_in_location = COALESCE(?, punch_in_location),
+                  punch_in_area = COALESCE(?, punch_in_area),
                   punch_in_accuracy = COALESCE(?, punch_in_accuracy),
                   punch_out_lat = COALESCE(?, punch_out_lat),
                   punch_out_lng = COALESCE(?, punch_out_lng),
                   punch_out_location = COALESCE(?, punch_out_location),
+                  punch_out_area = COALESCE(?, punch_out_area),
                   punch_out_accuracy = COALESCE(?, punch_out_accuracy),
                   status = COALESCE(?, status),
                   total_hours = COALESCE(?, total_hours),
                   updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-              `).run(pIn, pOut, inLat, inLng, inLoc, inAcc, outLat, outLng, outLoc, outAcc, attStatus, tHours, existingAtt.id);
+              `).run(pIn, pOut, inLat, inLng, inLoc, inArea, inAcc, outLat, outLng, outLoc, outArea, outAcc, attStatus, tHours, existingAtt.id);
             } else {
               db.prepare(`
                 INSERT INTO attendance_records (
                   company_id, employee_id, date,
                   punch_in_time, punch_out_time,
-                  punch_in_lat, punch_in_lng, punch_in_location, punch_in_accuracy,
-                  punch_out_lat, punch_out_lng, punch_out_location, punch_out_accuracy,
+                  punch_in_lat, punch_in_lng, punch_in_location, punch_in_area, punch_in_accuracy,
+                  punch_out_lat, punch_out_lng, punch_out_location, punch_out_area, punch_out_accuracy,
                   status, total_hours
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `).run(compId, empId, date, pIn, pOut, inLat, inLng, inLoc, inAcc, outLat, outLng, outLoc, outAcc, attStatus, tHours);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(compId, empId, date, pIn, pOut, inLat, inLng, inLoc, inArea, inAcc, outLat, outLng, outLoc, outArea, outAcc, attStatus, tHours);
             }
             restoredAttendances++;
           }

@@ -184,11 +184,12 @@ router.post('/login', async (req, res) => {
     const fbStatus = getFirebaseStatus();
     if (fbStatus && fbStatus.connected) {
       const compCount = db.prepare("SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0 AND UPPER(code) NOT IN ('NPB01', 'BSES01', 'MAN01') AND LOWER(name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')").get()?.count || 0;
-      if (compCount === 0) {
-        console.log(`[Auth] User ${user.username} (${user.role_name}) logged in with 0 companies locally. Triggering auto-restore from Firebase in background...`);
+      const attCount = db.prepare("SELECT COUNT(*) as count FROM attendance_records").get()?.count || 0;
+      if (compCount === 0 || attCount === 0) {
+        console.log(`[Auth] User ${user.username} (${user.role_name}) logged in with ${compCount} companies, ${attCount} attendances locally. Triggering auto-restore from Firebase in background...`);
         fetchAllFromFirebaseAndRestoreToDb().then(r => {
           if (r && r.success) {
-            console.log(`[Auth] Auto-restore on login finished: ${r.restoredCompanies} companies restored.`);
+            console.log(`[Auth] Auto-restore on login finished: ${r.restoredCompanies} companies, ${r.restoredAttendances} attendances restored.`);
           }
         }).catch(e => console.error('[Auth] Auto-restore on login error:', e.message));
       }

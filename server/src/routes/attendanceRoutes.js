@@ -212,6 +212,8 @@ router.get('/calendar', verifyAuth, (req, res) => {
   if (companyId) {
     let attQuery = `
       SELECT ar.id, ar.employee_id, ar.date, ar.punch_in_time, ar.punch_out_time, ar.total_hours, ar.status, ar.remarks,
+             ar.punch_in_lat, ar.punch_in_lng, ar.punch_in_location, COALESCE(ar.punch_in_area, ar.punch_in_location) as punch_in_area,
+             ar.punch_out_lat, ar.punch_out_lng, ar.punch_out_location, COALESCE(ar.punch_out_area, ar.punch_out_location) as punch_out_area,
              e.full_name as employee_name, e.employee_id as employee_code, e.department
       FROM attendance_records ar
       JOIN employees e ON ar.employee_id = e.id
@@ -436,21 +438,22 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     db.prepare(`
       INSERT INTO attendance_records (
         company_id, employee_id, date, punch_in_time,
-        punch_in_lat, punch_in_lng, punch_in_location, punch_in_accuracy,
+        punch_in_lat, punch_in_lng, punch_in_location, punch_in_area, punch_in_accuracy,
         status, shift_id, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Missing Punch Out', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Missing Punch Out', ?, ?)
       ON CONFLICT(company_id, employee_id, date) DO UPDATE SET
         punch_in_time = excluded.punch_in_time,
         punch_in_lat = excluded.punch_in_lat,
         punch_in_lng = excluded.punch_in_lng,
         punch_in_location = excluded.punch_in_location,
+        punch_in_area = excluded.punch_in_area,
         punch_in_accuracy = excluded.punch_in_accuracy,
         status = 'Missing Punch Out',
         shift_id = excluded.shift_id,
         updated_at = CURRENT_TIMESTAMP
     `).run(
       companyId, employeeId, today, nowTime,
-      latitude, longitude, resolvedLocation, accuracy || 10,
+      latitude, longitude, resolvedLocation, resolvedLocation, accuracy || 10,
       emp ? emp.shift_id : null, geofenceCheck.reason
     );
 
@@ -471,7 +474,12 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
       punch_in_lat: latitude,
       punch_in_lng: longitude,
       punch_in_location: resolvedLocation,
+      punch_in_area: resolvedLocation,
       punch_in_address: resolvedLocation,
+      latitude,
+      longitude,
+      area_name: resolvedLocation,
+      location_name: resolvedLocation,
       punch_in_accuracy: accuracy || 10,
       status: 'Missing Punch Out'
     }).catch(() => {});
@@ -490,6 +498,9 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
     punchInLat: latitude,
     punchInLng: longitude,
     punchInLocation: resolvedLocation,
+    punchInArea: resolvedLocation,
+    areaName: resolvedLocation,
+    area_name: resolvedLocation,
     location: resolvedLocation
   });
 });
@@ -634,13 +645,14 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
         punch_out_lat = ?,
         punch_out_lng = ?,
         punch_out_location = ?,
+        punch_out_area = ?,
         punch_out_accuracy = ?,
         total_hours = ?,
         status = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
-      nowTime, latitude, longitude, resolvedLocation,
+      nowTime, latitude, longitude, resolvedLocation, resolvedLocation,
       accuracy || 10, totalHours, attendanceStatus, existing.id
     );
 
@@ -660,12 +672,18 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
       punch_in_lat: existing.punch_in_lat,
       punch_in_lng: existing.punch_in_lng,
       punch_in_location: existing.punch_in_location,
+      punch_in_area: existing.punch_in_area || existing.punch_in_location,
       punch_in_address: existing.punch_in_location,
       punch_out_time: nowTime,
       punch_out_lat: latitude,
       punch_out_lng: longitude,
       punch_out_location: resolvedLocation,
+      punch_out_area: resolvedLocation,
       punch_out_address: resolvedLocation,
+      latitude,
+      longitude,
+      area_name: resolvedLocation,
+      location_name: resolvedLocation,
       punch_out_accuracy: accuracy || 10,
       total_hours: totalHours,
       working_hours: totalHours,
@@ -686,6 +704,9 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
     punchOutLat: latitude,
     punchOutLng: longitude,
     punchOutLocation: resolvedLocation,
+    punchOutArea: resolvedLocation,
+    areaName: resolvedLocation,
+    area_name: resolvedLocation,
     location: resolvedLocation,
     totalHours,
     status: attendanceStatus
@@ -818,9 +839,11 @@ router.get('/list', verifyAuth, (req, res) => {
         a.punch_in_lat,
         a.punch_in_lng,
         a.punch_in_location,
+        COALESCE(a.punch_in_area, a.punch_in_location) as punch_in_area,
         a.punch_out_lat,
         a.punch_out_lng,
         a.punch_out_location,
+        COALESCE(a.punch_out_area, a.punch_out_location) as punch_out_area,
         a.total_hours,
         (${statusExpr}) as status,
         COALESCE(
@@ -1238,16 +1261,31 @@ function generateFullMonthAttendanceRows(req, options = {}) {
         "Punch In Time": punchIn12,
         "Punch In Lat/Long": punchInLatLong,
         "Punch In Address": punchInAddress,
+        "Punch In Area": punchInAddress,
         "Punch Out Time": punchOut12,
         "Punch Out Lat/Long": punchOutLatLong,
         "Punch Out Address": punchOutAddress,
+        "Punch Out Area": punchOutAddress,
         "Status": rowStatus,
         "Working Hours (HH:MM)": workingHoursHHMM,
-        // Compatibility aliases:
+        // Raw properties & compatibility aliases:
+        punch_in_time: att ? att.punch_in_time : null,
+        punch_out_time: att ? att.punch_out_time : null,
+        punch_in_lat: att ? att.punch_in_lat : null,
+        punch_in_lng: att ? att.punch_in_lng : null,
+        punch_in_location: punchInAddress,
+        punch_in_area: punchInAddress,
+        punch_out_lat: att ? att.punch_out_lat : null,
+        punch_out_lng: att ? att.punch_out_lng : null,
+        punch_out_location: punchOutAddress,
+        punch_out_area: punchOutAddress,
+        total_hours: att ? att.total_hours : 0,
+        status: rowStatus,
         "Punch In": punchIn12,
         "Punch Out": punchOut12,
         "Hours": workingHoursHHMM,
         "Working Hours": workingHoursHHMM,
+        "Area Name": punchInAddress !== '--' ? punchInAddress : 'Office',
         "Location / Geofence": punchInAddress !== '--' ? punchInAddress : 'Office',
         "GPS Lat/Long (Punch In)": punchInLatLong,
         "Address (Punch In)": punchInAddress,
