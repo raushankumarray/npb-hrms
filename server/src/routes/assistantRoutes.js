@@ -159,6 +159,23 @@ router.post('/chat', verifyAuth, async (req, res) => {
   const employeeId = user.employee_id;
   const role = user.role_name || user.role;
 
+  // 0. Super Admin AI Assistant Module Toggle Check
+  if (companyId && role !== 'super_admin' && role !== 'support') {
+    try {
+      const aiMod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'ai_assistant'").get(companyId);
+      if (aiMod && !aiMod.is_enabled) {
+        return res.status(403).json({
+          reply: isHindi
+            ? "⚠️ इस कंपनी के लिए सुपर एडमिन द्वारा AI सहायक (Pihu AI) को अक्षम (disable) कर दिया गया है।"
+            : "⚠️ AI Assistant (Pihu AI) has been disabled for this company by the Super Administrator.",
+          action: 'AI_DISABLED',
+          disabled: true,
+          conversationState: {}
+        });
+      }
+    } catch (e) {}
+  }
+
   // 1. Strict Confidentiality & Security Guardrails
   const confidentialPatterns = [
     /password/i, /hash/i, /secret/i, /private[_\s]key/i,
@@ -561,880 +578,12 @@ router.post('/chat', verifyAuth, async (req, res) => {
     return handleLeaveSubmission(req, res, user, companyId, employeeId, sDate, eDate, reason, isHindi);
   }
 
-  // 6. Action Flow: DATA REPORT ANALYSIS
-  const reportKeywords = ['report', 'analysis', 'data report', 'monthly report', 'विश्लेषण', 'रिपोर्ट'];
-  const wantsReport = reportKeywords.some(kw => lowerMsg.includes(kw));
-
-  if (wantsReport) {
-    const curYear = new Date().getFullYear();
-    const curMonth = String(new Date().getMonth() + 1).padStart(2, '0');
-    const startOfMonth = `${curYear}-${curMonth}-01`;
-    const endOfMonth = `${curYear}-${curMonth}-31`;
-
-    if (role === 'employee') {
-      const records = db.prepare(`
-        SELECT date, punch_in_time, punch_out_time, total_hours, status
-        FROM attendance_records
-        WHERE employee_id = ? AND date BETWEEN ? AND ?
-        ORDER BY date ASC
-      `).all(employeeId, startOfMonth, endOfMonth);
-
-      const presents = records.filter(r => r.status === 'Present').length;
-      const halfDays = records.filter(r => r.status === 'Half Day').length;
-      const absents = records.filter(r => r.status === 'Absent' || r.status === 'Missing Punch In').length;
-      const totalHours = records.reduce((acc, r) => acc + (parseFloat(r.total_hours) || 0), 0);
-      const avgHours = presents > 0 ? (totalHours / presents).toFixed(1) : '0.0';
-
-      return res.json({
-        reply: isHindi
-          ? `📈 **मासिक अटेंडेंस विश्लेषण (${curYear}-${curMonth})**:\n\n` +
-            `• **उपस्थित दिन (Presents)**: \`${presents} दिन\`\n` +
-            `• **हाफ डे (Half Days)**: \`${halfDays} दिन\`\n` +
-            `• **अनुपस्थित दिन (Absents)**: \`${absents} दिन\`\n` +
-            `• **कुल कार्य घंटे (Total Hours)**: \`${totalHours.toFixed(1)} hrs\`\n` +
-            `• **औसत दैनिक घंटे (Avg Daily)**: \`${avgHours} hrs/day\`\n\n` +
-            `आपकी अटेंडेंस बहुत अच्छी चल रही है। पूरा दैनिक लॉग 'Attendance' टैब में 11 कॉलम में उपलब्ध है।`
-          : `📈 **Monthly Attendance Report Analysis (${curYear}-${curMonth})**:\n\n` +
-            `• **Present Days**: \`${presents} days\`\n` +
-            `• **Half Days**: \`${halfDays} days\`\n` +
-            `• **Absent Days**: \`${absents} days\`\n` +
-            `• **Total Working Hours**: \`${totalHours.toFixed(1)} hrs\`\n` +
-            `• **Average Daily Duration**: \`${avgHours} hrs/day\`\n\n` +
-            `Your monthly performance record is synced with verified GPS. Full details are available in the Attendance tab.`,
-        action: 'REPORT_ANALYSIS'
-      });
-    }
-
-    if (role === 'manager') {
-      const teamEmps = db.prepare(`
-        SELECT e.id FROM employees e
-        JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
-      `).all(employeeId, companyId);
-
-      const teamCount = teamEmps.length;
-      return res.json({
-        reply: isHindi
-          ? `📊 **टीम अटेंडेंस डेटा रिपोर्ट विश्लेषण**:\n\n` +
-            `• **कुल सक्रिय टीम सदस्य**: ${teamCount}\n` +
-            `• **आज की टीम उपस्थिति दर**: लगभग ${teamCount > 0 ? '90%' : '0%'}\n` +
-            `• विस्तृत 11-कॉलम दैनिक एवं मासिक लॉग देखने के लिए 'Attendance Reports' टैब पर जाएं।`
-          : `📊 **Team Attendance Data Analysis**:\n\n` +
-            `• **Total Assigned Team Members**: ${teamCount}\n` +
-            `• **Team Attendance Rate**: approx. ${teamCount > 0 ? '90%' : '0%'}\n` +
-            `• Full 11-column daily and monthly attendance records are available in your Reports tab.`,
-        action: 'REPORT_ANALYSIS'
-      });
-    }
-  }
-
-  // 7. Contextual Data Analysis by Role
-
-  // -------------------------------------------------------------
-  // A. EMPLOYEE INTENTS
-  // -------------------------------------------------------------
-  // 7. Contextual Data Analysis by Role & Intent
+  // 6. Natural Language Greetings (Strictly when query is pure conversational greeting)
   const cleanDisplayName = getCleanDisplayName(user, isHindi);
+  const pureGreetings = ['hi', 'hello', 'hey', 'pihu', 'नमस्ते', 'namaste', 'good morning', 'good afternoon', 'good evening'];
+  const isPureGreeting = pureGreetings.some(g => lowerMsg === g || lowerMsg === `${g}!` || lowerMsg === `${g}.` || lowerMsg === `${g} pihu` || lowerMsg === `hi pihu` || lowerMsg === `hello pihu`);
 
-  // -------------------------------------------------------------
-  // A. EMPLOYEE INTENTS (Accurate Live Database Analysis)
-  // -------------------------------------------------------------
-  if (role === 'employee') {
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    // 1. Specific Punch-In Time Query
-    const isPunchInQuery = lowerMsg.includes('punch in time') || lowerMsg.includes('punch-in time') ||
-      lowerMsg.includes('kab punch in') || lowerMsg.includes('in time kya') || lowerMsg.includes('in time') ||
-      (lowerMsg.includes('punch in') && (lowerMsg.includes('time') || lowerMsg.includes('kab') || lowerMsg.includes('kahan') || lowerMsg.includes('where') || lowerMsg.includes('location') || lowerMsg.includes('status'))) ||
-      (lowerMsg.includes('punched in') && lowerMsg.includes('time')) ||
-      (lowerMsg.includes('time') && lowerMsg.includes('punch in'));
-
-    if (isPunchInQuery) {
-      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
-      if (todayRec && todayRec.punch_in_time) {
-        const inFormatted = format12Hr(todayRec.punch_in_time);
-        const loc = todayRec.punch_in_location || 'GPS Verified Site';
-        const coords = (todayRec.punch_in_lat && todayRec.punch_in_lng) ? `(${Number(todayRec.punch_in_lat).toFixed(4)}, ${Number(todayRec.punch_in_lng).toFixed(4)})` : '';
-        return res.json({
-          reply: isHindi
-            ? `⏱️ **आज का पंच-इन विवरण (${todayStr})**:\n\n• **पंच-इन समय**: \`${inFormatted}\`\n• **स्थान**: ${loc} ${coords}\n• **स्थिति**: \`${todayRec.status || 'Present'}\` ✅`
-            : `⏱️ **Your Punch-In Record for Today (${todayStr})**:\n\n• **Punch-In Time**: \`${inFormatted}\`\n• **Location**: ${loc} ${coords}\n• **Status**: \`${todayRec.status || 'Present'}\` ✅`,
-          action: 'PUNCH_IN_DETAILS'
-        });
-      } else {
-        return res.json({
-          reply: isHindi
-            ? `आपने आज (${todayStr}) अभी तक **पंच-इन** नहीं किया है। क्या आप अभी पंच-इन करना चाहते हैं? *"Punch In"* बोलें या कन्फर्म करें। ⏱️`
-            : `You have not recorded your **Punch-In** yet today (${todayStr}). Would you like to punch in now? Just say *"Punch In"*. ⏱️`,
-          action: 'VIEW_PUNCH'
-        });
-      }
-    }
-
-    // 2. Specific Punch-Out Time Query
-    const isPunchOutQuery = lowerMsg.includes('punch out time') || lowerMsg.includes('punch-out time') ||
-      lowerMsg.includes('kab punch out') || lowerMsg.includes('out time kya') || lowerMsg.includes('out time') ||
-      (lowerMsg.includes('punch out') && (lowerMsg.includes('time') || lowerMsg.includes('kab') || lowerMsg.includes('kahan') || lowerMsg.includes('where') || lowerMsg.includes('location') || lowerMsg.includes('status'))) ||
-      (lowerMsg.includes('punched out') && lowerMsg.includes('time')) ||
-      (lowerMsg.includes('time') && lowerMsg.includes('punch out'));
-
-    if (isPunchOutQuery) {
-      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
-      if (todayRec && todayRec.punch_out_time) {
-        const outFormatted = format12Hr(todayRec.punch_out_time);
-        const loc = todayRec.punch_out_location || 'GPS Verified Site';
-        return res.json({
-          reply: isHindi
-            ? `⏱️ **आज का पंच-आउट विवरण (${todayStr})**:\n\n• **पंच-आउट समय**: \`${outFormatted}\`\n• **स्थान**: ${loc}\n• **कुल कार्य अवधि**: \`${todayRec.total_hours || 0} hrs\` ✅\n\nआपकी आज की शिफ्ट सफलतापूर्वक पूर्ण हो चुकी है!`
-            : `⏱️ **Your Punch-Out Record for Today (${todayStr})**:\n\n• **Punch-Out Time**: \`${outFormatted}\`\n• **Location**: ${loc}\n• **Total Hours**: \`${todayRec.total_hours || 0} hrs\` ✅\n\nYour shift has ended successfully!`,
-          action: 'PUNCH_OUT_DETAILS'
-        });
-      } else if (todayRec && todayRec.punch_in_time) {
-        return res.json({
-          reply: isHindi
-            ? `आपने आज **पंच-इन** किया हुआ है (${format12Hr(todayRec.punch_in_time)}), लेकिन अभी तक **पंच-आउट नहीं किया है**। शिफ्ट समाप्त होने पर *"Punch Out"* बोलें। ⏱️`
-            : `You punched in at ${format12Hr(todayRec.punch_in_time)} today, but have **not punched out yet**. Say *"Punch Out"* when your shift concludes. ⏱️`,
-          action: 'VIEW_PUNCH'
-        });
-      } else {
-        return res.json({
-          reply: isHindi
-            ? `आपने आज अभी तक पंच-इन ही नहीं किया है, इसलिए पंच-आउट उपलब्ध नहीं है।`
-            : `You haven't punched in yet today, so no punch-out record is active.`,
-          action: 'VIEW_PUNCH'
-        });
-      }
-    }
-
-    // 3. Working Hours / Duration Analysis (Live calculation)
-    if (lowerMsg.includes('hours') || lowerMsg.includes('ghante') || lowerMsg.includes('घंटे') || lowerMsg.includes('घंटा') || lowerMsg.includes('कार्य समय') || lowerMsg.includes('duration') || lowerMsg.includes('kitna time') || lowerMsg.includes('work time')) {
-      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
-      const empShift = db.prepare(`
-        SELECT s.working_hours, s.start_time, s.end_time 
-        FROM employees e LEFT JOIN shifts s ON e.shift_id = s.id 
-        WHERE e.id = ?
-      `).get(employeeId);
-      const targetHours = empShift?.working_hours || 8.0;
-
-      if (!todayRec || !todayRec.punch_in_time) {
-        return res.json({
-          reply: isHindi
-            ? `आपने आज अभी तक पंच-इन नहीं किया है, इसलिए कार्य घंटे 0.0 hrs हैं। निर्धारित शिफ्ट लक्ष्य: ${targetHours} hrs।`
-            : `You haven't punched in yet today, so active hours are 0.0 hrs. Target shift duration: ${targetHours} hrs.`,
-          action: 'HOURS_ANALYSIS'
-        });
-      }
-
-      if (todayRec.punch_out_time) {
-        const hrs = todayRec.total_hours || 0;
-        return res.json({
-          reply: isHindi
-            ? `⏱️ **आज के कुल कार्य घंटे (${todayStr})**:\n\n• **कुल अवधि**: \`${hrs} hrs\`\n• **शिफ्ट लक्ष्य**: ${targetHours} hrs\n• **स्थिति**: ${Number(hrs) >= targetHours ? 'लक्ष्य पूरा हुआ ✅' : 'हाफ डे / आंशिक शिफ्ट ⚠️'}`
-            : `⏱️ **Your Completed Working Hours Today (${todayStr})**:\n\n• **Total Duration**: \`${hrs} hrs\`\n• **Shift Target**: ${targetHours} hrs\n• **Status**: ${Number(hrs) >= targetHours ? 'Target Achieved ✅' : 'Partial Shift / Half Day ⚠️'}`,
-          action: 'HOURS_ANALYSIS'
-        });
-      }
-
-      // Calculate live working hours since punch-in
-      const inParts = todayRec.punch_in_time.split(':');
-      const inDate = new Date();
-      inDate.setHours(parseInt(inParts[0], 10), parseInt(inParts[1], 10), parseInt(inParts[2] || 0, 10), 0);
-      const now = new Date();
-      const diffMs = Math.max(0, now - inDate);
-      const elapsedMinsTotal = Math.floor(diffMs / 60000);
-      const elHours = Math.floor(elapsedMinsTotal / 60);
-      const elMins = elapsedMinsTotal % 60;
-      const elDecimal = (elapsedMinsTotal / 60).toFixed(1);
-
-      return res.json({
-        reply: isHindi
-          ? `⏱️ **लाइव कार्य अवधि (Live Working Duration)**:\n\n• **पंच-इन**: ${format12Hr(todayRec.punch_in_time)}\n• **बीता हुआ समय**: \`${elHours} घंटे ${elMins} मिनट\` (${elDecimal} hrs)\n• **शिफ्ट लक्ष्य**: ${targetHours} hrs\n• **शिफ्ट स्थिति**: \`जारी है (In Progress)\` ⏳`
-          : `⏱️ **Live Working Hours Elapsed**:\n\n• **Punched In**: ${format12Hr(todayRec.punch_in_time)}\n• **Time Elapsed**: \`${elHours} hrs ${elMins} mins\` (${elDecimal} hrs)\n• **Shift Target**: ${targetHours} hrs\n• **Shift Status**: \`Active & In Progress\` ⏳`,
-        action: 'HOURS_ANALYSIS'
-      });
-    }
-
-    // 4. Late Arrival / Punctuality Query
-    if (lowerMsg.includes('late') || lowerMsg.includes('deri') || lowerMsg.includes('punctual') || lowerMsg.includes('time par tha')) {
-      const todayRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
-      const empShift = db.prepare(`
-        SELECT s.name, s.start_time, s.grace_time_mins 
-        FROM employees e LEFT JOIN shifts s ON e.shift_id = s.id 
-        WHERE e.id = ?
-      `).get(employeeId);
-
-      if (!todayRec || !todayRec.punch_in_time) {
-        return res.json({
-          reply: isHindi ? `आपने आज अभी तक पंच-इन नहीं किया है।` : `You haven't punched in yet today.`,
-          action: 'PUNCTUALITY'
-        });
-      }
-
-      const shiftStart = empShift?.start_time || '09:00:00';
-      const grace = empShift?.grace_time_mins || 15;
-      const [shH, shM] = shiftStart.split(':').map(Number);
-      const graceLimitMins = (shH * 60 + shM) + grace;
-
-      const [inH, inM] = todayRec.punch_in_time.split(':').map(Number);
-      const punchMins = inH * 60 + inM;
-      const isLate = punchMins > graceLimitMins;
-      const diffLate = punchMins - (shH * 60 + shM);
-
-      return res.json({
-        reply: isHindi
-          ? isLate
-            ? `⚠️ **लेट आगमन (Late Arrival)**:\n\n• **शिफ्ट शुरुआत**: ${format12Hr(shiftStart)} (${grace} मिनट ग्रेस)\n• **आपका पंच-इन**: ${format12Hr(todayRec.punch_in_time)}\n• **विलंब**: आप आज लगभग \`${diffLate} मिनट\` देरी से आए हैं।`
-            : `✅ **समय पर उपस्थिति (On Time)**:\n\n• **शिफ्ट शुरुआत**: ${format12Hr(shiftStart)} (${grace} मिनट ग्रेस)\n• **आपका पंच-इन**: ${format12Hr(todayRec.punch_in_time)}\n• आप बिल्कुल समय पर उपस्थित हुए हैं! शाबाश! 👏`
-          : isLate
-            ? `⚠️ **Late Arrival Notice**:\n\n• **Shift Start**: ${format12Hr(shiftStart)} (${grace} mins grace)\n• **Your Punch-In**: ${format12Hr(todayRec.punch_in_time)}\n• **Delay**: You were approx \`${diffLate} minutes\` late today.`
-            : `✅ **On Time Arrival**:\n\n• **Shift Start**: ${format12Hr(shiftStart)} (${grace} mins grace)\n• **Your Punch-In**: ${format12Hr(todayRec.punch_in_time)}\n• You arrived on time today! Great job! 👏`,
-        action: 'PUNCTUALITY'
-      });
-    }
-
-    // 5. Yesterday's Attendance Query
-    if (lowerMsg.includes('yesterday') || lowerMsg.includes('kal ka punch') || lowerMsg.includes('kal ki attendance') || lowerMsg.includes('beeta kal')) {
-      const yDate = new Date();
-      yDate.setDate(yDate.getDate() - 1);
-      const yDateStr = yDate.toISOString().split('T')[0];
-      const yRec = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, yDateStr);
-
-      if (!yRec || (!yRec.punch_in_time && !yRec.punch_out_time)) {
-        return res.json({
-          reply: isHindi
-            ? `📅 **कल की अटेंडेंस (${yDateStr})**:\n\nकल कोई पंच रिकॉर्ड नहीं मिला (स्थिति: \`${yRec?.status || 'Absent'}\`)। यदि आप उपस्थित थे तो "Attendance correction" अनुरोध कर सकते हैं।`
-            : `📅 **Yesterday's Attendance (${yDateStr})**:\n\nNo punch logged yesterday (Status: \`${yRec?.status || 'Absent'}\`). If you were present, you can request an "Attendance correction".`,
-          action: 'YESTERDAY_ATTENDANCE'
-        });
-      }
-
-      return res.json({
-        reply: isHindi
-          ? `📅 **कल की अटेंडेंस (${yDateStr})**:\n\n• **स्थिति**: \`${yRec.status || 'Present'}\`\n• **पंच-इन**: ${format12Hr(yRec.punch_in_time)}\n• **पंच-आउट**: ${format12Hr(yRec.punch_out_time)}\n• **कार्य घंटे**: ${yRec.total_hours || 0} hrs`
-          : `📅 **Yesterday's Attendance (${yDateStr})**:\n\n• **Status**: \`${yRec.status || 'Present'}\`\n• **Punch In**: ${format12Hr(yRec.punch_in_time)}\n• **Punch Out**: ${format12Hr(yRec.punch_out_time)}\n• **Total Hours**: ${yRec.total_hours || 0} hrs`,
-        action: 'YESTERDAY_ATTENDANCE'
-      });
-    }
-
-    // 6. Leave Request Status (Tracking applied leaves)
-    if ((lowerMsg.includes('leave') && lowerMsg.includes('status')) || lowerMsg.includes('chutti status') || lowerMsg.includes('leave request status') || lowerMsg.includes('chutti approve') || lowerMsg.includes('leave approve')) {
-      const recentLeaves = db.prepare(`
-        SELECT lr.*, lt.name as leave_type 
-        FROM leave_requests lr
-        JOIN leave_types lt ON lr.leave_type_id = lt.id
-        WHERE lr.employee_id = ?
-        ORDER BY lr.id DESC LIMIT 3
-      `).all(employeeId);
-
-      if (!recentLeaves || recentLeaves.length === 0) {
-        return res.json({
-          reply: isHindi
-            ? `आपने हाल ही में कोई लीव रिक्वेस्ट नहीं लगाई है। नई छुट्टी अप्लाई करने के लिए *"Apply my leave"* कहें।`
-            : `You have no recent leave requests on record. Say *"Apply my leave"* to apply anytime.`,
-          action: 'LEAVE_STATUS'
-        });
-      }
-
-      const lList = recentLeaves.map(l => {
-        const badge = l.status === 'approved' ? 'स्वीकृत ✅' : l.status === 'rejected' ? 'अस्वीकृत ❌' : 'लंबित (Pending Approval) ⏳';
-        return `• **${l.leave_type}**: ${l.start_date} से ${l.end_date} (${l.total_days} दिन) - \`${badge}\``;
-      }).join('\n');
-
-      return res.json({
-        reply: isHindi
-          ? `📅 **आपकी हालिया लीव रिक्वेस्ट की स्थिति**:\n\n${lList}`
-          : `📅 **Your Recent Leave Requests Status**:\n\n${lList}`,
-        action: 'LEAVE_STATUS'
-      });
-    }
-
-    // 7. Leave Balances Query
-    if (lowerMsg.includes('leave balance') || lowerMsg.includes('chutti kitni') || (lowerMsg.includes('leave') && lowerMsg.includes('balance')) || lowerMsg.includes('casual leave') || lowerMsg.includes('earned leave') || lowerMsg.includes('अवकाश शेष')) {
-      const currentYear = new Date().getFullYear();
-      const balances = db.prepare(`
-        SELECT lb.*, lt.name as leave_type_name
-        FROM leave_balances lb
-        JOIN leave_types lt ON lb.leave_type_id = lt.id
-        WHERE lb.employee_id = ? AND lb.year = ?
-        ORDER BY lt.id ASC
-      `).all(employeeId, currentYear);
-
-      if (!balances || balances.length === 0) {
-        return res.json({
-          reply: isHindi
-            ? `आपके पास वर्ष ${currentYear} के लिए 12 Casual Leaves (CL) और 15 Earned Leaves (EL) नीति अनुसार उपलब्ध हैं।`
-            : `You have 12 Casual Leaves (CL) and 15 Earned Leaves (EL) available for year ${currentYear} under company policy.`,
-          action: 'LEAVE_BALANCE'
-        });
-      }
-
-      let balanceList = balances.map(b => `• **${b.leave_type_name}**: ${isHindi ? 'उपलब्ध' : 'Available'} \`${b.balance} days\` (${isHindi ? 'उपयोग' : 'Used'}: ${b.used || 0})`).join('\n');
-      return res.json({
-        reply: isHindi
-          ? `🏖️ **वर्ष ${currentYear} छुट्टी शेष (Leave Balances)**:\n\n${balanceList}\n\nछुट्टी लेने के लिए मुझे *"Apply my leave"* बोलें! 🌸`
-          : `🏖️ **Year ${currentYear} Leave Balances**:\n\n${balanceList}\n\nYou can say *"Apply my leave"* anytime to apply! 🌸`,
-        action: 'LEAVE_BALANCE'
-      });
-    }
-
-    // 8. Attendance Correction Request Status Tracking
-    if ((lowerMsg.includes('correction') && lowerMsg.includes('status')) || lowerMsg.includes('sudhar status') || lowerMsg.includes('correction approve')) {
-      const recentCorrs = db.prepare(`
-        SELECT * FROM attendance_correction_requests 
-        WHERE employee_id = ? 
-        ORDER BY id DESC LIMIT 3
-      `).all(employeeId);
-
-      if (!recentCorrs || recentCorrs.length === 0) {
-        return res.json({
-          reply: isHindi
-            ? `आपने कोई अटेंडेंस करेक्शन रिक्वेस्ट नहीं लगाई है। यदि किसी दिन का पंच छूट गया हो तो *"Attendance correction"* कहें।`
-            : `You have no pending or recent attendance correction requests. Say *"Attendance correction"* if you missed a punch.`,
-          action: 'CORRECTION_STATUS'
-        });
-      }
-
-      const cList = recentCorrs.map(c => {
-        const badge = c.status === 'approved' ? 'स्वीकृत ✅' : c.status === 'rejected' ? 'अस्वीकृत ❌' : 'लंबित (Pending) ⏳';
-        return `• तारीख **${c.date}**: \`${badge}\` (अनुरोध: ${c.requested_punch_in || '--'} to ${c.requested_punch_out || '--'})`;
-      }).join('\n');
-
-      return res.json({
-        reply: isHindi
-          ? `✏️ **आपकी अटेंडेंस करेक्शन स्थिति**:\n\n${cList}`
-          : `✏️ **Your Attendance Correction Status**:\n\n${cList}`,
-        action: 'CORRECTION_STATUS'
-      });
-    }
-
-    // 9. Support Tickets Status
-    if ((lowerMsg.includes('ticket') && lowerMsg.includes('status')) || lowerMsg.includes('my ticket') || lowerMsg.includes('mera ticket') || lowerMsg.includes('shikayat status')) {
-      const recentTkts = db.prepare(`
-        SELECT * FROM service_requests 
-        WHERE employee_id = ? 
-        ORDER BY id DESC LIMIT 3
-      `).all(employeeId);
-
-      if (!recentTkts || recentTkts.length === 0) {
-        return res.json({
-          reply: isHindi
-            ? `आपका कोई सक्रिय सपोर्ट टिकट नहीं है। नया टिकट बनाने के लिए *"Create ticket"* कहें।`
-            : `You have no active support tickets. Say *"Create ticket"* to raise a ticket.`,
-          action: 'TICKET_STATUS'
-        });
-      }
-
-      const tList = recentTkts.map(t => {
-        const badge = t.status === 'resolved' ? 'हल हुआ ✅' : t.status === 'in_progress' ? 'प्रगति पर ⚙️' : 'लंबित (Pending) ⏳';
-        return `• **#TKT-${t.id}**: ${t.title} - \`${badge}\``;
-      }).join('\n');
-
-      return res.json({
-        reply: isHindi ? `🎫 **आपके सपोर्ट टिकट की स्थिति**:\n\n${tList}` : `🎫 **Your Support Tickets Status**:\n\n${tList}`,
-        action: 'TICKET_STATUS'
-      });
-    }
-
-    // 10. General Punch & Attendance Overview
-    if (lowerMsg.includes('punch') || lowerMsg.includes('attendance') || lowerMsg.includes('present') || lowerMsg.includes('attendance status') || lowerMsg.includes('punch status') || lowerMsg.includes('हाजिरी') || lowerMsg.includes('पंच')) {
-      const todayRecord = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(employeeId, todayStr);
-
-      if (!todayRecord || (!todayRecord.punch_in_time && !todayRecord.punch_out_time)) {
-        return res.json({
-          reply: isHindi
-            ? `📅 **आज की अटेंडेंस (${todayStr})**:\n\nआपने आज अभी तक पंच-इन नहीं किया है।\nआप मुझसे *"Punch In"* बोलकर सीधे यहाँ से GPS पंच-इन कर सकते हैं! ⏱️`
-            : `📅 **Today's Attendance (${todayStr})**:\n\nYou have not punched in yet today.\nYou can tell me *"Punch In"* to record attendance directly here with verified GPS! ⏱️`,
-          action: 'VIEW_PUNCH'
-        });
-      }
-
-      const inTime = todayRecord.punch_in_time ? format12Hr(todayRecord.punch_in_time) : '--:--';
-      const outTime = todayRecord.punch_out_time ? format12Hr(todayRecord.punch_out_time) : (isHindi ? 'अभी तक पंच-आउट नहीं हुआ' : 'Not Punched Out Yet');
-      const inLoc = todayRecord.punch_in_location || 'GPS Verified Site';
-      const outLoc = todayRecord.punch_out_location || '--';
-      const hours = todayRecord.total_hours || (todayRecord.punch_in_time && !todayRecord.punch_out_time ? 'In Progress' : '0.0');
-      const attStatus = todayRecord.status || 'Present';
-
-      return res.json({
-        reply: isHindi
-          ? `📊 **आपका आज का अटेंडेंस सारांश (${todayStr})**:\n\n` +
-            `• **स्थिति (Status)**: \`${attStatus}\`\n` +
-            `• **पंच-इन समय**: ${inTime}\n` +
-            `• **पंच-इन स्थान**: ${inLoc}\n` +
-            `• **पंच-आउट समय**: ${outTime}\n` +
-            (todayRecord.punch_out_time ? `• **पंच-आउट स्थान**: ${outLoc}\n` : '') +
-            `• **कार्य घंटे**: ${hours} hrs\n\n` +
-            (!todayRecord.punch_out_time ? `💡 *शिफ्ट समाप्त होने पर "Punch Out" बोलें।*` : `✅ *शिफ्ट पूर्ण हो चुकी है!*`)
-          : `📊 **Your Attendance Summary for Today (${todayStr})**:\n\n` +
-            `• **Status**: \`${attStatus}\`\n` +
-            `• **Punch-In Time**: ${inTime}\n` +
-            `• **Punch-In Location**: ${inLoc}\n` +
-            `• **Punch-Out Time**: ${outTime}\n` +
-            `• **Working Hours**: ${hours} hrs\n\n` +
-            (!todayRecord.punch_out_time ? `💡 *Remember to say "Punch Out" when leaving.*` : `✅ *Shift completed successfully!*`),
-        action: 'ATTENDANCE_SUMMARY'
-      });
-    }
-
-    // 11. Assigned Manager / Supervisor Query
-    if (lowerMsg.includes('manager') || lowerMsg.includes('supervisor') || lowerMsg.includes('boss') || lowerMsg.includes('reporting officer')) {
-      const mapping = db.prepare(`
-        SELECT m.id, m.full_name, m.department, m.designation, m.employee_id as code
-        FROM employee_mappings em
-        JOIN employees m ON em.manager_id = m.id
-        WHERE em.employee_id = ? AND em.company_id = ?
-      `).get(employeeId, companyId);
-
-      if (mapping) {
-        return res.json({
-          reply: isHindi
-            ? `👔 **आपके रिपोर्टिंग मैनेजर (Reporting Supervisor)**:\n\n• **नाम**: ${mapping.full_name}\n• **पद**: ${mapping.designation || 'Manager'}\n• **विभाग**: ${mapping.department || 'Operations'}\n• **कोड**: ${mapping.code}`
-            : `👔 **Your Reporting Manager / Supervisor**:\n\n• **Name**: ${mapping.full_name}\n• **Designation**: ${mapping.designation || 'Manager'}\n• **Department**: ${mapping.department || 'Operations'}\n• **Code**: ${mapping.code}`,
-          action: 'MANAGER_INFO'
-        });
-      }
-
-      return res.json({
-        reply: isHindi
-          ? `आपकी प्रोफाइल सीधे **कंपनी एडमिनिस्ट्रेशन (Company Administration)** को रिपोर्ट करती है।`
-          : `Your profile currently reports directly to **Company Administration**.`,
-        action: 'MANAGER_INFO'
-      });
-    }
-
-    // 12. Office Geofence & Location Query
-    if (lowerMsg.includes('geofence') || lowerMsg.includes('office location') || lowerMsg.includes('boundary') || lowerMsg.includes('kahan punch karna')) {
-      const gf = db.prepare(`
-        SELECT location_name, latitude, longitude, radius, status 
-        FROM geofences 
-        WHERE company_id = ? AND status = 'active'
-        LIMIT 1
-      `).get(companyId);
-
-      if (gf) {
-        return res.json({
-          reply: isHindi
-            ? `📍 **आपकी निर्धारित ऑफिस लोकेशन (Geofence)**:\n\n• **स्थान**: ${gf.location_name}\n• **GPS परिधि**: ${gf.radius} मीटर\n• **कोऑर्डिनेट्स**: ${gf.latitude}, ${gf.longitude}\n\nपंच-इन करते समय आपका GPS स्थान स्वतः मान्य हो जाता है।`
-            : `📍 **Your Designated Office Geofence Location**:\n\n• **Location**: ${gf.location_name}\n• **Allowed Radius**: ${gf.radius} meters\n• **GPS Coordinates**: ${gf.latitude}, ${gf.longitude}\n\nYour punch is validated against this GPS boundary automatically.`,
-          action: 'GEOFENCE_INFO'
-        });
-      }
-
-      return res.json({
-        reply: isHindi
-          ? `आपकी कंपनी में फ्लेक्सिबल GPS पंचिंग सक्षम है। आप सीधे लोकेशन सत्यापन के साथ पंच कर सकते हैं।`
-          : `Flexible GPS punch verification is active for your company. Your live coordinates are captured during punch.`,
-        action: 'GEOFENCE_INFO'
-      });
-    }
-
-    // 13. Weekly Off Schedule
-    if (lowerMsg.includes('weekly off') || lowerMsg.includes('sunday') || lowerMsg.includes('off day') || lowerMsg.includes('weekend') || lowerMsg.includes('chhutti kab hai')) {
-      const empOff = db.prepare(`
-        SELECT w.name, w.off_days_json 
-        FROM employees e LEFT JOIN weekly_off_settings w ON e.weekly_off_id = w.id 
-        WHERE e.id = ?
-      `).get(employeeId);
-
-      let offDays = ['Sunday'];
-      if (empOff && empOff.off_days_json) {
-        try { offDays = JSON.parse(empOff.off_days_json); } catch (e) {}
-      } else {
-        const masterW = db.prepare('SELECT name, off_days_json FROM weekly_off_settings WHERE company_id = ? AND is_default = 1').get(companyId);
-        if (masterW && masterW.off_days_json) {
-          try { offDays = JSON.parse(masterW.off_days_json); } catch (e) {}
-        }
-      }
-
-      return res.json({
-        reply: isHindi
-          ? `🏖️ **साप्ताहिक अवकाश (Weekly Off Schedule)**:\n\n• **नियत साप्ताहिक छुट्टी**: \`${offDays.join(', ')}\`\n• इन दिनों लीव कोटा से कोई कटौती नहीं होती।`
-          : `🏖️ **Your Weekly Off Schedule**:\n\n• **Assigned Off Days**: \`${offDays.join(', ')}\`\n• Weekly off days are excluded from leave quota deduction.`,
-        action: 'WEEKLY_OFF'
-      });
-    }
-
-    // 14. Holidays Query
-    if (lowerMsg.includes('holiday') || lowerMsg.includes('chhutti') || lowerMsg.includes('festival') || lowerMsg.includes('त्योहार')) {
-      const upcoming = db.prepare(`
-        SELECT name, holiday_date 
-        FROM holidays 
-        WHERE company_id = ? AND holiday_date >= ? 
-        ORDER BY holiday_date ASC LIMIT 5
-      `).all(companyId, todayStr);
-
-      if (!upcoming || upcoming.length === 0) {
-        return res.json({
-          reply: isHindi ? "इस महीने में कोई आगामी सरकारी / कंपनी छुट्टी नहीं है।" : "No upcoming company holidays scheduled this month.",
-          action: 'HOLIDAYS'
-        });
-      }
-
-      const hList = upcoming.map(h => `• **${h.holiday_date}**: ${h.name}`).join('\n');
-      return res.json({
-        reply: isHindi ? `🎉 **आने वाली छुट्टियां (Upcoming Holidays)**:\n\n${hList}` : `🎉 **Upcoming Holidays**:\n\n${hList}`,
-        action: 'HOLIDAYS'
-      });
-    }
-
-    // 15. Shift Details
-    if (lowerMsg.includes('shift') || lowerMsg.includes('timing') || lowerMsg.includes('समय')) {
-      const emp = db.prepare(`
-        SELECT e.*, s.name as shift_name, s.start_time, s.end_time, s.grace_time_mins, s.working_hours, s.break_time_mins
-        FROM employees e LEFT JOIN shifts s ON e.shift_id = s.id
-        WHERE e.id = ?
-      `).get(employeeId);
-
-      if (emp && emp.shift_name) {
-        return res.json({
-          reply: isHindi
-            ? `⏰ **आपकी शिफ्ट जानकारी**:\n\n• **शिफ्ट**: ${emp.shift_name}\n• **समय**: ${format12Hr(emp.start_time)} से ${format12Hr(emp.end_time)}\n• **कार्य घंटे**: ${emp.working_hours || 8} hrs\n• **ग्रेस समय**: ${emp.grace_time_mins || 15} मिनट\n• **लंच ब्रेक**: ${emp.break_time_mins || 45} मिनट`
-            : `⏰ **Your Shift Details**:\n\n• **Shift**: ${emp.shift_name}\n• **Timing**: ${format12Hr(emp.start_time)} to ${format12Hr(emp.end_time)}\n• **Working Hours**: ${emp.working_hours || 8} hrs\n• **Grace Period**: ${emp.grace_time_mins || 15} mins\n• **Break Duration**: ${emp.break_time_mins || 45} mins`,
-          action: 'SHIFT_INFO'
-        });
-      }
-      return res.json({
-        reply: isHindi
-          ? "आपकी जनरल शिफ्ट है: 09:00 AM से 06:00 PM (8 कार्य घंटे, 15 मिनट ग्रेस)।"
-          : "You are assigned to the General Shift: 09:00 AM to 06:00 PM (8 working hours, 15 mins grace).",
-        action: 'SHIFT_INFO'
-      });
-    }
-
-    // 16. Profile / ID Query
-    if (lowerMsg.includes('my id') || lowerMsg.includes('employee id') || lowerMsg.includes('emp id') || lowerMsg.includes('mera code') || lowerMsg.includes('mera designation') || lowerMsg.includes('profile')) {
-      const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(employeeId);
-      if (emp) {
-        return res.json({
-          reply: isHindi
-            ? `👤 **आपकी कर्मचारी प्रोफाइल**:\n\n• **नाम**: ${emp.full_name}\n• **कर्मचारी कोड**: \`${emp.employee_id}\`\n• **पद**: ${emp.designation || 'Staff'}\n• **विभाग**: ${emp.department || 'General'}\n• **स्थिति**: \`${emp.status}\``
-            : `👤 **Your Employee Profile**:\n\n• **Name**: ${emp.full_name}\n• **Employee ID**: \`${emp.employee_id}\`\n• **Designation**: ${emp.designation || 'Staff'}\n• **Department**: ${emp.department || 'General'}\n• **Status**: \`${emp.status}\``,
-          action: 'PROFILE_INFO'
-        });
-      }
-    }
-  }
-
-  // -------------------------------------------------------------
-  // B. MANAGER INTENTS (Real Team Data Analysis)
-  // -------------------------------------------------------------
-  if (role === 'manager') {
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    // 1. Who is Absent Today
-    if (lowerMsg.includes('absent') || lowerMsg.includes('kaun absent') || lowerMsg.includes('who is absent') || lowerMsg.includes('anupasthit') || lowerMsg.includes('absent member')) {
-      const teamEmps = db.prepare(`
-        SELECT e.id, e.employee_id as code, e.full_name, e.department
-        FROM employees e JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
-      `).all(employeeId, companyId);
-
-      if (!teamEmps || teamEmps.length === 0) {
-        return res.json({
-          reply: isHindi
-            ? "आपके अंतर्गत अभी कोई टीम सदस्य असाइन नहीं हैं। 'Employee Mapping' टैब से कर्मचारी जोड़ें।"
-            : "No team members are currently assigned under your manager profile.",
-          action: 'TEAM_ABSENT'
-        });
-      }
-
-      const teamIds = teamEmps.map(e => e.id);
-      const placeholders = teamIds.map(() => '?').join(',');
-      const records = db.prepare(`
-        SELECT employee_id, punch_in_time FROM attendance_records
-        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders}) AND punch_in_time IS NOT NULL
-      `).all(companyId, todayStr, ...teamIds);
-
-      const presentSet = new Set(records.map(r => r.employee_id));
-      const absentMembers = teamEmps.filter(e => !presentSet.has(e.id));
-
-      return res.json({
-        reply: isHindi
-          ? `👥 **आज टीम में अनुपस्थित सदस्य (${todayStr})**:\n\n` +
-            `• **कुल टीम संख्या**: ${teamEmps.length}\n` +
-            `• **अनुपस्थित संख्या**: \`${absentMembers.length} सदस्य\`\n\n` +
-            (absentMembers.length > 0
-              ? `🔴 **अनुपस्थित सदस्यों की सूची**:\n${absentMembers.map(a => `  - **${a.full_name}** (${a.code || 'Staff'}) [${a.department || 'Team'}]`).join('\n')}`
-              : `🎉 **बधाई! आपकी पूरी टीम आज समय पर उपस्थित है!**`)
-          : `👥 **Team Members Absent Today (${todayStr})**:\n\n` +
-            `• **Total Team**: ${teamEmps.length}\n` +
-            `• **Absent Count**: \`${absentMembers.length} members\`\n\n` +
-            (absentMembers.length > 0
-              ? `🔴 **Absent Team Members**:\n${absentMembers.map(a => `  - **${a.full_name}** (${a.code || 'Staff'}) [${a.department || 'Team'}]`).join('\n')}`
-              : `🎉 **Great news! Your entire team is present today!**`),
-        action: 'TEAM_ABSENT'
-      });
-    }
-
-    // 2. Who is Present Today
-    if (lowerMsg.includes('who is present') || lowerMsg.includes('kaun present') || lowerMsg.includes('present today') || lowerMsg.includes('upasthit')) {
-      const teamEmps = db.prepare(`
-        SELECT e.id, e.employee_id as code, e.full_name, e.department
-        FROM employees e JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
-      `).all(employeeId, companyId);
-
-      if (!teamEmps || teamEmps.length === 0) {
-        return res.json({
-          reply: isHindi ? "आपके अंतर्गत कोई टीम सदस्य असाइन नहीं हैं।" : "No team members are assigned under your manager profile.",
-          action: 'TEAM_PRESENT'
-        });
-      }
-
-      const teamIds = teamEmps.map(e => e.id);
-      const placeholders = teamIds.map(() => '?').join(',');
-      const records = db.prepare(`
-        SELECT employee_id, punch_in_time, punch_in_location FROM attendance_records
-        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders}) AND punch_in_time IS NOT NULL
-      `).all(companyId, todayStr, ...teamIds);
-
-      const recordMap = new Map();
-      records.forEach(r => recordMap.set(r.employee_id, r));
-
-      const presentMembers = [];
-      teamEmps.forEach(e => {
-        const r = recordMap.get(e.id);
-        if (r) {
-          presentMembers.push(`• **${e.full_name}** (${e.code}) - In: \`${format12Hr(r.punch_in_time)}\` (${r.punch_in_location || 'GPS Verified'})`);
-        }
-      });
-
-      return res.json({
-        reply: isHindi
-          ? `🟢 **आज उपस्थित टीम सदस्य (${todayStr})**:\n\n` +
-            `• **उपस्थित संख्या**: \`${presentMembers.length} / ${teamEmps.length}\`\n\n` +
-            (presentMembers.length > 0 ? presentMembers.join('\n') : 'अभी तक किसी सदस्य ने पंच-इन नहीं किया है।')
-          : `🟢 **Team Members Present Today (${todayStr})**:\n\n` +
-            `• **Present Count**: \`${presentMembers.length} / ${teamEmps.length}\`\n\n` +
-            (presentMembers.length > 0 ? presentMembers.join('\n') : 'No team member has punched in yet today.'),
-        action: 'TEAM_PRESENT'
-      });
-    }
-
-    // 3. Pending Approvals
-    if (lowerMsg.includes('pending') || lowerMsg.includes('approval') || lowerMsg.includes('स्वीकृति')) {
-      const pendingLeaves = db.prepare(`
-        SELECT lr.*, e.full_name, e.employee_id as code, lt.name as leave_type
-        FROM leave_requests lr
-        JOIN employees e ON lr.employee_id = e.id
-        JOIN leave_types lt ON lr.leave_type_id = lt.id
-        JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND lr.company_id = ? AND lr.status = 'pending'
-      `).all(employeeId, companyId);
-
-      const pendingCorrections = db.prepare(`
-        SELECT cr.*, e.full_name, e.employee_id as code
-        FROM attendance_correction_requests cr
-        JOIN employees e ON cr.employee_id = e.id
-        JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND cr.company_id = ? AND cr.status = 'pending'
-      `).all(employeeId, companyId);
-
-      return res.json({
-        reply: isHindi
-          ? `⏳ **आपकी टीम की लंबित स्वीकृतियां (Pending Approvals)**:\n\n` +
-            `• **लंबित लीव आवेदन**: \`${pendingLeaves.length} अनुरोध\`\n` +
-            (pendingLeaves.length > 0 ? pendingLeaves.map(l => `  - ${l.full_name} (${l.leave_type}: ${l.start_date} to ${l.end_date})`).join('\n') + '\n' : '') +
-            `• **लंबित पंच सुधार**: \`${pendingCorrections.length} अनुरोध\`\n` +
-            (pendingCorrections.length > 0 ? pendingCorrections.map(c => `  - ${c.full_name} (तारीख: ${c.date})`).join('\n') + '\n' : '') +
-            `\nस्वीकृति देने हेतु सीधे 'Approval and Correction' टैब पर जाएं।`
-          : `⏳ **Pending Approvals For Your Team**:\n\n` +
-            `• **Pending Leave Requests**: \`${pendingLeaves.length}\`\n` +
-            (pendingLeaves.length > 0 ? pendingLeaves.map(l => `  - ${l.full_name} (${l.leave_type}: ${l.start_date} to ${l.end_date})`).join('\n') + '\n' : '') +
-            `• **Pending Punch Corrections**: \`${pendingCorrections.length}\`\n` +
-            (pendingCorrections.length > 0 ? pendingCorrections.map(c => `  - ${c.full_name} (Date: ${c.date})`).join('\n') + '\n' : '') +
-            `\nYou can approve or reject these in the 'Approval and Correction' tab.`,
-        action: 'VIEW_APPROVALS'
-      });
-    }
-
-    // 4. Team Attendance Overview
-    if (lowerMsg.includes('attendance') || lowerMsg.includes('punch') || lowerMsg.includes('status') || lowerMsg.includes('उपस्थिति') || lowerMsg.includes('हाजिरी') || lowerMsg.includes('overview') || lowerMsg.includes('summary')) {
-      const teamEmps = db.prepare(`
-        SELECT e.id, e.employee_id as code, e.full_name, e.department
-        FROM employees e JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
-      `).all(employeeId, companyId);
-
-      if (!teamEmps || teamEmps.length === 0) {
-        return res.json({
-          reply: isHindi ? "आपके अंतर्गत कोई टीम सदस्य असाइन नहीं हैं।" : "No team members are assigned under your manager profile.",
-          action: 'TEAM_SUMMARY'
-        });
-      }
-
-      const teamIds = teamEmps.map(e => e.id);
-      const placeholders = teamIds.map(() => '?').join(',');
-      const records = db.prepare(`
-        SELECT employee_id, punch_in_time FROM attendance_records
-        WHERE company_id = ? AND date = ? AND employee_id IN (${placeholders}) AND punch_in_time IS NOT NULL
-      `).all(companyId, todayStr, ...teamIds);
-
-      const presentCount = records.length;
-      const totalCount = teamEmps.length;
-      const absentCount = Math.max(0, totalCount - presentCount);
-      const attRate = totalCount > 0 ? Math.round((presentCount / totalCount) * 100) : 0;
-
-      return res.json({
-        reply: isHindi
-          ? `📊 **टीम अटेंडेंस लाइव सारांश (${todayStr})**:\n\n` +
-            `• **कुल टीम सदस्य**: ${totalCount}\n` +
-            `• **आज उपस्थित (Punched In)**: \`${presentCount} सदस्य\` (${attRate}% उपस्थिति दर)\n` +
-            `• **आज अनुपस्थित / बाकी**: \`${absentCount} सदस्य\`\n\n` +
-            `पूरा 11-कॉलम दैनिक लॉग और GPS लोकेशन देखने के लिए 'Daily Attendance Reports' टैब पर जाएं।`
-          : `📊 **Team Attendance Live Summary (${todayStr})**:\n\n` +
-            `• **Total Assigned Team**: ${totalCount}\n` +
-            `• **Present Today**: \`${presentCount} members\` (${attRate}% attendance rate)\n` +
-            `• **Absent / Remaining**: \`${absentCount} members\`\n\n` +
-            `Complete 11-column daily attendance logs with GPS coordinates are available in your Reports tab.`,
-        action: 'TEAM_SUMMARY'
-      });
-    }
-
-    // 5. Team Reports / Data Analysis
-    if (lowerMsg.includes('report') || lowerMsg.includes('analysis') || lowerMsg.includes('रिपोर्ट') || lowerMsg.includes('विश्लेषण')) {
-      const teamEmps = db.prepare(`
-        SELECT e.id FROM employees e
-        JOIN employee_mappings em ON e.id = em.employee_id
-        WHERE em.manager_id = ? AND em.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
-      `).all(employeeId, companyId);
-      const teamCount = teamEmps.length;
-
-      return res.json({
-        reply: isHindi
-          ? `📊 **टीम डेटा रिपोर्ट विश्लेषण**:\n\n` +
-            `• **सक्रिय टीम सदस्य**: ${teamCount}\n` +
-            `• **मासिक डेटा रिपोर्ट**: विस्तृत 11-कॉलम दैनिक एवं मासिक लॉग 'Reports' टैब में उपलब्ध हैं।`
-          : `📊 **Team Data Report Analysis**:\n\n` +
-            `• **Active Team Members**: ${teamCount}\n` +
-            `• **Monthly Team Logs**: Full 11-column daily logs with verified GPS are viewable in the Reports tab.`,
-        action: 'REPORT_ANALYSIS'
-      });
-    }
-  }
-
-  // -------------------------------------------------------------
-  // C. COMPANY ADMIN INTENTS (Company-Wide Data Analytics)
-  // -------------------------------------------------------------
-  if (role === 'company_admin') {
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    // Company Overview & Live Attendance
-    if (lowerMsg.includes('attendance') || lowerMsg.includes('present') || lowerMsg.includes('overview') || lowerMsg.includes('stats') || lowerMsg.includes('कंपनी') || lowerMsg.includes('rate')) {
-      const totalActive = db.prepare(`
-        SELECT COUNT(*) as count FROM employees 
-        WHERE company_id = ? AND status = 'active' AND is_deleted = 0
-      `).get(companyId)?.count || 0;
-
-      const todayPunches = db.prepare(`
-        SELECT COUNT(*) as count FROM attendance_records
-        WHERE company_id = ? AND date = ? AND punch_in_time IS NOT NULL
-      `).get(companyId, todayStr)?.count || 0;
-
-      const pendingLeaves = db.prepare(`
-        SELECT COUNT(*) as count FROM leave_requests
-        WHERE company_id = ? AND status = 'pending'
-      `).get(companyId)?.count || 0;
-
-      const pendingCorrections = db.prepare(`
-        SELECT COUNT(*) as count FROM attendance_correction_requests
-        WHERE company_id = ? AND status = 'pending'
-      `).get(companyId)?.count || 0;
-
-      const attendancePct = totalActive > 0 ? Math.round((todayPunches / totalActive) * 100) : 0;
-
-      return res.json({
-        reply: isHindi
-          ? `🏢 **कंपनी लाइव HR स्थिति (${todayStr})**:\n\n` +
-            `• **कुल सक्रिय कर्मचारी**: ${totalActive}\n` +
-            `• **आज पंच-इन किया**: ${todayPunches} (${attendancePct}% उपस्थिति दर)\n` +
-            `• **आज अनुपस्थित / बाकी**: ${Math.max(0, totalActive - todayPunches)}\n` +
-            `• **लंबित लीव आवेदन**: ${pendingLeaves}\n` +
-            `• **लंबित पंच सुधार**: ${pendingCorrections}\n\n` +
-            `सभी डेटा GPS व Firebase Database के साथ लाइव सिंक है।`
-          : `🏢 **Company Live HR Overview (${todayStr})**:\n\n` +
-            `• **Total Active Staff**: ${totalActive}\n` +
-            `• **Punched In Today**: ${todayPunches} (${attendancePct}% attendance rate)\n` +
-            `• **Remaining / Absent**: ${Math.max(0, totalActive - todayPunches)}\n` +
-            `• **Pending Leave Requests**: ${pendingLeaves}\n` +
-            `• **Pending Punch Corrections**: ${pendingCorrections}\n\n` +
-            `All attendance data is authenticated with GPS coordinates and Firebase sync.`,
-        action: 'COMPANY_OVERVIEW'
-      });
-    }
-
-    // Subscription & Plan Expiry
-    if (lowerMsg.includes('plan') || lowerMsg.includes('subscription') || lowerMsg.includes('expiry') || lowerMsg.includes('tenure') || lowerMsg.includes('renewal')) {
-      const comp = db.prepare('SELECT portal_name, plan_expiry_date FROM companies WHERE id = ?').get(companyId);
-      const expDate = comp?.plan_expiry_date || 'Lifetime / Active';
-      return res.json({
-        reply: isHindi
-          ? `📋 **कंपनी सब्सक्रिप्शन विवरण**:\n\n• **कंपनी**: ${comp?.portal_name || 'Organization'}\n• **प्लान समाप्ति तारीख**: \`${expDate}\`\n• **सिस्टम स्थिति**: सक्रिय व सुरक्षित`
-          : `📋 **Company Subscription Details**:\n\n• **Portal**: ${comp?.portal_name || 'Organization'}\n• **Plan Expiry Date**: \`${expDate}\`\n• **System Status**: Active & Protected`,
-        action: 'PLAN_INFO'
-      });
-    }
-
-    // Pending Approvals (Company-Wide)
-    if (lowerMsg.includes('pending') || lowerMsg.includes('approval') || lowerMsg.includes('स्वीकृति')) {
-      const pendingLeaves = db.prepare(`
-        SELECT COUNT(*) as count FROM leave_requests WHERE company_id = ? AND status = 'pending'
-      `).get(companyId)?.count || 0;
-
-      const pendingCorrections = db.prepare(`
-        SELECT COUNT(*) as count FROM attendance_correction_requests WHERE company_id = ? AND status = 'pending'
-      `).get(companyId)?.count || 0;
-
-      return res.json({
-        reply: isHindi
-          ? `⏳ **कंपनी-व्यापी लंबित स्वीकृतियां (Pending Approvals)**:\n\n` +
-            `• **लंबित लीव आवेदन**: \`${pendingLeaves} अनुरोध\`\n` +
-            `• **लंबित पंच सुधार**: \`${pendingCorrections} अनुरोध\`\n\n` +
-            `स्वीकृति या अस्वीकृति देने के लिए 'Approval and Correction' टैब खोलें।`
-          : `⏳ **Company-Wide Pending Approvals**:\n\n` +
-            `• **Pending Leave Requests**: \`${pendingLeaves}\`\n` +
-            `• **Pending Punch Corrections**: \`${pendingCorrections}\`\n\n` +
-            `Manage and approve them in the 'Approval and Correction' tab.`,
-        action: 'VIEW_APPROVALS'
-      });
-    }
-
-    // Active Employees / Staff Count
-    if (lowerMsg.includes('employee') || lowerMsg.includes('staff') || lowerMsg.includes('कर्मचारी') || lowerMsg.includes('worker') || lowerMsg.includes('members')) {
-      const totalActive = db.prepare(`
-        SELECT COUNT(*) as count FROM employees 
-        WHERE company_id = ? AND status = 'active' AND is_deleted = 0
-      `).get(companyId)?.count || 0;
-
-      return res.json({
-        reply: isHindi
-          ? `👥 **कंपनी कर्मचारी विवरण**:\n\n• **सक्रिय कर्मचारी**: \`${totalActive} सदस्य\`\n• सभी कर्मचारियों की सूची देखने के लिए 'Employees & Staff' टैब पर जाएं।`
-          : `👥 **Company Staff Summary**:\n\n• **Total Active Employees**: \`${totalActive}\`\n• View the complete roster in the 'Employees & Staff' tab.`,
-        action: 'COMPANY_OVERVIEW'
-      });
-    }
-  }
-
-  // -------------------------------------------------------------
-  // D. SUPER ADMIN / SUPPORT INTENTS
-  // -------------------------------------------------------------
-  if (role === 'super_admin' || role === 'support') {
-    const compCount = db.prepare('SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0').get()?.count || 0;
-    const empCount = db.prepare('SELECT COUNT(*) as count FROM employees WHERE is_deleted = 0').get()?.count || 0;
-
-    return res.json({
-      reply: isHindi
-        ? `🌐 **NPB HRMS ग्लोबल सिस्टम स्थिति**:\n\n• **पंजीकृत कंपनियां**: ${compCount}\n• **कुल पंजीकृत कर्मचारी**: ${empCount}\n• **क्लाउड स्थिति**: लाइव व सुरक्षित`
-        : `🌐 **NPB HRMS Global System Status**:\n\n• **Registered Companies**: ${compCount}\n• **Total Staff Registered**: ${empCount}\n• **Cloud Status**: Active & Synced`,
-      action: 'SYSTEM_STATUS'
-    });
-  }
-
-  // -------------------------------------------------------------
-  // E. GENERAL SMART ASSISTANCE & GREETINGS
-  // (STRICTLY uses cleanDisplayName, NEVER username, phone, or email)
-  // -------------------------------------------------------------
-  if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('hey') || lowerMsg.includes('pihu') || lowerMsg.includes('नमस्ते')) {
+  if (isPureGreeting) {
     if (role === 'manager') {
       return res.json({
         reply: isHindi
@@ -1447,8 +596,8 @@ router.post('/chat', verifyAuth, async (req, res) => {
     if (role === 'company_admin') {
       return res.json({
         reply: isHindi
-          ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, कंपनी प्रशासन के लिए आपकी AI सहायक।\n\nआप मुझसे कंपनी के बारे में पूछ सकते हैं:\n• *"Today company attendance overview"* (कंपनी उपस्थिति दर)\n• *"Active employees count"* (सक्रिय कर्मचारी संख्या)\n• *"Company pending approvals"* (लंबित स्वीकृतियां)\n• *"Subscription plan expiry"* (सब्सक्रिप्शन स्थिति)\n• *"Monthly attendance report"* (डेटा रिपोर्ट विश्लेषण)\n\nबताइए, आज कंपनी का कौन सा डेटा देखना चाहते हैं?`
-          : `Hi ${cleanDisplayName}! 🌸 I am **PIHU**, your Executive AI Assistant for Company Administration.\n\nYou can ask me:\n• *"Today company attendance overview"*\n• *"Active employees count"*\n• *"Company pending approvals"*\n• *"Subscription plan expiry"*\n• *"Monthly attendance report analysis"*\n\nWhat would you like to inspect today?`,
+          ? `नमस्ते ${cleanDisplayName}! 🌸 मैं हूँ **पिहू**, कंपनी प्रशासन के लिए आपकी AI सहायक।\n\nआप मुझसे कंपनी के बारे में पूछ सकते हैं:\n• *"Today company attendance overview"* (कंपनी उपस्थिति दर)\n• *"Active employees count"* (सक्रिय कर्मचारी संख्या)\n• *"Recent bills and invoices"* (मर्चेंट बिलिंग रिकॉर्ड्स)\n• *"Company pending approvals"* (लंबित स्वीकृतियां)\n• *"Monthly attendance report"* (डेटा रिपोर्ट विश्लेषण)\n\nबताइए, आज कंपनी का कौन सा डेटा देखना चाहते हैं?`
+          : `Hi ${cleanDisplayName}! 🌸 I am **PIHU**, your Executive AI Assistant for Company Administration.\n\nYou can ask me:\n• *"Today company attendance overview"*\n• *"Active employees count"*\n• *"Recent bills and invoices"*\n• *"Company pending approvals"*\n• *"Monthly attendance report analysis"*\n\nWhat would you like to inspect today?`,
         action: 'GREETING'
       });
     }
@@ -1471,31 +620,9 @@ router.post('/chat', verifyAuth, async (req, res) => {
     });
   }
 
-  // Role-Segregated Fallback Help
-  if (role === 'manager') {
-    return res.json({
-      reply: isHindi
-        ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nमैनेजर पैनल में आप मुझसे टीम डेटा पूछ सकते हैं:\n1. 👥 **"Who is absent today?"** (अनुपस्थित टीम सदस्य)\n2. 🟢 **"Who is present today?"** (उपस्थित सदस्य एवं समय)\n3. ⏳ **"Pending approvals"** (लंबित लीव व करेक्शन)\n4. 📊 **"Team attendance report"** (टीम रिपोर्ट विश्लेषण)\n5. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)`
-        : `I analyzed your query: "${rawMsg}".\n\nIn Manager Panel, you can ask for team management data:\n1. 👥 **"Who is absent today?"** (Absent team members)\n2. 🟢 **"Who is present today?"** (Present members & punch times)\n3. ⏳ **"Pending approvals"** (Team leave & punch requests)\n4. 📊 **"Team attendance report"** (Team analytics)\n5. 🎫 **"Create ticket"** (Technical support ticket)`,
-      action: 'HELP'
-    });
-  }
-
-  if (role === 'company_admin') {
-    return res.json({
-      reply: isHindi
-        ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nकंपनी एडमिन पैनल में आप मुझसे कंपनी डेटा पूछ सकते हैं:\n1. 🏢 **"Company attendance overview"** (लाइव उपस्थिति दर)\n2. ⏳ **"Company pending approvals"** (लंबित स्वीकृतियां)\n3. 📋 **"Subscription plan expiry"** (प्लान वैधता)\n4. 📊 **"Attendance report analysis"** (डेटा रिपोर्ट विश्लेषण)`
-        : `I analyzed your query: "${rawMsg}".\n\nIn Company Admin Panel, you can inspect company analytics:\n1. 🏢 **"Company attendance overview"** (Live staff attendance rate)\n2. ⏳ **"Pending approvals"** (All company pending requests)\n3. 📋 **"Subscription plan expiry"** (Plan renewal & validity)\n4. 📊 **"Attendance report analysis"** (Exportable analytics)`,
-      action: 'HELP'
-    });
-  }
-
-  return res.json({
-    reply: isHindi
-      ? `मैं समझ रही हूँ आपका सवाल: "${rawMsg}".\n\nकर्मचारी पैनल में आप मुझसे लाइव डेटा पूछ सकते हैं:\n1. ⏱️ **"Punch In"** या **"Punch Out"** (GPS सत्यापन)\n2. ⏳ **"Aaj kitne ghante kaam kiya"** (कार्य अवधि)\n3. 📅 **"Apply my leave"** (छुट्टी अप्लाई करें)\n4. 🏖️ **"Mera leave balance"** (अवकाश शेष)\n5. 🎫 **"Create ticket"** (सपोर्ट टिकट बनाएं)\n6. 📊 **"Data report analysis"** (मासिक विश्लेषण)`
-      : `I analyzed your query: "${rawMsg}".\n\nIn Employee Panel, you can ask for live attendance and services:\n1. ⏱️ **"Punch In"** or **"Punch Out"** (GPS verified)\n2. ⏳ **"How many hours have I worked today?"** (Live duration)\n3. 📅 **"Apply my leave"** (Step-by-step leave apply)\n4. 🏖️ **"What is my leave balance?"** (CL / EL balance)\n5. 🎫 **"Create ticket"** (Raise support ticket)\n6. 📊 **"Data report analysis"** (Monthly report breakdown)`,
-    action: 'HELP'
-  });
+  // Active Portal Data Search & Thinking Analysis for Manual User Input
+  const searchResult = searchPortalDatabase(user, rawMsg, language);
+  return res.json(searchResult);
 });
 
 // Helper: Handle final leave request submission
@@ -1578,6 +705,438 @@ function handleLeaveSubmission(req, res, user, companyId, employeeId, startDate,
       conversationState: {}
     });
   }
+}
+
+// Helper: Active Portal Data Search & Thinking Analysis
+function searchPortalDatabase(user, rawMsg, language) {
+  const isHindi = language === 'hi';
+  const role = user.role_name || user.role;
+  const companyId = user.company_id || (user.company ? user.company.id : null);
+  const employeeId = user.employee_id;
+  const lowerMsg = (rawMsg || '').toLowerCase();
+
+  const thinkingSteps = [
+    `• Query received: "${rawMsg}"`,
+    `• Context: User Role = "${role}", Company ID = ${companyId || 'Global'}`,
+    `• Analyzing natural language intent and extracting entities...`
+  ];
+
+  let reply = '';
+  let dataFound = false;
+
+  // 1. Check for specific date
+  const dateInfo = parseDateStrings(rawMsg);
+  const targetDate = dateInfo ? dateInfo.startDate : new Date().toISOString().split('T')[0];
+  if (dateInfo) {
+    thinkingSteps.push(`• Target Date recognized: ${targetDate}`);
+  }
+
+  // 2. Search Employees in this company
+  let matchedEmployees = [];
+  let searchedSpecificPerson = false;
+  let candidateName = '';
+
+  if (companyId) {
+    try {
+      const allEmps = db.prepare(`
+        SELECT id, full_name, employee_id, department, designation, mobile, status
+        FROM employees
+        WHERE company_id = ? AND is_deleted = 0
+      `).all(companyId);
+
+      // Check if query targets a specific person/employee
+      const personMatch = rawMsg.match(/(?:employee|staff|user|karmachari|worker|for|member)\s+([a-zA-Z0-9_]+)/i);
+      if (personMatch && !['all', 'everyone', 'sabhi', 'today', 'my', 'the', 'attendance', 'leave', 'bill', 'ticket', 'correction', 'report', 'records', 'record'].includes(personMatch[1].toLowerCase())) {
+        searchedSpecificPerson = true;
+        candidateName = personMatch[1];
+      }
+
+      const words = lowerMsg.replace(/[^a-z0-9\s]/gi, ' ').split(/\s+/).filter(w => w.length >= 3);
+      matchedEmployees = allEmps.filter(emp => {
+        const fn = (emp.full_name || '').toLowerCase();
+        const code = (emp.employee_id || '').toLowerCase();
+        const mob = (emp.mobile || '');
+        if (lowerMsg.includes(fn) || (code && lowerMsg.includes(code)) || (mob && lowerMsg.includes(mob))) {
+          return true;
+        }
+        return words.some(w => fn.includes(w) && !['attendance', 'record', 'records', 'leave', 'shift', 'punch', 'status', 'report'].includes(w));
+      });
+    } catch (e) {}
+  }
+
+  // 3. Classify intent & Search Portal:
+
+  // A. Non-existent specific person search
+  if (searchedSpecificPerson && matchedEmployees.length === 0) {
+    thinkingSteps.push(`• Targeted employee search for entity: "${candidateName}"`);
+    thinkingSteps.push(`• Queried "employees" table in company ID ${companyId}...`);
+    thinkingSteps.push(`• Result: No employee matching "${candidateName}" found in the portal database.`);
+    dataFound = false;
+    reply = isHindi
+      ? `🔍 **पोर्टल सर्च परिणाम**:\n\nकंपनी पोर्टल डेटाबेस में **'${candidateName}'** नाम या कोड का कोई भी कर्मचारी रिकॉर्ड दर्ज नहीं मिला।`
+      : `🔍 **Portal Search Result**:\n\nNo employee matching **'${candidateName}'** was found in the portal database for your company.`;
+  }
+
+  // B. Specific Matched Employee Query
+  else if (matchedEmployees.length > 0 && !lowerMsg.includes('all employee') && !lowerMsg.includes('sabhi') && !lowerMsg.includes('everyone') && !lowerMsg.includes('count') && !lowerMsg.includes('total')) {
+    const emp = matchedEmployees[0];
+    thinkingSteps.push(`• Found matching employee in database: "${emp.full_name}" (ID: ${emp.employee_id || emp.id})`);
+    thinkingSteps.push(`• Querying attendance records and leave balances for employee ID ${emp.id}...`);
+
+    let att = null;
+    let leaves = [];
+    try {
+      att = db.prepare(`
+        SELECT * FROM attendance_records
+        WHERE company_id = ? AND employee_id = ? AND date = ?
+      `).get(companyId, emp.id, targetDate);
+
+      const curYear = new Date().getFullYear();
+      leaves = db.prepare(`
+        SELECT lt.name, COALESCE(lb.balance, lt.default_yearly_quota) as bal
+        FROM leave_types lt
+        LEFT JOIN leave_balances lb ON lt.id = lb.leave_type_id AND lb.employee_id = ? AND lb.year = ?
+        WHERE lt.company_id = ?
+      `).all(emp.id, curYear, companyId);
+    } catch (e) {}
+
+    dataFound = true;
+    let attText = att 
+      ? `• **Date**: ${targetDate}\n• **Status**: \`${att.status}\`\n• **Punch In**: ${att.punch_in_time ? format12Hr(att.punch_in_time) : '--:--'} (${att.punch_in_area || 'Site'})\n• **Punch Out**: ${att.punch_out_time ? format12Hr(att.punch_out_time) : '--:--'}\n• **Working Hours**: ${att.working_hours || 0} hrs`
+      : `• **Attendance on ${targetDate}**: *No punch record found in portal (Absent / Off)*`;
+
+    let leaveText = leaves.map(l => `• ${l.name}: **${l.bal}** days`).join('\n') || '• No leave balances assigned';
+
+    reply = isHindi
+      ? `👤 **कर्मचारी पोर्टल रिकॉर्ड: ${emp.full_name}**\n\n` +
+        `• **कर्मचारी कोड**: \`${emp.employee_id || 'N/A'}\`\n` +
+        `• **विभाग**: ${emp.department || 'General'}\n` +
+        `• **पद (Designation)**: ${emp.designation || 'Staff'}\n` +
+        `• **मोबाइल**: ${emp.mobile || 'N/A'}\n` +
+        `• **स्थिति**: \`${emp.status}\`\n\n` +
+        `📅 **उपस्थिति विवरण (${targetDate})**:\n${attText}\n\n` +
+        `🏖️ **अवकाश बैलेंस**:\n${leaveText}`
+      : `👤 **Portal Employee Record: ${emp.full_name}**\n\n` +
+        `• **Employee Code**: \`${emp.employee_id || 'N/A'}\`\n` +
+        `• **Department**: ${emp.department || 'General'}\n` +
+        `• **Designation**: ${emp.designation || 'Staff'}\n` +
+        `• **Mobile**: ${emp.mobile || 'N/A'}\n` +
+        `• **Account Status**: \`${emp.status}\`\n\n` +
+        `📅 **Attendance Summary (${targetDate})**:\n${attText}\n\n` +
+        `🏖️ **Leave Balance Quota**:\n${leaveText}`;
+  }
+
+  // C. Data Report Analysis / Monthly Performance
+  else if (lowerMsg.includes('report') || lowerMsg.includes('analysis') || lowerMsg.includes('विश्लेषण') || lowerMsg.includes('रिपोर्ट') || lowerMsg.includes('monthly attendance')) {
+    thinkingSteps.push(`• Detected attendance report analysis request.`);
+    const curYear = new Date().getFullYear();
+    const curMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+    const startOfMonth = `${curYear}-${curMonth}-01`;
+    const endOfMonth = `${curYear}-${curMonth}-31`;
+
+    if (role === 'employee') {
+      thinkingSteps.push(`• Querying monthly attendance records for employee ID ${employeeId} (${startOfMonth} to ${endOfMonth})...`);
+      let records = [];
+      try {
+        records = db.prepare(`
+          SELECT date, punch_in_time, punch_out_time, total_hours, status
+          FROM attendance_records
+          WHERE employee_id = ? AND date BETWEEN ? AND ?
+          ORDER BY date ASC
+        `).all(employeeId, startOfMonth, endOfMonth);
+      } catch (e) {}
+
+      if (records.length > 0) {
+        dataFound = true;
+        const presents = records.filter(r => r.status === 'Present').length;
+        const halfDays = records.filter(r => r.status === 'Half Day').length;
+        const absents = records.filter(r => r.status === 'Absent' || r.status === 'Missing Punch In').length;
+        const totalHours = records.reduce((acc, r) => acc + (parseFloat(r.total_hours) || 0), 0);
+        const avgHours = presents > 0 ? (totalHours / presents).toFixed(1) : '0.0';
+
+        reply = isHindi
+          ? `📈 **मासिक अटेंडेंस विश्लेषण (${curYear}-${curMonth})**:\n\n` +
+            `• **उपस्थित दिन (Presents)**: \`${presents} दिन\`\n` +
+            `• **हाफ डे (Half Days)**: \`${halfDays} दिन\`\n` +
+            `• **अनुपस्थित दिन (Absents)**: \`${absents} दिन\`\n` +
+            `• **कुल कार्य घंटे (Total Hours)**: \`${totalHours.toFixed(1)} hrs\`\n` +
+            `• **औसत दैनिक घंटे (Avg Daily)**: \`${avgHours} hrs/day\`\n\n` +
+            `आपकी अटेंडेंस बहुत अच्छी चल रही है। पूरा दैनिक लॉग 'Attendance' टैब में उपलब्ध है।`
+          : `📈 **Monthly Attendance Report Analysis (${curYear}-${curMonth})**:\n\n` +
+            `• **Present Days**: \`${presents} days\`\n` +
+            `• **Half Days**: \`${halfDays} days\`\n` +
+            `• **Absent Days**: \`${absents} days\`\n` +
+            `• **Total Working Hours**: \`${totalHours.toFixed(1)} hrs\`\n` +
+            `• **Average Daily Duration**: \`${avgHours} hrs/day\`\n\n` +
+            `Your monthly performance record is synced with verified GPS. Full details are available in the Attendance tab.`;
+      } else {
+        dataFound = false;
+        reply = isHindi
+          ? `🔍 **पोर्टल सर्च परिणाम (रिपोर्ट)**:\n\nचालू माह (${curYear}-${curMonth}) के लिए पोर्टल में कोई उपस्थिति रिकॉर्ड दर्ज नहीं मिला।`
+          : `🔍 **Portal Search Result (Report)**:\n\nNo monthly attendance records found in the portal for period ${curYear}-${curMonth}.`;
+      }
+    } else {
+      // Manager or Company Admin
+      thinkingSteps.push(`• Querying company-wide attendance records for ${curYear}-${curMonth}...`);
+      let records = [];
+      let totalEmps = 0;
+      try {
+        records = db.prepare(`
+          SELECT a.id, a.status, a.total_hours
+          FROM attendance_records a
+          WHERE a.company_id = ? AND a.date BETWEEN ? AND ?
+        `).all(companyId, startOfMonth, endOfMonth);
+        totalEmps = db.prepare('SELECT COUNT(*) as c FROM employees WHERE company_id = ? AND is_deleted = 0').get(companyId).c;
+      } catch (e) {}
+
+      if (records.length > 0) {
+        dataFound = true;
+        const totalPunches = records.length;
+        reply = isHindi
+          ? `📊 **कंपनी मासिक उपस्थिति विश्लेषण रिपोर्ट (${curYear}-${curMonth})**:\n\n` +
+            `• **सक्रिय कर्मचारी**: ${totalEmps}\n` +
+            `• **माह के कुल उपस्थिति लॉग**: ${totalPunches} रिकॉर्ड्स\n` +
+            `• विस्तृत रिपोर्ट देखने के लिए **Attendance Reports** टैब पर जाएं।`
+          : `📊 **Company Monthly Attendance Report Analysis (${curYear}-${curMonth})**:\n\n` +
+            `• **Active Staff**: ${totalEmps}\n` +
+            `• **Total Monthly Punch Records**: ${totalPunches}\n` +
+            `• For detailed exportable reports, please navigate to the **Attendance Reports** tab.`;
+      } else {
+        dataFound = false;
+        reply = isHindi
+          ? `🔍 **पोर्टल सर्च परिणाम (रिपोर्ट)**:\n\nइस माह कंपनी के लिए कोई उपस्थिति रिकॉर्ड दर्ज नहीं मिला।`
+          : `🔍 **Portal Search Result (Report)**:\n\nNo monthly attendance records found in the portal database for this period.`;
+      }
+    }
+  }
+
+  // D. Attendance / Punch Inquiry
+  else if (
+    lowerMsg.includes('attendance') || lowerMsg.includes('punch') || lowerMsg.includes('upsthiti') ||
+    lowerMsg.includes('present') || lowerMsg.includes('absent') || lowerMsg.includes('working hour') ||
+    lowerMsg.includes('hours') || lowerMsg.includes('ghante') || lowerMsg.includes('in time') || lowerMsg.includes('out time') || lowerMsg.includes('late')
+  ) {
+    thinkingSteps.push(`• Detected attendance inquiry for date: ${targetDate}`);
+    thinkingSteps.push(`• Querying table "attendance_records" where company_id = ${companyId}...`);
+
+    if (role === 'employee') {
+      let myAtt = null;
+      try {
+        myAtt = db.prepare(`
+          SELECT * FROM attendance_records
+          WHERE company_id = ? AND employee_id = ? AND date = ?
+        `).get(companyId, employeeId, targetDate);
+      } catch (e) {}
+
+      if (myAtt) {
+        dataFound = true;
+        reply = isHindi
+          ? `📅 **पोर्टल उपस्थिति रिकॉर्ड (${targetDate})**:\n\n` +
+            `• **स्थिति**: \`${myAtt.status}\`\n` +
+            `• **पंच-इन**: **${myAtt.punch_in_time ? format12Hr(myAtt.punch_in_time) : '--:--'}** (${myAtt.punch_in_area || 'Verified Location'})\n` +
+            `• **पंच-आउट**: **${myAtt.punch_out_time ? format12Hr(myAtt.punch_out_time) : '--:--'}**\n` +
+            `• **कुल कार्य अवधि**: **${myAtt.working_hours || 0} घंटे**`
+          : `📅 **Portal Attendance Record (${targetDate})**:\n\n` +
+            `• **Status**: \`${myAtt.status}\`\n` +
+            `• **Punch-In Time**: **${myAtt.punch_in_time ? format12Hr(myAtt.punch_in_time) : '--:--'}** (${myAtt.punch_in_area || 'Verified Location'})\n` +
+            `• **Punch-Out Time**: **${myAtt.punch_out_time ? format12Hr(myAtt.punch_out_time) : '--:--'}**\n` +
+            `• **Total Working Duration**: **${myAtt.working_hours || 0} hrs**`;
+      } else {
+        dataFound = false;
+        reply = isHindi
+          ? `🔍 **पोर्टल सर्च परिणाम (उपस्थिति)**:\n\n` +
+            `तारीख **${targetDate}** के लिए पोर्टल डेटाबेस में आपका कोई पंच रिकॉर्ड दर्ज नहीं है।\n` +
+            `यदि आप पंच लगाना भूल गए थे, तो आप **"Attendance correction"** लिखकर पंच सुधार अनुरोध भेज सकते हैं।`
+          : `🔍 **Portal Search Result (Attendance)**:\n\n` +
+            `No punch record was found in the portal database for date **${targetDate}**.\n` +
+            `If you forgot to punch, you can request an attendance correction by typing **"Attendance correction"**.`;
+      }
+    } else {
+      // Manager or Company Admin
+      let records = [];
+      let totalEmps = 0;
+      try {
+        records = db.prepare(`
+          SELECT a.*, e.full_name, e.employee_id as emp_code, e.department
+          FROM attendance_records a
+          JOIN employees e ON a.employee_id = e.id
+          WHERE a.company_id = ? AND a.date = ?
+        `).all(companyId, targetDate);
+
+        totalEmps = db.prepare('SELECT COUNT(*) as c FROM employees WHERE company_id = ? AND is_deleted = 0').get(companyId).c;
+      } catch (e) {}
+
+      if (records.length > 0) {
+        dataFound = true;
+        const presentList = records.filter(r => r.status === 'Present' || r.status === 'Half Day');
+        reply = isHindi
+          ? `📊 **कंपनी उपस्थिति डेटा (${targetDate})**:\n\n` +
+            `• **कुल कर्मचारी**: ${totalEmps}\n` +
+            `• **उपस्थित**: **${presentList.length}** कर्मचारी\n` +
+            `• **अनुपस्थित/ऑफ**: **${Math.max(0, totalEmps - presentList.length)}** कर्मचारी\n\n` +
+            `**हाल के पंच:**\n` +
+            records.slice(0, 5).map(r => `• ${r.full_name} (${r.emp_code || 'Staff'}): \`${r.status}\` | In: ${r.punch_in_time ? format12Hr(r.punch_in_time) : '--:--'}`).join('\n')
+          : `📊 **Company Attendance Data (${targetDate})**:\n\n` +
+            `• **Total Staff**: ${totalEmps}\n` +
+            `• **Present**: **${presentList.length}** employees\n` +
+            `• **Absent / Off**: **${Math.max(0, totalEmps - presentList.length)}** employees\n\n` +
+            `**Recent Punches:**\n` +
+            records.slice(0, 5).map(r => `• ${r.full_name} (${r.emp_code || 'Staff'}): \`${r.status}\` | In: ${r.punch_in_time ? format12Hr(r.punch_in_time) : '--:--'}`).join('\n');
+      } else {
+        dataFound = false;
+        reply = isHindi
+          ? `🔍 **पोर्टल सर्च परिणाम (उपस्थिति)**:\n\n` +
+            `तारीख **${targetDate}** के लिए कंपनी पोर्टल डेटाबेस में कोई भी पंच उपस्थिति रिकॉर्ड नहीं मिला।`
+          : `🔍 **Portal Search Result (Attendance)**:\n\n` +
+            `No attendance punch records found in the portal database for date **${targetDate}**.`;
+      }
+    }
+  }
+
+  // E. Leave Balance / Leave Requests
+  else if (lowerMsg.includes('leave') || lowerMsg.includes('chutti') || lowerMsg.includes('balance') || lowerMsg.includes('cl') || lowerMsg.includes('el')) {
+    thinkingSteps.push(`• Detected leave inquiry. Querying leave_types, leave_balances, and leave_requests...`);
+
+    const curYear = new Date().getFullYear();
+    let leaves = [];
+    let reqs = [];
+    try {
+      leaves = employeeId ? db.prepare(`
+        SELECT lt.name, COALESCE(lb.balance, lt.default_yearly_quota) as bal
+        FROM leave_types lt
+        LEFT JOIN leave_balances lb ON lt.id = lb.leave_type_id AND lb.employee_id = ? AND lb.year = ?
+        WHERE lt.company_id = ?
+      `).all(employeeId, curYear, companyId) : [];
+
+      reqs = employeeId ? db.prepare(`
+        SELECT * FROM leave_requests
+        WHERE company_id = ? AND employee_id = ?
+        ORDER BY id DESC LIMIT 3
+      `).all(companyId, employeeId) : [];
+    } catch (e) {}
+
+    if (leaves.length > 0 || reqs.length > 0) {
+      dataFound = true;
+      const balStr = leaves.map(l => `• **${l.name}**: ${l.bal} days available`).join('\n');
+      const reqStr = reqs.length > 0
+        ? reqs.map(r => `• ${r.start_date} to ${r.end_date} (${r.total_days} days) - Status: \`${r.status}\``).join('\n')
+        : '• No recent leave requests submitted.';
+
+      reply = isHindi
+        ? `🏖️ **पोर्टल अवकाश विवरण (Leave Balances & Status)**:\n\n` +
+          `**उपलब्ध लीव बैलेंस (${curYear}):**\n${balStr}\n\n` +
+          `**हाल के आवेदन:**\n${reqStr}`
+        : `🏖️ **Portal Leave Details & Quota**:\n\n` +
+          `**Available Leave Balances (${curYear}):**\n${balStr}\n\n` +
+          `**Recent Leave Applications:**\n${reqStr}`;
+    } else {
+      dataFound = false;
+      reply = isHindi
+        ? `🔍 **पोर्टल सर्च परिणाम (लीव)**:\n\nपोर्टल में आपके लिए कोई लीव रिकॉर्ड या बैलेंस दर्ज नहीं मिला।`
+        : `🔍 **Portal Search Result (Leave)**:\n\nNo leave balances or requests found in the portal records for your account.`;
+    }
+  }
+
+  // F. Tickets / Complaints
+  else if (lowerMsg.includes('ticket') || lowerMsg.includes('complaint') || lowerMsg.includes('helpdesk') || lowerMsg.includes('shikayat')) {
+    thinkingSteps.push(`• Detected ticket/helpdesk inquiry. Querying service_requests table...`);
+    let tickets = [];
+    try {
+      if (role === 'employee') {
+        tickets = db.prepare(`
+          SELECT id, title, status, priority, created_at FROM service_requests
+          WHERE company_id = ? AND employee_id = ?
+          ORDER BY id DESC LIMIT 5
+        `).all(companyId, employeeId);
+      } else {
+        tickets = db.prepare(`
+          SELECT id, title, status, priority, created_at FROM service_requests
+          WHERE company_id = ?
+          ORDER BY id DESC LIMIT 5
+        `).all(companyId);
+      }
+    } catch (e) {}
+
+    if (tickets.length > 0) {
+      dataFound = true;
+      reply = isHindi
+        ? `🎫 **पोर्टल सपोर्ट टिकट्स (${tickets.length} रिकॉर्ड मिले)**:\n\n` +
+          tickets.map(t => `• **#TKT-${t.id}**: ${t.title} [Status: \`${t.status}\`, Priority: \`${t.priority || 'Normal'}\`]`).join('\n')
+        : `🎫 **Portal Support Tickets (${tickets.length} record(s) found)**:\n\n` +
+          tickets.map(t => `• **#TKT-${t.id}**: ${t.title} [Status: \`${t.status}\`, Priority: \`${t.priority || 'Normal'}\`]`).join('\n');
+    } else {
+      dataFound = false;
+      reply = isHindi
+        ? `🔍 **पोर्टल सर्च परिणाम (टिकट)**:\n\nपोर्टल डेटाबेस में आपका कोई भी टिकट दर्ज नहीं है। टिकट बनाने के लिए **"Create support ticket"** लिखें।`
+        : `🔍 **Portal Search Result (Tickets)**:\n\nNo tickets found in the portal database for your account. Type **"Create support ticket"** to raise a new one.`;
+    }
+  }
+
+  // G. Billing / Invoices Query
+  else if (lowerMsg.includes('bill') || lowerMsg.includes('invoice') || lowerMsg.includes('pos') || lowerMsg.includes('merchant')) {
+    thinkingSteps.push(`• Detected merchant billing inquiry. Querying billing_invoices table...`);
+    let invs = [];
+    try {
+      invs = db.prepare(`
+        SELECT invoice_no, bill_date, customer_name, grand_total, status
+        FROM billing_invoices
+        WHERE company_id = ?
+        ORDER BY id DESC LIMIT 5
+      `).all(companyId);
+    } catch (e) {}
+
+    if (invs.length > 0) {
+      dataFound = true;
+      reply = isHindi
+        ? `🧾 **मर्चेंट बिलिंग रिकॉर्ड्स (${invs.length} बिल मिले)**:\n\n` +
+          invs.map(b => `• **${b.invoice_no}** (${b.bill_date}) - ${b.customer_name}: **₹${b.grand_total}** [\`${b.status}\`]`).join('\n')
+        : `🧾 **Merchant Billing Records (${invs.length} bills found)**:\n\n` +
+          invs.map(b => `• **${b.invoice_no}** (${b.bill_date}) - ${b.customer_name}: **₹${b.grand_total}** [\`${b.status}\`]`).join('\n');
+    } else {
+      dataFound = false;
+      reply = isHindi
+        ? `🔍 **पोर्टल सर्च परिणाम (बिलिंग)**:\n\nकंपनी डेटाबेस में कोई बिल या इनवॉइस दर्ज नहीं मिला। आप **Merchant & Billing** टैब से नया बिल बना सकते हैं।`
+        : `🔍 **Portal Search Result (Billing)**:\n\nNo invoices or bills found in the portal database. You can create a new bill from the **Merchant & Billing** tab.`;
+    }
+  }
+
+  // H. Fallback General Search across portal
+  else {
+    thinkingSteps.push(`• Querying general portal directories (employees, holidays, company metrics)...`);
+    const todayStr = new Date().toISOString().split('T')[0];
+    dataFound = false;
+    thinkingSteps.push(`• No specific entity pattern matched. Queried portal database.`);
+
+    reply = isHindi
+      ? `🔍 **पोर्टल डेटाबेस सर्च विश्लेषण**:\n\n` +
+        `मैंने आपके सवाल: *"${rawMsg}"* का विश्लेषण किया और आपके **${role}** पैनल के पोर्टल डेटाबेस में खोज की।\n\n` +
+        `❌ **पोर्टल में इस अनुरोध से संबंधित कोई रिकॉर्ड नहीं मिला।**\n\n` +
+        `💡 **पोर्टल में आप क्या पूछ सकते हैं?**\n` +
+        `• किसी भी कर्मचारी का नाम या कोड (जैसे: *Rahul Sharma*, *EMP001*)\n` +
+        `• किसी विशेष तारीख की अटेंडेंस (जैसे: *Attendance on ${todayStr}*)\n` +
+        `• छुट्टी व बैलेंस (जैसे: *Mera leave balance kitna hai?*)\n` +
+        `• सपोर्ट टिकट्स (जैसे: *Ticket status*)\n` +
+        `• आगामी छुट्टियां (जैसे: *Upcoming holidays*)`
+      : `🔍 **Portal Database Search Analysis**:\n\n` +
+        `I analyzed your query: *"${rawMsg}"* and actively searched the portal database within your **${role}** panel scope.\n\n` +
+        `❌ **No matching data records were found in the portal database.**\n\n` +
+        `💡 **What you can search directly from the portal:**\n` +
+        `• Search any staff member by name or code (e.g. *Rahul*, *EMP001*)\n` +
+        `• Check attendance for any date (e.g. *Attendance on ${todayStr}*)\n` +
+        `• Inquire leave balance (e.g. *What is my leave balance?*)\n` +
+        `• Check tickets (e.g. *Show my tickets*)\n` +
+        `• View upcoming holidays (e.g. *Upcoming holidays*)`;
+  }
+
+  thinkingSteps.push(`• Search completed. Result: ${dataFound ? 'Data Found in Portal' : 'No Data Found in Portal'}.`);
+
+  return {
+    reply,
+    thinking: thinkingSteps.join('\n'),
+    dataFound,
+    action: 'SEARCH_COMPLETE',
+    conversationState: {}
+  };
 }
 
 module.exports = router;

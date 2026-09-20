@@ -21,6 +21,7 @@ import CompanyLeaveApprovalView from '../components/CompanyLeaveApprovalView';
 import ShiftManagementView from '../components/ShiftManagementView';
 import HolidaysWeeklyOffView from '../components/HolidaysWeeklyOffView';
 import CompanyCustomReportsView from '../components/CompanyCustomReportsView';
+import MerchantBillingView from './MerchantBillingView';
 
 export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCompany }) {
   const [employees, setEmployees] = useState([]);
@@ -2631,6 +2632,11 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* LIVE MAP TAB */}
       {activeTab === 'live-map' && (
         <LiveTrackingMap companyId={company?.id} />
+      )}
+
+      {/* MERCHANT & BILLING TAB */}
+      {activeTab === 'billing' && (
+        <MerchantBillingView company={company} user={user} />
       )}
 
       {/* SETTINGS & LOGO UPLOAD TAB */}

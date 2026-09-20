@@ -3,7 +3,7 @@ import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
   Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
-  Radio, Sparkles
+  Radio, Sparkles, ShoppingBag
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -91,6 +91,8 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         return modules.reports !== false;
       case 'correction':
         return modules.corrections !== false;
+      case 'billing':
+        return modules.billing !== false;
       default:
         return true;
     }
@@ -139,6 +141,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'holidays', label: 'Holidays & Weekly Off', icon: Calendar },
           { id: 'live-map', label: 'Live Tracking Map', icon: MapPin },
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
+          { id: 'billing', label: 'Merchant & Billing', icon: ShoppingBag, badge: 'POS' },
           { id: 'reports', label: 'Custom Reports & Export', icon: FileText },
           { id: 'settings', label: 'Company Settings', icon: Settings }
         ];
@@ -493,12 +496,14 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         onUserUpdate={onUserUpdate}
       />
 
-      {/* UNIVERSAL PIHU AI ASSISTANT (All Panels: Employee, Manager, Company Admin, Support, Super Admin) */}
-      <PihuAssistant
-        user={user}
-        company={company}
-        onSelectTab={onSelectTab}
-      />
+      {/* UNIVERSAL PIHU AI ASSISTANT (Super Admin and Support always access; tenant panels respect company.modules.ai_assistant) */}
+      {(!company || user?.role === 'super_admin' || user?.role === 'support' || company?.modules?.ai_assistant !== false) && (
+        <PihuAssistant
+          user={user}
+          company={company}
+          onSelectTab={onSelectTab}
+        />
+      )}
     </div>
   );
 }

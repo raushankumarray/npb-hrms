@@ -82,6 +82,11 @@ function AiGirlAvatar({ size = 'w-10 h-10', border = true }) {
 }
 
 export default function PihuAssistant({ user, company, onSelectTab }) {
+  // If company has ai_assistant disabled by Super Admin, hide completely for all tenant panels
+  if (company && user?.role !== 'super_admin' && user?.role !== 'support' && company?.modules?.ai_assistant === false) {
+    return null;
+  }
+
   const [isOpen, setIsOpen] = useState(false);
   const [language, setLanguage] = useState(() => {
     return localStorage.getItem('pihu_lang') || 'en';
@@ -497,24 +502,12 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
     handleOpenChat();
   };
 
-  // Auto-show and auto-open PIHU post-login across all pages
+  // Reset FAB on fresh user session, but strictly DO NOT auto-open chat (only opens on manual click)
   useEffect(() => {
     if (!user) return;
-    const welcomeKey = `pihu_welcomed_${user.id || user.username}`;
-    const autoPending = sessionStorage.getItem('pihu_auto_welcome_pending');
-    const alreadyWelcomed = sessionStorage.getItem(welcomeKey);
-
-    if (autoPending === 'true' || !alreadyWelcomed) {
-      sessionStorage.removeItem('pihu_auto_welcome_pending');
-      sessionStorage.setItem(welcomeKey, 'true');
-      setIsRemoved(false);
-      sessionStorage.removeItem('pihu_removed_from_screen');
-
-      const timer = setTimeout(() => {
-        handleOpenChat();
-      }, 1200);
-      return () => clearTimeout(timer);
-    }
+    setIsRemoved(false);
+    sessionStorage.removeItem('pihu_removed_from_screen');
+    // Deliberately no handleOpenChat(): chat opens only when user manually clicks launcher
   }, [user?.id, user?.username]);
 
   // Global listener for navbar header button or other triggers
@@ -720,6 +713,8 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
       const nextState = res?.conversationState || {};
       const leaveDetails = res?.leaveDetails || null;
       const ticketDetails = res?.ticketDetails || null;
+      const thinking = res?.thinking || null;
+      const dataFound = res?.dataFound;
 
       setConversationState(nextState);
 
@@ -740,7 +735,9 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         action: newAction,
         leaveDetails,
-        ticketDetails
+        ticketDetails,
+        thinking,
+        dataFound
       };
 
       setMessages(prev => [...prev, pihuMsg]);
@@ -1080,6 +1077,19 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
                       : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none'
                   }`}
                 >
+                  {/* Analytical Thinking Process Display */}
+                  {m.thinking && (
+                    <div className="mb-2 p-2.5 bg-indigo-50/90 border border-indigo-150 rounded-xl text-[10.5px] text-indigo-950 font-mono">
+                      <div className="flex items-center gap-1.5 font-bold text-indigo-700 mb-1">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
+                        <span>{language === 'hi' ? 'विश्लेषण एवं पोर्टल डेटा सर्च (Thinking)' : 'Analysis & Portal Data Search (Thinking)'}</span>
+                      </div>
+                      <div className="text-slate-600 whitespace-pre-wrap leading-relaxed text-[10px]">
+                        {m.thinking}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="whitespace-pre-wrap">
                     {m.text}
                   </div>
@@ -1177,12 +1187,13 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
 
             {loading && (
               <div className="flex items-start gap-2">
-                <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-none px-3.5 py-2.5 shadow-xs flex items-center gap-1.5">
+                <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-none px-3.5 py-2.5 shadow-xs flex items-center gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-spin" />
                   <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-bounce"></span>
                   <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-bounce [animation-delay:0.2s]"></span>
                   <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-bounce [animation-delay:0.4s]"></span>
-                  <span className="text-[11px] text-slate-400 ml-1 font-medium">
-                    {language === 'hi' ? 'पिहू विश्लेषण कर रही है...' : 'PIHU is analyzing...'}
+                  <span className="text-[11px] text-slate-600 ml-1 font-medium">
+                    {language === 'hi' ? 'पोर्टल डेटा सर्च एवं विश्लेषण जारी है...' : 'Analyzing & searching portal data...'}
                   </span>
                 </div>
               </div>

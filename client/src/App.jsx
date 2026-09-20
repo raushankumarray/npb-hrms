@@ -156,8 +156,6 @@ export default function App() {
   }, []);
 
   const handleLoginSuccess = (loggedInUser, companyInfo) => {
-    // Flag to auto-show and auto-open PIHU assistant on fresh login
-    sessionStorage.setItem('pihu_auto_welcome_pending', 'true');
     sessionStorage.removeItem('pihu_removed_from_screen');
 
     setUser(loggedInUser);
