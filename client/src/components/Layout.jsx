@@ -3,7 +3,7 @@ import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
   Layers, Compass, UserCheck, ChevronRight, ChevronDown, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
-  Radio, Sparkles, Database
+  Radio, Sparkles, Database, Sliders
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -171,6 +171,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
               { id: 'reports', label: 'Global Reports', icon: FileText }
             ]
           },
+          { id: 'modules', label: 'Modules', icon: Sliders },
           { id: 'calendar', label: 'System Calendar', icon: Calendar },
           { id: 'audit-logs', label: 'System Audit Logs', icon: FileSpreadsheet },
           { id: 'settings', label: 'Platform Settings', icon: Settings }

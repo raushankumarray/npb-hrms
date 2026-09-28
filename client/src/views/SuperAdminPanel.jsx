@@ -158,6 +158,56 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     department: '', designation: '', city: '', status: 'active', password: ''
   });
 
+  // Master Modules Registry & Company Entitlements State
+  const [systemModules, setSystemModules] = useState([]);
+  const [loadingModules, setLoadingModules] = useState(false);
+  const [moduleSearch, setModuleSearch] = useState('');
+  const [moduleCategoryFilter, setModuleCategoryFilter] = useState('all');
+  const [moduleTypeFilter, setModuleTypeFilter] = useState('all'); // 'all' | 'core' | 'custom'
+  const [showCreateModuleModal, setShowCreateModuleModal] = useState(false);
+  const [createModuleForm, setCreateModuleForm] = useState({
+    name: '',
+    key: '',
+    category: 'Workforce Management',
+    description: ''
+  });
+  const [creatingModule, setCreatingModule] = useState(false);
+
+  // Manage Company Access Modal State (per module)
+  const [showCompanyAccessModal, setShowCompanyAccessModal] = useState(false);
+  const [selectedModuleForAccess, setSelectedModuleForAccess] = useState(null);
+  const [accessCompanySearch, setAccessCompanySearch] = useState('');
+  const [togglingCompanyId, setTogglingCompanyId] = useState(null);
+
+  // Edit / Delete Module State (for custom modules)
+  const [showEditModuleModal, setShowEditModuleModal] = useState(false);
+  const [moduleToEdit, setModuleToEdit] = useState(null);
+  const [editModuleForm, setEditModuleForm] = useState({
+    name: '',
+    category: '',
+    description: '',
+    is_active: 1
+  });
+  const [updatingModule, setUpdatingModule] = useState(false);
+
+  const [showDeleteModuleModal, setShowDeleteModuleModal] = useState(false);
+  const [moduleToDelete, setModuleToDelete] = useState(null);
+  const [deletingModule, setDeletingModule] = useState(false);
+
+  const fetchSystemModules = async () => {
+    try {
+      setLoadingModules(true);
+      const res = await apiRequest('/modules');
+      if (res && res.modules) {
+        setSystemModules(res.modules);
+      }
+    } catch (err) {
+      console.error('Failed to load system modules:', err);
+    } finally {
+      setLoadingModules(false);
+    }
+  };
+
   const fetchData = async () => {
     setLoading(true);
     setError('');
@@ -183,6 +233,25 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           setCompanies(compRes.companies || []);
         }
       }
+      if (activeTab === 'modules' || activeTab === 'companies' || activeTab === 'dashboard') {
+        try {
+          const modRes = await apiRequest('/modules');
+          if (modRes && modRes.modules) {
+            setSystemModules(modRes.modules);
+          }
+        } catch (e) {}
+      }
+
+      if (activeTab === 'modules') {
+        try {
+          const allRes = await apiRequest('/companies?status=all');
+          setAllCompaniesList(allRes.companies || []);
+          if (companies.length === 0) {
+            setCompanies(allRes.companies || []);
+          }
+        } catch (e) {}
+      }
+
       if (activeTab === 'companies' || activeTab === 'dashboard') {
         try {
           const allRes = await apiRequest('/companies?status=all');
@@ -955,14 +1024,57 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     { key: 'device_binding', label: '1-Device MAC Address Lock', desc: 'Enforce single device policy per employee with hardware MAC address binding and de-registration tickets' },
   ];
 
+  // Dynamic system modules with fallback to static defaults
+  const effectiveModules = systemModules && systemModules.length > 0
+    ? systemModules.map(m => ({
+        key: m.module_key,
+        label: m.name,
+        desc: m.description,
+        category: m.category || 'General',
+        is_core: !!m.is_core,
+        is_active: m.is_active !== 0,
+        total_companies: m.total_companies || companies.length,
+        enabled_companies: m.enabled_companies || 0,
+        disabled_companies: m.disabled_companies || 0,
+        company_access: m.company_access || []
+      }))
+    : AVAILABLE_MODULES.map(m => ({
+        ...m,
+        category: 'Core',
+        is_core: true,
+        is_active: true,
+        total_companies: companies.length,
+        enabled_companies: companies.length,
+        disabled_companies: 0,
+        company_access: []
+      }));
+
   const openModulesModal = async (companyId) => {
     try {
+      let currentModules = effectiveModules;
+      if (systemModules.length === 0) {
+        try {
+          const modRes = await apiRequest('/modules');
+          if (modRes?.modules?.length) {
+            setSystemModules(modRes.modules);
+            currentModules = modRes.modules.map(m => ({
+              key: m.module_key,
+              label: m.name,
+              desc: m.description,
+              category: m.category || 'General',
+              is_core: !!m.is_core
+            }));
+          }
+        } catch (e) {}
+      }
+
       const res = await apiRequest(`/companies/${companyId}`);
       // Initialize full module map ensuring all available modules have a defined boolean
       const fullModMap = { ...(res.modules || {}) };
-      AVAILABLE_MODULES.forEach(m => {
+      currentModules.forEach(m => {
         if (fullModMap[m.key] === undefined) {
-          fullModMap[m.key] = true;
+          // Core modules default to true; custom/new modules default to false (OFF)!
+          fullModMap[m.key] = m.is_core ? true : false;
         }
       });
       setSelectedCompanyModules({
@@ -978,7 +1090,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
   const toggleCompanyModule = (modKey) => {
     if (!selectedCompanyModules) return;
-    const currentEnabled = selectedCompanyModules.modules[modKey] !== false;
+    const currentEnabled = selectedCompanyModules.modules[modKey] === true || selectedCompanyModules.modules[modKey] === 1;
     const nextVal = !currentEnabled;
 
     const nextModules = {
@@ -1020,9 +1132,179 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       ));
       setModulesModalOpen(false);
       setSuccess(`Module configuration for "${selectedCompanyModules.companyName}" updated and synchronized with Firebase successfully.`);
+      await fetchSystemModules();
       fetchData();
     } catch (err) {
       setError(err.message);
+    }
+  };
+
+  // Handle Module Creation (Default OFF across all companies)
+  const handleCreateModule = async (e) => {
+    if (e) e.preventDefault();
+    if (!createModuleForm.name.trim()) {
+      setError('Please enter a module name.');
+      return;
+    }
+
+    setCreatingModule(true);
+    setError('');
+    try {
+      const payload = {
+        name: createModuleForm.name.trim(),
+        key: createModuleForm.key.trim() || undefined,
+        category: createModuleForm.category.trim() || 'Custom',
+        description: createModuleForm.description.trim()
+      };
+      const res = await apiRequest('/modules', {
+        method: 'POST',
+        body: payload
+      });
+
+      setSuccess(res.message || `Module "${createModuleForm.name}" created successfully. It is set to OFF by default across all company accounts until enabled.`);
+      setShowCreateModuleModal(false);
+      setCreateModuleForm({ name: '', key: '', category: 'Workforce Management', description: '' });
+      await fetchSystemModules();
+      fetchData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCreatingModule(false);
+    }
+  };
+
+  // Handle Quick Toggle Company Module Access from Modules Page
+  const handleToggleCompanyModuleAccess = async (companyId, currentVal) => {
+    if (!selectedModuleForAccess) return;
+    const nextVal = !currentVal;
+    setTogglingCompanyId(companyId);
+    setError('');
+    try {
+      const res = await apiRequest(`/modules/${selectedModuleForAccess.module_key}/toggle-company`, {
+        method: 'PUT',
+        body: { company_id: companyId, is_enabled: nextVal }
+      });
+
+      // Update selectedModuleForAccess state optimistically
+      setSelectedModuleForAccess(prev => {
+        if (!prev) return null;
+        const updatedAccess = (prev.company_access || []).map(ca =>
+          ca.id === companyId ? { ...ca, is_enabled: nextVal } : ca
+        );
+        const enabledCount = updatedAccess.filter(ca => ca.is_enabled).length;
+        return {
+          ...prev,
+          enabled_companies: enabledCount,
+          disabled_companies: updatedAccess.length - enabledCount,
+          company_access: updatedAccess
+        };
+      });
+
+      // Update systemModules state
+      setSystemModules(prev => prev.map(m => {
+        if (m.module_key === selectedModuleForAccess.module_key) {
+          const updatedAccess = (m.company_access || []).map(ca =>
+            ca.id === companyId ? { ...ca, is_enabled: nextVal } : ca
+          );
+          const enabledCount = updatedAccess.filter(ca => ca.is_enabled).length;
+          return {
+            ...m,
+            enabled_companies: enabledCount,
+            disabled_companies: updatedAccess.length - enabledCount,
+            company_access: updatedAccess
+          };
+        }
+        return m;
+      }));
+
+      // Update companies state locally so company portal rows immediately reflect the change
+      setCompanies(prev => prev.map(c => {
+        if (c.id === companyId) {
+          return {
+            ...c,
+            modules: {
+              ...(c.modules || {}),
+              [selectedModuleForAccess.module_key]: nextVal
+            }
+          };
+        }
+        return c;
+      }));
+
+      setSuccess(res.message);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTogglingCompanyId(null);
+    }
+  };
+
+  // Handle Batch Enable / Disable for All Companies from Modules Page
+  const handleBatchToggleAccess = async (enableAll) => {
+    if (!selectedModuleForAccess) return;
+    const modKey = selectedModuleForAccess.module_key;
+    setTogglingCompanyId('all');
+    setError('');
+    try {
+      const companiesToUpdate = (selectedModuleForAccess.company_access || []).filter(
+        ca => ca.is_enabled !== enableAll
+      );
+      for (const ca of companiesToUpdate) {
+        await apiRequest(`/modules/${modKey}/toggle-company`, {
+          method: 'PUT',
+          body: { company_id: ca.id, is_enabled: enableAll }
+        });
+      }
+      await fetchSystemModules();
+      fetchData();
+      setSuccess(`Module "${selectedModuleForAccess.name}" access set to ${enableAll ? 'ENABLED (ON)' : 'DISABLED (OFF)'} for all active companies.`);
+      setShowCompanyAccessModal(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTogglingCompanyId(null);
+    }
+  };
+
+  // Handle Custom Module Edit
+  const handleUpdateModule = async (e) => {
+    if (e) e.preventDefault();
+    if (!moduleToEdit) return;
+    setUpdatingModule(true);
+    setError('');
+    try {
+      const res = await apiRequest(`/modules/${moduleToEdit.module_key}`, {
+        method: 'PUT',
+        body: editModuleForm
+      });
+      setSuccess(res.message || `Module "${editModuleForm.name}" updated successfully.`);
+      setShowEditModuleModal(false);
+      await fetchSystemModules();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUpdatingModule(false);
+    }
+  };
+
+  // Handle Custom Module Delete
+  const handleDeleteModule = async () => {
+    if (!moduleToDelete) return;
+    setDeletingModule(true);
+    setError('');
+    try {
+      const res = await apiRequest(`/modules/${moduleToDelete.module_key}`, {
+        method: 'DELETE'
+      });
+      setSuccess(res.message || `Module "${moduleToDelete.name}" deleted successfully.`);
+      setShowDeleteModuleModal(false);
+      setModuleToDelete(null);
+      await fetchSystemModules();
+      fetchData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingModule(false);
     }
   };
 
@@ -1052,16 +1334,32 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               ? `Welcome, ${user.fullName || user.username}`
               : activeTab === 'settings'
               ? 'Platform Settings & System Branding'
+              : activeTab === 'modules'
+              ? 'Platform Modules & Company Entitlements'
               : 'Platform Control Center'}
           </h2>
           <p className="text-xs text-slate-500">
             {activeTab === 'settings'
               ? 'Customize company logo, platform brand name, browser favicon icon, and root credentials'
+              : activeTab === 'modules'
+              ? 'Master registry of platform capabilities, tenant feature entitlements, and custom module provisioning'
               : 'Global SaaS tenant management, support provisioning, and multi-tenant audit logs'}
           </p>
         </div>
 
         <div className="flex items-center gap-2">
+          {activeTab === 'modules' && (
+            <button
+              onClick={() => {
+                setCreateModuleForm({ name: '', key: '', category: 'Workforce Management', description: '' });
+                setShowCreateModuleModal(true);
+              }}
+              className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider"
+            >
+              <Plus className="w-4 h-4" />
+              Add New Module
+            </button>
+          )}
           {activeTab === 'support-accounts' && (
             <button
               onClick={() => setShowCreateSupport(true)}
@@ -1600,8 +1898,14 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                           <td className="p-3 min-w-[220px]">
                             {(() => {
                               const mods = c.modules || {};
-                              const activeCount = AVAILABLE_MODULES.filter(m => mods[m.key] !== false).length;
-                              const disabledMods = AVAILABLE_MODULES.filter(m => mods[m.key] === false);
+                              const activeCount = effectiveModules.filter(m => {
+                                if (mods[m.key] !== undefined) return mods[m.key] !== false && mods[m.key] !== 0;
+                                return !!m.is_core; // custom modules default to OFF!
+                              }).length;
+                              const disabledMods = effectiveModules.filter(m => {
+                                if (mods[m.key] !== undefined) return mods[m.key] === false || mods[m.key] === 0;
+                                return !m.is_core; // custom modules default to OFF!
+                              });
                               const allActive = disabledMods.length === 0;
 
                               return (
@@ -1616,7 +1920,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                                       title={allActive ? 'All system modules enabled' : `${disabledMods.length} module(s) currently disabled`}
                                     >
                                       <span className={`w-1.5 h-1.5 rounded-full ${allActive ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-                                      {activeCount}/{AVAILABLE_MODULES.length} Active
+                                      {activeCount}/{effectiveModules.length} Active
                                     </span>
 
                                     {disabledMods.length > 0 ? (
@@ -1636,7 +1940,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                                       type="button"
                                       onClick={() => openModulesModal(c.id)}
                                       className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors ml-auto shadow-xs"
-                                      title="Open Module Configuration Modal"
+                                      title="Open Module Configuration Modal (Directly fetched from Modules Page registry)"
                                     >
                                       <Settings2 className="w-3 h-3 text-slate-500" />
                                       <span>Configure</span>
@@ -1645,8 +1949,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
                                   {/* Quick visual badge tags of key modules showing ON / OFF status */}
                                   <div className="flex flex-wrap gap-1 items-center">
-                                    {AVAILABLE_MODULES.slice(0, 5).map(m => {
-                                      const isModOn = mods[m.key] !== false;
+                                    {effectiveModules.slice(0, 5).map(m => {
+                                      const isModOn = mods[m.key] !== undefined
+                                        ? (mods[m.key] !== false && mods[m.key] !== 0)
+                                        : !!m.is_core;
                                       return (
                                         <span
                                           key={m.key}
@@ -1661,13 +1967,13 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                                         </span>
                                       );
                                     })}
-                                    {disabledMods.length > 0 && disabledMods.some(dm => !AVAILABLE_MODULES.slice(0, 5).includes(dm)) && (
+                                    {disabledMods.length > 0 && disabledMods.some(dm => !effectiveModules.slice(0, 5).includes(dm)) && (
                                       <span
                                         onClick={() => openModulesModal(c.id)}
                                         className="px-1.5 py-0.2 text-[9px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded cursor-pointer hover:bg-rose-100"
                                         title={`Disabled: ${disabledMods.map(m => m.label).join(', ')}`}
                                       >
-                                        +{disabledMods.filter(dm => !AVAILABLE_MODULES.slice(0, 5).includes(dm)).length} Off
+                                        +{disabledMods.filter(dm => !effectiveModules.slice(0, 5).includes(dm)).length} Off
                                       </span>
                                     )}
                                   </div>
@@ -2261,6 +2567,296 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW: SYSTEM MODULES REGISTRY & COMPANY ENTITLEMENTS */}
+      {activeTab === 'modules' && (
+        <div className="space-y-6">
+          {/* Top Stat Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Modules</span>
+                <div className="p-2 bg-sky-50 text-sky-600">
+                  <Sliders className="w-5 h-5" />
+                </div>
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">{effectiveModules.length}</p>
+              <p className="text-[11px] text-slate-400 mt-1">Platform capabilities registry</p>
+            </div>
+
+            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Core System Modules</span>
+                <div className="p-2 bg-emerald-50 text-emerald-600">
+                  <Shield className="w-5 h-5" />
+                </div>
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">
+                {effectiveModules.filter(m => m.is_core).length}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Built-in standard modules</p>
+            </div>
+
+            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Modules</span>
+                <div className="p-2 bg-purple-50 text-purple-600">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">
+                {effectiveModules.filter(m => !m.is_core).length}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Business extensions (Default OFF)</p>
+            </div>
+
+            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Managed Companies</span>
+                <div className="p-2 bg-amber-50 text-amber-600">
+                  <Building2 className="w-5 h-5" />
+                </div>
+              </div>
+              <p className="text-2xl font-black text-slate-900 mt-2">
+                {allCompaniesList.length || companies.length || (systemModules[0]?.total_companies || 0)}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Multi-tenant client accounts</p>
+            </div>
+          </div>
+
+          {/* Search, Filter & Actions Toolbar */}
+          <div className="bg-white p-4 border border-slate-200 shadow-sm space-y-3">
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+              <div className="flex-1 relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search modules by name, key, category, or description..."
+                  value={moduleSearch}
+                  onChange={(e) => setModuleSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none"
+                />
+                {moduleSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setModuleSearch('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={moduleCategoryFilter}
+                  onChange={(e) => setModuleCategoryFilter(e.target.value)}
+                  className="px-3 py-2 border border-slate-300 rounded-none text-xs font-medium text-slate-700 bg-white outline-none focus:border-sky-500"
+                >
+                  <option value="all">All Categories</option>
+                  {Array.from(new Set(effectiveModules.map(m => m.category).filter(Boolean))).map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+
+                <select
+                  value={moduleTypeFilter}
+                  onChange={(e) => setModuleTypeFilter(e.target.value)}
+                  className="px-3 py-2 border border-slate-300 rounded-none text-xs font-medium text-slate-700 bg-white outline-none focus:border-sky-500"
+                >
+                  <option value="all">All Module Types</option>
+                  <option value="core">Core Platform Modules</option>
+                  <option value="custom">Custom Modules Only</option>
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetchSystemModules();
+                    fetchData();
+                  }}
+                  className="p-2 border border-slate-300 hover:bg-slate-50 text-slate-600 rounded-none transition-colors"
+                  title="Refresh Modules"
+                >
+                  <RefreshCw className={`w-4 h-4 ${loadingModules ? 'animate-spin' : ''}`} />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateModuleForm({ name: '', key: '', category: 'Workforce Management', description: '' });
+                    setShowCreateModuleModal(true);
+                  }}
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add New Module
+                </button>
+              </div>
+            </div>
+
+            {/* Explanatory Notice */}
+            <div className="p-2.5 bg-sky-50/60 border border-sky-200 text-sky-900 text-xs flex items-start gap-2">
+              <Sliders className="w-4 h-4 shrink-0 text-sky-600 mt-0.5" />
+              <div>
+                <span className="font-bold">Module Provisioning Rules:</span> Any new module registered here will automatically appear in every company's module configuration list with access set to <strong className="text-rose-700">OFF (disabled)</strong> by default. Companies only gain access when Super Admin enables it.
+              </div>
+            </div>
+          </div>
+
+          {/* Modules Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {effectiveModules
+              .filter(m => {
+                if (moduleCategoryFilter !== 'all' && m.category !== moduleCategoryFilter) return false;
+                if (moduleTypeFilter === 'core' && !m.is_core) return false;
+                if (moduleTypeFilter === 'custom' && m.is_core) return false;
+                if (moduleSearch.trim()) {
+                  const q = moduleSearch.toLowerCase();
+                  return (
+                    m.label.toLowerCase().includes(q) ||
+                    m.key.toLowerCase().includes(q) ||
+                    (m.desc && m.desc.toLowerCase().includes(q)) ||
+                    (m.category && m.category.toLowerCase().includes(q))
+                  );
+                }
+                return true;
+              })
+              .map(m => {
+                const totalComp = m.total_companies || (systemModules[0]?.total_companies || allCompaniesList.length || companies.length || 1);
+                const enabledComp = m.enabled_companies || 0;
+                const disabledComp = m.disabled_companies !== undefined ? m.disabled_companies : Math.max(0, totalComp - enabledComp);
+                const adoptionRate = totalComp > 0 ? Math.round((enabledComp / totalComp) * 100) : 0;
+
+                return (
+                  <div
+                    key={m.key}
+                    className="bg-white border-2 border-slate-200 hover:border-sky-300 p-5 shadow-sm hover:shadow transition-all flex flex-col justify-between"
+                  >
+                    <div className="space-y-3">
+                      {/* Top Header of Card */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200">
+                              {m.category || 'General'}
+                            </span>
+                            {m.is_core ? (
+                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-sky-100 text-sky-800 border border-sky-200">
+                                Core Module
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-purple-100 text-purple-800 border border-purple-200">
+                                Custom (Default OFF)
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="font-bold text-sm text-slate-900 leading-snug pt-1">
+                            {m.label}
+                          </h4>
+                          <code className="inline-block text-[11px] font-mono text-slate-500 bg-slate-50 px-1.5 py-0.5 border border-slate-200">
+                            {m.key}
+                          </code>
+                        </div>
+
+                        {!m.is_core && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const orig = systemModules.find(sm => sm.module_key === m.key) || m;
+                                setModuleToEdit(orig);
+                                setEditModuleForm({
+                                  name: orig.name || orig.label,
+                                  category: orig.category || 'Custom',
+                                  description: orig.description || orig.desc || '',
+                                  is_active: orig.is_active !== undefined ? orig.is_active : 1
+                                });
+                                setShowEditModuleModal(true);
+                              }}
+                              className="p-1 text-slate-400 hover:text-sky-600 hover:bg-slate-100"
+                              title="Edit Custom Module"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const orig = systemModules.find(sm => sm.module_key === m.key) || m;
+                                setModuleToDelete(orig);
+                                setShowDeleteModuleModal(true);
+                              }}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                              title="Delete Custom Module"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Description */}
+                      <p className="text-xs text-slate-600 leading-relaxed min-h-[38px]">
+                        {m.desc || 'No description available.'}
+                      </p>
+
+                      {/* Adoption / Company Access Metrics */}
+                      <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-700">Company Access:</span>
+                          <span className="font-mono text-slate-600 font-bold">
+                            {enabledComp}/{totalComp} Active ({adoptionRate}%)
+                          </span>
+                        </div>
+
+                        {/* Adoption Progress Bar */}
+                        <div className="w-full bg-slate-100 h-2 overflow-hidden border border-slate-200">
+                          <div
+                            className={`h-full transition-all duration-300 ${
+                              adoptionRate === 100
+                                ? 'bg-emerald-500'
+                                : adoptionRate > 0
+                                ? 'bg-sky-500'
+                                : 'bg-slate-300'
+                            }`}
+                            style={{ width: `${adoptionRate}%` }}
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5">
+                          <span className="flex items-center gap-1 text-emerald-700 font-semibold">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            {enabledComp} Enabled
+                          </span>
+                          <span className="flex items-center gap-1 text-slate-500">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                            {disabledComp} Disabled (OFF)
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const orig = systemModules.find(sm => sm.module_key === m.key) || m;
+                          setSelectedModuleForAccess(orig);
+                          setShowCompanyAccessModal(true);
+                        }}
+                        className="w-full py-2 px-3 bg-slate-100 hover:bg-sky-600 hover:text-white text-slate-800 text-xs font-bold flex items-center justify-center gap-2 transition-all uppercase tracking-wide border border-slate-200 hover:border-sky-600"
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                        <span>Manage Company Access</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}
@@ -4131,8 +4727,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto pr-1">
-              {AVAILABLE_MODULES.map((m) => {
-                const isEnabled = selectedCompanyModules.modules[m.key] !== false;
+              {effectiveModules.map((m) => {
+                const isEnabled = selectedCompanyModules.modules[m.key] === true || selectedCompanyModules.modules[m.key] === 1;
                 return (
                   <div
                     key={m.key}
@@ -4144,14 +4740,23 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     }`}
                   >
                     <div className="space-y-1 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-xs text-slate-800">{m.label}</span>
+                        {m.is_core ? (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 bg-slate-100 text-slate-600 uppercase tracking-wider">
+                            Core
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 bg-purple-100 text-purple-700 uppercase tracking-wider">
+                            Custom
+                          </span>
+                        )}
                         <span className={`text-[9px] font-bold px-1.5 py-0.5 uppercase tracking-wider ${
                           isEnabled
                             ? 'bg-emerald-100 text-emerald-800'
                             : 'bg-slate-200 text-slate-600'
                         }`}>
-                          {isEnabled ? 'Enabled' : 'Disabled'}
+                          {isEnabled ? 'Enabled' : 'Disabled (OFF)'}
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-500 leading-relaxed">{m.desc}</p>
@@ -4181,8 +4786,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
             <div className="flex items-center justify-between pt-3 border-t border-slate-200">
               <span className="text-xs text-slate-500">
                 Active Modules: <strong className="text-slate-800">
-                  {AVAILABLE_MODULES.filter(m => selectedCompanyModules.modules[m.key] !== false).length}
-                </strong> of {AVAILABLE_MODULES.length}
+                  {effectiveModules.filter(m => selectedCompanyModules.modules[m.key] === true || selectedCompanyModules.modules[m.key] === 1).length}
+                </strong> of {effectiveModules.length}
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -4200,6 +4805,419 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   Save Module Settings
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CREATE NEW MODULE */}
+      {showCreateModuleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-none max-w-xl w-full p-6 shadow-2xl border-2 border-slate-300 space-y-4 my-8">
+            <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-5 h-5 text-sky-600" />
+                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                    Add New Platform Module
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Register a new module to extend system capabilities and tenant entitlements.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateModuleModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 font-bold text-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateModule} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Module Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Visitor Management System"
+                  value={createModuleForm.name}
+                  onChange={(e) => {
+                    const nameVal = e.target.value;
+                    const autoKey = nameVal.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+                    setCreateModuleForm(prev => ({
+                      ...prev,
+                      name: nameVal,
+                      key: prev.key === '' || prev.key === prev.name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') ? autoKey : prev.key
+                    }));
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Module Key (System Identifier) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. visitor_management"
+                  value={createModuleForm.key}
+                  onChange={(e) => {
+                    const clean = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                    setCreateModuleForm(prev => ({ ...prev, key: clean }));
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs font-mono focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+                <p className="text-[10px] text-slate-500 mt-1 font-mono">
+                  Unique programmatic slug (lowercase letters, numbers, and underscores).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Category
+                </label>
+                <select
+                  value={createModuleForm.category}
+                  onChange={(e) => setCreateModuleForm(prev => ({ ...prev, category: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none bg-white"
+                >
+                  <option value="Workforce Management">Workforce Management</option>
+                  <option value="Attendance & Time">Attendance & Time</option>
+                  <option value="Security & Compliance">Security & Compliance</option>
+                  <option value="Operations & Logistics">Operations & Logistics</option>
+                  <option value="Finance & Payroll">Finance & Payroll</option>
+                  <option value="AI & Intelligence">AI & Intelligence</option>
+                  <option value="Communication & Support">Communication & Support</option>
+                  <option value="Custom Extensions">Custom Extensions</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Description
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Explain what this module allows employees, managers, or company admins to do..."
+                  value={createModuleForm.description}
+                  onChange={(e) => setCreateModuleForm(prev => ({ ...prev, description: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+              </div>
+
+              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+                <span className="font-bold">Notice on Default Status:</span> This newly added module will immediately appear inside the company accounts rows and module configure button with access set to <strong className="text-rose-700">OFF (disabled)</strong> by default across all companies. Once you enable it for a company, that company will gain access.
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModuleModal(false)}
+                  className="px-4 py-2 border border-slate-300 rounded-none text-slate-700 hover:bg-slate-50 font-semibold text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingModule}
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none font-bold text-xs shadow-sm flex items-center gap-1.5 uppercase tracking-wider"
+                >
+                  {creatingModule ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5" />
+                      Create Module
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: MANAGE COMPANY ACCESS FOR A SPECIFIC MODULE */}
+      {showCompanyAccessModal && selectedModuleForAccess && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-none max-w-3xl w-full p-6 shadow-2xl border-2 border-slate-300 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+            <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-5 h-5 text-sky-600" />
+                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                    Company Entitlements: {selectedModuleForAccess.name || selectedModuleForAccess.label}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Module Key: <code className="font-mono text-slate-700 bg-slate-100 px-1">{selectedModuleForAccess.module_key || selectedModuleForAccess.key}</code> • Category: <strong className="text-slate-700">{selectedModuleForAccess.category}</strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCompanyAccessModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 font-bold text-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Quick Actions & Search */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-1">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Filter companies by name or code..."
+                  value={accessCompanySearch}
+                  onChange={(e) => setAccessCompanySearch(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleBatchToggleAccess(true)}
+                  disabled={togglingCompanyId !== null}
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 text-xs font-bold rounded-none transition-colors"
+                >
+                  Enable for All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBatchToggleAccess(false)}
+                  disabled={togglingCompanyId !== null}
+                  className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 text-xs font-bold rounded-none transition-colors"
+                >
+                  Disable for All
+                </button>
+              </div>
+            </div>
+
+            {/* Companies List */}
+            <div className="border border-slate-200 max-h-[50vh] overflow-y-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 text-slate-700 font-bold uppercase border-b border-slate-200 sticky top-0 z-10">
+                  <tr>
+                    <th className="p-2.5">Company Name & Code</th>
+                    <th className="p-2.5">Account Status</th>
+                    <th className="p-2.5 text-center">Module Access</th>
+                    <th className="p-2.5 text-right">Action Toggle</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {(selectedModuleForAccess.company_access || [])
+                    .filter(ca => {
+                      if (!accessCompanySearch.trim()) return true;
+                      const q = accessCompanySearch.toLowerCase();
+                      return (
+                        ca.name.toLowerCase().includes(q) ||
+                        ca.code.toLowerCase().includes(q)
+                      );
+                    })
+                    .map(ca => {
+                      const isEnabled = ca.is_enabled === true || ca.is_enabled === 1;
+                      const isTogglingThis = togglingCompanyId === ca.id;
+
+                      return (
+                        <tr key={ca.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="p-2.5">
+                            <div className="font-bold text-slate-800">{ca.name}</div>
+                            <span className="font-mono text-[11px] text-slate-500">{ca.code}</span>
+                          </td>
+                          <td className="p-2.5">
+                            <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${
+                              ca.status === 'active'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-slate-100 text-slate-600 border border-slate-200'
+                            }`}>
+                              {ca.status || 'Active'}
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-center">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded ${
+                              isEnabled
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}>
+                              {isEnabled ? 'Enabled (ON)' : 'Disabled (OFF)'}
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-right">
+                            <button
+                              type="button"
+                              disabled={isTogglingThis || togglingCompanyId === 'all'}
+                              onClick={() => handleToggleCompanyModuleAccess(ca.id, isEnabled)}
+                              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none ${
+                                isEnabled ? 'bg-emerald-600' : 'bg-slate-300'
+                              } ${isTogglingThis ? 'opacity-50 cursor-wait' : 'cursor-pointer'}`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                  isEnabled ? 'translate-x-6' : 'translate-x-1'
+                                }`}
+                              />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  {(!selectedModuleForAccess.company_access || selectedModuleForAccess.company_access.length === 0) && (
+                    <tr>
+                      <td colSpan={4} className="p-6 text-center text-slate-400 text-xs">
+                        No active companies found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+              <span className="text-xs text-slate-500">
+                Enabled for <strong className="text-slate-800">{selectedModuleForAccess.enabled_companies}</strong> of {selectedModuleForAccess.total_companies} companies
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowCompanyAccessModal(false)}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-none font-bold text-xs uppercase tracking-wider"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDIT CUSTOM MODULE */}
+      {showEditModuleModal && moduleToEdit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-none max-w-lg w-full p-6 shadow-2xl border-2 border-slate-300 space-y-4 my-8">
+            <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Edit3 className="w-5 h-5 text-sky-600" />
+                  <h3 className="text-base font-bold text-slate-900 uppercase tracking-wide">
+                    Edit Custom Module: {moduleToEdit.name || moduleToEdit.label}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Key: <code className="font-mono text-slate-700 bg-slate-100 px-1">{moduleToEdit.module_key || moduleToEdit.key}</code>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEditModuleModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 font-bold text-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateModule} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Module Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editModuleForm.name}
+                  onChange={(e) => setEditModuleForm(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Category
+                </label>
+                <input
+                  type="text"
+                  value={editModuleForm.category}
+                  onChange={(e) => setEditModuleForm(prev => ({ ...prev, category: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1">
+                  Description
+                </label>
+                <textarea
+                  rows={3}
+                  value={editModuleForm.description}
+                  onChange={(e) => setEditModuleForm(prev => ({ ...prev, description: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setShowEditModuleModal(false)}
+                  className="px-4 py-2 border border-slate-300 rounded-none text-slate-700 hover:bg-slate-50 font-semibold text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={updatingModule}
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none font-bold text-xs shadow-sm flex items-center gap-1.5 uppercase tracking-wider"
+                >
+                  {updatingModule ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DELETE CUSTOM MODULE CONFIRMATION */}
+      {showDeleteModuleModal && moduleToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-none max-w-md w-full p-6 shadow-2xl border-2 border-rose-300 space-y-4">
+            <div className="flex items-center gap-2.5 border-b border-rose-100 pb-3">
+              <div className="p-2 bg-rose-50 text-rose-600">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 uppercase">Delete Custom Module</h3>
+                <p className="text-xs text-slate-500 font-mono">{moduleToDelete.name || moduleToDelete.label} ({moduleToDelete.module_key || moduleToDelete.key})</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to permanently delete this custom module? This will remove the module and revoke access across all company accounts.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowDeleteModuleModal(false)}
+                className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50 font-semibold text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deletingModule}
+                onClick={handleDeleteModule}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-none font-bold text-xs shadow-sm flex items-center gap-1.5 uppercase tracking-wider"
+              >
+                {deletingModule ? 'Deleting...' : 'Delete Module'}
+              </button>
             </div>
           </div>
         </div>

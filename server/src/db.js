@@ -148,4 +148,55 @@ try {
   console.warn('Permanent demo purge notice:', e.message);
 }
 
+
+// Master System Modules Registry Table & Auto-Seeding
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_modules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      module_key TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT DEFAULT 'General',
+      is_core INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  const modCount = db.prepare('SELECT COUNT(*) as count FROM system_modules').get().count;
+  if (modCount === 0) {
+    const DEFAULT_MODULES = [
+      { key: 'employees', name: 'Dynamic Form of Employee & Staff', desc: 'Employee onboarding, dynamic staff profiles, and personnel management', category: 'Core HR', is_core: 1 },
+      { key: 'mapping', name: 'Employee Mapping & Supervisors', desc: 'Hierarchy mapping and multi-level manager assignments', category: 'Core HR', is_core: 1 },
+      { key: 'attendance_punch', name: 'Attendance Punch Feature', desc: 'GPS mobile & desktop attendance punch clock for general staff', category: 'Attendance', is_core: 1 },
+      { key: 'manager_punch', name: 'Manager Attendance Punch', desc: 'Enable attendance punch features directly for team managers', category: 'Attendance', is_core: 1 },
+      { key: 'corrections', name: 'Attendance Approvals & Corrections', desc: 'Attendance correction requests, approval workflows, and audit records', category: 'Attendance', is_core: 1 },
+      { key: 'leave_management', name: 'Leave Management & Balances', desc: 'Leave requests, quota tracking, and balance deduction', category: 'Leave & Holidays', is_core: 1 },
+      { key: 'geofencing', name: 'Geofencing Master', desc: 'Office boundary geofencing, radius enforcement, and GPS verification', category: 'Attendance', is_core: 1 },
+      { key: 'shift_management', name: 'Shift Management & Rotational', desc: 'Shift scheduling, rotational assignments, and working hours', category: 'Attendance', is_core: 1 },
+      { key: 'holidays', name: 'Holidays & Weekly Off', desc: 'Company holiday master calendar, public holidays, and weekly off policies', category: 'Leave & Holidays', is_core: 1 },
+      { key: 'live_tracking', name: 'Live Tracking & Route Map', desc: 'Real-time location map, staff movement tracking, and breadcrumb trails', category: 'Tracking', is_core: 1 },
+      { key: 'tickets', name: 'Helpdesk & Support Tickets', desc: 'Employee issue reporting, service requests, and resolution chat', category: 'Support', is_core: 1 },
+      { key: 'calendar', name: 'Company Calendar', desc: 'Unified company events, employee milestones, and attendance calendar', category: 'General', is_core: 1 },
+      { key: 'reports', name: 'Custom Reports & Export', desc: 'Dynamic Excel, PDF matrix export, and historical attendance reports', category: 'Reports', is_core: 1 },
+      { key: 'payroll', name: 'Payroll Module', desc: 'Salary slip generation, payroll calculation, and compensation data', category: 'Finance', is_core: 1 },
+      { key: 'ai_assistant', name: 'Pihu AI Assistant', desc: 'Universal AI Assistant for Employee, Manager, and Company Admin panels', category: 'AI Tools', is_core: 1 },
+      { key: 'device_binding', name: '1-Device MAC Address Lock', desc: 'Enforce single device policy per employee with hardware MAC address binding and de-registration tickets', category: 'Security', is_core: 1 },
+    ];
+
+    const insertMod = db.prepare(`
+      INSERT INTO system_modules (module_key, name, description, category, is_core, is_active)
+      VALUES (?, ?, ?, ?, ?, 1)
+    `);
+
+    for (const m of DEFAULT_MODULES) {
+      insertMod.run(m.key, m.name, m.desc, m.category, m.is_core);
+    }
+  }
+} catch (e) {
+  console.warn('system_modules init notice:', e.message);
+}
+
 module.exports = db;
