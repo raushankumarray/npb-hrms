@@ -977,6 +977,8 @@ async function syncShift(shift) {
       workingHours: shift.working_hours || shift.workingHours || 8.0,
       graceTimeMins: shift.grace_time_mins || shift.graceTimeMins || 15,
       breakTimeMins: shift.break_time_mins || shift.breakTimeMins || 60,
+      isRotational: shift.is_rotational ? 1 : 0,
+      is_rotational: shift.is_rotational ? 1 : 0,
       status: shift.status || 'active',
       syncedAt: new Date().toISOString()
     };
@@ -993,8 +995,53 @@ async function syncShift(shift) {
   }
 }
 
+async function syncRotationalShift(rotShift) {
+  if (!firebaseStatus.connected || !rotShift) return null;
+  try {
+    const compId = rotShift.company_id || rotShift.companyId;
+    const payload = {
+      id: rotShift.id,
+      companyId: compId,
+      company_id: compId,
+      name: rotShift.name,
+      cycleType: rotShift.cycle_type || rotShift.cycleType || 'weekly',
+      shiftOrderJson: typeof rotShift.shift_order_json === 'string' ? rotShift.shift_order_json : JSON.stringify(rotShift.shift_order || []),
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('rotational_shifts').doc(String(rotShift.id)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`rotational_shifts/${compId}/${rotShift.id}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncRotationalShift error:', err.message);
+    return false;
+  }
+}
+
+async function deleteRotationalShift(id, companyId) {
+  if (!firebaseStatus.connected) return null;
+  try {
+    const strId = String(id);
+    if (firestoreDb) {
+      await firestoreDb.collection('rotational_shifts').doc(strId).delete().catch(() => {});
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`rotational_shifts/${strId}`).remove().catch(() => {});
+      if (companyId) {
+        await realtimeDb.ref(`rotational_shifts/${companyId}/${strId}`).remove().catch(() => {});
+      }
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 /**
- * Real-time sync: Geofencing Data
+ * Real-time sync: Geofencing Data & Assignments
  */
 async function syncGeofence(geofence) {
   if (!firebaseStatus.connected || !geofence) return null;
@@ -1022,6 +1069,49 @@ async function syncGeofence(geofence) {
     return true;
   } catch (err) {
     console.warn('Firebase syncGeofence error:', err.message);
+    return false;
+  }
+}
+
+async function syncGeofenceAssignment(assignment) {
+  if (!firebaseStatus.connected || !assignment) return null;
+  try {
+    const gId = assignment.geofence_id || assignment.geofenceId;
+    const eId = assignment.employee_id || assignment.employeeId;
+    const key = `${gId}_${eId}`;
+    const payload = {
+      id: assignment.id || key,
+      geofenceId: gId,
+      geofence_id: gId,
+      employeeId: eId,
+      employee_id: eId,
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('geofence_assignments').doc(key).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`geofence_assignments/${gId}/${eId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncGeofenceAssignment error:', err.message);
+    return false;
+  }
+}
+
+async function deleteGeofenceAssignment(geofenceId, employeeId) {
+  if (!firebaseStatus.connected) return null;
+  try {
+    const key = `${geofenceId}_${employeeId}`;
+    if (firestoreDb) {
+      await firestoreDb.collection('geofence_assignments').doc(key).delete().catch(() => {});
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`geofence_assignments/${geofenceId}/${employeeId}`).remove().catch(() => {});
+    }
+    return true;
+  } catch (err) {
     return false;
   }
 }
@@ -1411,6 +1501,9 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
       }
       if (realtimeDb) {
         await realtimeDb.ref(`${entityType}/${strId}`).remove().catch(() => {});
+        if (extra && extra.companyId) {
+          await realtimeDb.ref(`${entityType}/${extra.companyId}/${strId}`).remove().catch(() => {});
+        }
       }
     }
     return true;
@@ -1460,12 +1553,17 @@ async function syncAllDatabaseToFirebase() {
       usersCount++;
     }
 
-    // 3. Sync all shifts, weekly offs, holidays, and geofences
+    // 3. Sync all shifts, rotational shifts, weekly offs, holidays, and geofences
     let shiftsCount = 0;
     const shifts = db.prepare('SELECT * FROM shifts').all();
     for (const s of shifts) {
       await syncShift(s);
       shiftsCount++;
+    }
+
+    const rotationalShifts = db.prepare('SELECT * FROM rotational_shifts').all();
+    for (const rs of rotationalShifts) {
+      await syncRotationalShift(rs);
     }
 
     let weeklyOffsCount = 0;
@@ -1487,6 +1585,11 @@ async function syncAllDatabaseToFirebase() {
     for (const g of geofences) {
       await syncGeofence(g);
       geofencesCount++;
+    }
+
+    const geofenceAssignments = db.prepare('SELECT * FROM geofence_assignments').all();
+    for (const ga of geofenceAssignments) {
+      await syncGeofenceAssignment(ga);
     }
 
     // 4. Sync all active employees
@@ -1513,7 +1616,7 @@ async function syncAllDatabaseToFirebase() {
     }
     const leaveBalances = db.prepare('SELECT * FROM leave_balances').all();
     for (const lb of leaveBalances) {
-      await syncLeaveBalance(lb.employee_id, lb.leave_type_id);
+      await syncLeaveBalance(lb);
     }
     const leaveRequests = db.prepare('SELECT * FROM leave_requests').all();
     for (const lr of leaveRequests) {
@@ -1986,9 +2089,11 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     let employeesMap = new Map();
     let attendanceMap = new Map();
     let shiftsMap = new Map();
+    let rotationalShiftsMap = new Map();
     let weeklyOffsMap = new Map();
     let holidaysMap = new Map();
     let geofencesMap = new Map();
+    let geofenceAssignmentsMap = new Map();
     let mappingsMap = new Map();
     let leaveTypesMap = new Map();
     let leaveBalancesMap = new Map();
@@ -2020,9 +2125,11 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchFsCollection('users', usersMap);
       await fetchFsCollection('employees', employeesMap);
       await fetchFsCollection('shifts', shiftsMap);
+      await fetchFsCollection('rotational_shifts', rotationalShiftsMap);
       await fetchFsCollection('weekly_off_settings', weeklyOffsMap);
       await fetchFsCollection('holidays', holidaysMap);
       await fetchFsCollection('geofences', geofencesMap);
+      await fetchFsCollection('geofence_assignments', geofenceAssignmentsMap);
       await fetchFsCollection('employee_mappings', mappingsMap);
       await fetchFsCollection('leave_types', leaveTypesMap);
       await fetchFsCollection('leave_balances', leaveBalancesMap);
@@ -2093,9 +2200,11 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchRtDbCollection('users', usersMap);
       await fetchRtDbCollection('employees', employeesMap);
       await fetchRtDbCollection('shifts', shiftsMap);
+      await fetchRtDbCollection('rotational_shifts', rotationalShiftsMap);
       await fetchRtDbCollection('weekly_off_settings', weeklyOffsMap);
       await fetchRtDbCollection('holidays', holidaysMap);
       await fetchRtDbCollection('geofences', geofencesMap);
+      await fetchRtDbCollection('geofence_assignments', geofenceAssignmentsMap);
       await fetchRtDbCollection('employee_mappings', mappingsMap);
       await fetchRtDbCollection('leave_types', leaveTypesMap);
       await fetchRtDbCollection('leave_balances', leaveBalancesMap);
@@ -2665,6 +2774,46 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
+      // Phase 3b: Restore Rotational Shifts
+      for (const [docKey, rs] of rotationalShiftsMap) {
+        let rawCompId = rs.companyId || rs.company_id;
+        let compId = rawCompId ? (companyIdMap.get(String(rawCompId)) || Number(rawCompId)) : null;
+        if (compId && claimedCompanyIds.has(compId) && rs.name) {
+          const rsName = String(rs.name).trim();
+          const cycleType = rs.cycleType || rs.cycle_type || 'weekly';
+          const shiftOrder = typeof rs.shiftOrderJson === 'string' ? rs.shiftOrderJson : (typeof rs.shift_order_json === 'string' ? rs.shift_order_json : JSON.stringify(rs.shift_order || []));
+
+          const existingRs = db.prepare('SELECT id FROM rotational_shifts WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, rsName);
+          if (existingRs) {
+            db.prepare(`
+              UPDATE rotational_shifts SET cycle_type = ?, shift_order_json = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(cycleType, shiftOrder, existingRs.id);
+          } else {
+            let targetRsId = (!isNaN(Number(rs.id)) && Number(rs.id) > 0) ? Number(rs.id) : null;
+            let canUseId = (targetRsId && !db.prepare('SELECT id FROM rotational_shifts WHERE id = ?').get(targetRsId));
+            if (canUseId) {
+              try {
+                db.prepare(`
+                  INSERT INTO rotational_shifts (id, company_id, name, cycle_type, shift_order_json)
+                  VALUES (?, ?, ?, ?, ?)
+                `).run(targetRsId, compId, rsName, cycleType, shiftOrder);
+              } catch (e) {
+                db.prepare(`
+                  INSERT INTO rotational_shifts (company_id, name, cycle_type, shift_order_json)
+                  VALUES (?, ?, ?, ?)
+                `).run(compId, rsName, cycleType, shiftOrder);
+              }
+            } else {
+              db.prepare(`
+                INSERT INTO rotational_shifts (company_id, name, cycle_type, shift_order_json)
+                VALUES (?, ?, ?, ?)
+              `).run(compId, rsName, cycleType, shiftOrder);
+            }
+          }
+        }
+      }
+
       // Phase 4: Restore Holidays & Geofences (ONLY for companies present in Firebase!)
       for (const [_, h] of holidaysMap) {
         let rawCompId = h.companyId || h.company_id;
@@ -2737,6 +2886,21 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
+      // Phase 4b: Restore Geofence Assignments
+      for (const [_, ga] of geofenceAssignmentsMap) {
+        let gId = ga.geofenceId || ga.geofence_id;
+        if (gId) gId = geofenceIdMap.get(String(gId)) || Number(gId);
+        let eId = ga.employeeId || ga.employee_id;
+        if (eId) eId = employeeIdMap.get(String(eId)) || Number(eId);
+        if (gId && eId) {
+          const gExists = db.prepare('SELECT id FROM geofences WHERE id = ?').get(gId);
+          const eExists = db.prepare('SELECT id FROM employees WHERE id = ?').get(eId);
+          if (gExists && eExists) {
+            db.prepare('INSERT OR IGNORE INTO geofence_assignments (geofence_id, employee_id) VALUES (?, ?)').run(gId, eId);
+          }
+        }
+      }
+
       // Phase 5: Restore Leave Types (ONLY for companies present in Firebase!)
       for (const [docKey, lt] of leaveTypesMap) {
         let rawCompId = lt.companyId || lt.company_id;
@@ -2744,7 +2908,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (compId && claimedCompanyIds.has(compId) && lt.name) {
           const ltName = String(lt.name).trim();
           const quota = Number(lt.defaultYearlyQuota || lt.default_yearly_quota || 12.0);
-          const accrual = Number(lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.0);
+          const isCl = ltName.toLowerCase().includes('casual') || ltName.toUpperCase() === 'CL' || ltName.toUpperCase().includes('(CL)');
+          const accrual = isCl ? 0.0 : Number(lt.monthlyAccrualRate || lt.monthly_accrual_rate || 1.25);
 
           let targetLtId = (!isNaN(Number(lt.id)) && Number(lt.id) > 0) ? Number(lt.id) : null;
           const existingLt = db.prepare('SELECT id FROM leave_types WHERE company_id = ? AND LOWER(name) = LOWER(?)').get(compId, ltName);
@@ -3490,7 +3655,11 @@ module.exports = {
   syncHoliday,
   syncWeeklyOff,
   syncShift,
+  syncRotationalShift,
+  deleteRotationalShift,
   syncGeofence,
+  syncGeofenceAssignment,
+  deleteGeofenceAssignment,
   syncCompanySettings,
   syncCompanyModules,
   syncSupportTicket,

@@ -318,11 +318,40 @@ export default function ManagerPanel({ user, company, activeTab }) {
   useEffect(() => {
     fetchData();
 
+    let attSyncChannel = null;
+    let leaveSyncChannel = null;
+    try {
+      attSyncChannel = new BroadcastChannel('npb_hrms_attendance_sync');
+      attSyncChannel.onmessage = () => {
+        fetchData();
+      };
+    } catch (e) {}
+
+    try {
+      leaveSyncChannel = new BroadcastChannel('npb_hrms_leave_sync');
+      leaveSyncChannel.onmessage = () => {
+        fetchData();
+      };
+    } catch (e) {}
+
+    const handleStorageChange = (e) => {
+      if (e.key === 'hrms_attendance_updated' || e.key === 'hrms_leave_updated' || e.key === 'hrms_sync_timestamp') {
+        fetchData();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
     const handleMasterRefresh = () => {
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
-    return () => window.removeEventListener('master-refresh', handleMasterRefresh);
+
+    return () => {
+      if (attSyncChannel) attSyncChannel.close();
+      if (leaveSyncChannel) leaveSyncChannel.close();
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('master-refresh', handleMasterRefresh);
+    };
   }, [activeTab, page, pageSize, roleFilter, statusFilter, cityFilter, searchQuery]);
 
   const handleAddEmployee = async (e) => {

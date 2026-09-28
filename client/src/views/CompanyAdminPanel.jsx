@@ -351,11 +351,40 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   useEffect(() => {
     fetchData();
 
+    let attSyncChannel = null;
+    let leaveSyncChannel = null;
+    try {
+      attSyncChannel = new BroadcastChannel('npb_hrms_attendance_sync');
+      attSyncChannel.onmessage = () => {
+        fetchData();
+      };
+    } catch (e) {}
+
+    try {
+      leaveSyncChannel = new BroadcastChannel('npb_hrms_leave_sync');
+      leaveSyncChannel.onmessage = () => {
+        fetchData();
+      };
+    } catch (e) {}
+
+    const handleStorageChange = (e) => {
+      if (e.key === 'hrms_attendance_updated' || e.key === 'hrms_leave_updated' || e.key === 'hrms_sync_timestamp') {
+        fetchData();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
     const handleMasterRefresh = () => {
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
-    return () => window.removeEventListener('master-refresh', handleMasterRefresh);
+
+    return () => {
+      if (attSyncChannel) attSyncChannel.close();
+      if (leaveSyncChannel) leaveSyncChannel.close();
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('master-refresh', handleMasterRefresh);
+    };
   }, [activeTab, roleFilter, statusFilter, cityFilter, page, pageSize, searchQuery]);
 
   // Open modal pre-configured for Employee or Manager
@@ -609,6 +638,17 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     }
   };
 
+  // Cross-tab broadcast notifier for instant sync across Employee & Manager panels
+  const broadcastLeaveUpdate = () => {
+    try {
+      new BroadcastChannel('npb_hrms_leave_sync').postMessage({ type: 'LEAVE_UPDATED', timestamp: Date.now() });
+      new BroadcastChannel('npb_hrms_attendance_sync').postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+    } catch (e) {}
+    localStorage.setItem('hrms_leave_updated', String(Date.now()));
+    localStorage.setItem('hrms_attendance_updated', String(Date.now()));
+    window.dispatchEvent(new CustomEvent('master-refresh'));
+  };
+
   // Master Apply Policy Handler (Sets CL annual quota and EL monthly accrual rate for all employees)
   const handleMasterLeaveApply = async (e) => {
     e?.preventDefault();
@@ -625,6 +665,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       });
       setSuccess(res.message);
       fetchData();
+      broadcastLeaveUpdate();
     } catch (err) {
       setError(err.message || 'Failed to apply master leave policy');
     } finally {
@@ -642,6 +683,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       });
       setSuccess(res.message);
       fetchData();
+      broadcastLeaveUpdate();
     } catch (err) {
       setError(err.message);
     }
@@ -666,6 +708,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       setSuccess(res.message);
       setShowManualLeaveModal(false);
       fetchData();
+      broadcastLeaveUpdate();
     } catch (err) {
       setError(err.message);
     }
@@ -691,6 +734,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       setSuccess(res.message);
       setShowDeleteLeaveModal(false);
       fetchData();
+      broadcastLeaveUpdate();
     } catch (err) {
       setError(err.message || 'Failed to delete/deduct leave.');
     } finally {

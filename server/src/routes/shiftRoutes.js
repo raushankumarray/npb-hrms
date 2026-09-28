@@ -4,7 +4,14 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { syncShift, syncWeeklyOff, deleteFromFirebase } = require('../services/firebase');
+const {
+  syncShift,
+  syncRotationalShift,
+  deleteRotationalShift,
+  syncWeeklyOff,
+  syncEmployee,
+  deleteFromFirebase
+} = require('../services/firebase');
 
 // List Shifts, Employee Assignments & Weekly Offs for Company
 router.get('/', verifyAuth, (req, res) => {
@@ -184,7 +191,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
   transaction();
 
   try {
-    deleteFromFirebase('shifts', shiftId);
+    deleteFromFirebase('shifts', shiftId, { companyId });
   } catch (e) {}
 
   res.json({ success: true, message: `Shift "${existing.name}" deleted successfully.` });
@@ -278,6 +285,14 @@ router.post('/assign', verifyAuth, requireRole(['company_admin', 'super_admin'])
   });
 
   const count = transaction();
+
+  // Instant dual-write to Firebase for updated employee shift assignments
+  try {
+    for (const empId of employee_ids) {
+      const eRow = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(empId);
+      if (eRow) syncEmployee(eRow);
+    }
+  } catch (e) {}
 
   res.json({
     success: true,
@@ -415,6 +430,16 @@ router.post('/employee-weekly-off', verifyAuth, requireRole(['company_admin', 's
 
   const result = transaction();
 
+  // Real-time Firebase Sync for updated weekly off settings and affected employees
+  try {
+    const wRow = db.prepare('SELECT * FROM weekly_off_settings WHERE id = ?').get(result.weeklyOffId);
+    if (wRow) syncWeeklyOff(wRow);
+    const affectedEmps = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.company_id = ? AND e.weekly_off_id = ?').all(companyId, result.weeklyOffId);
+    for (const emp of affectedEmps) {
+      syncEmployee(emp);
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     weeklyOffId: result.weeklyOffId,
@@ -455,6 +480,62 @@ router.post('/weekly-off', verifyAuth, requireRole(['company_admin', 'super_admi
   } catch (e) {}
 
   res.json({ success: true, weeklyOffId: id, message: 'Weekly off configured successfully.' });
+});
+
+// Rotational Shifts Management
+router.post('/rotational', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
+  const companyId = getTenantCompanyId(req);
+  const { name, cycle_type = 'weekly', shift_order_json } = req.body;
+
+  if (!name || !shift_order_json) {
+    return res.status(400).json({ error: 'Name and shift order are required.' });
+  }
+
+  const orderStr = typeof shift_order_json === 'string' ? shift_order_json : JSON.stringify(shift_order_json);
+  const result = db.prepare(`
+    INSERT INTO rotational_shifts (company_id, name, cycle_type, shift_order_json)
+    VALUES (?, ?, ?, ?)
+  `).run(companyId, name.trim(), cycle_type, orderStr);
+
+  const rsRow = db.prepare('SELECT * FROM rotational_shifts WHERE id = ?').get(result.lastInsertRowid);
+  if (rsRow) syncRotationalShift(rsRow);
+
+  res.status(201).json({ success: true, id: result.lastInsertRowid, message: 'Rotational shift created successfully.' });
+});
+
+router.put('/rotational/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = getTenantCompanyId(req);
+  const { name, cycle_type, shift_order_json } = req.body;
+
+  const existing = db.prepare('SELECT * FROM rotational_shifts WHERE id = ? AND company_id = ?').get(id, companyId);
+  if (!existing) return res.status(404).json({ error: 'Rotational shift not found.' });
+
+  const orderStr = shift_order_json !== undefined ? (typeof shift_order_json === 'string' ? shift_order_json : JSON.stringify(shift_order_json)) : existing.shift_order_json;
+
+  db.prepare(`
+    UPDATE rotational_shifts SET
+      name = COALESCE(?, name),
+      cycle_type = COALESCE(?, cycle_type),
+      shift_order_json = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND company_id = ?
+  `).run(name ? name.trim() : null, cycle_type || null, orderStr, id, companyId);
+
+  const rsRow = db.prepare('SELECT * FROM rotational_shifts WHERE id = ?').get(id);
+  if (rsRow) syncRotationalShift(rsRow);
+
+  res.json({ success: true, message: 'Rotational shift updated successfully.' });
+});
+
+router.delete('/rotational/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = getTenantCompanyId(req);
+
+  db.prepare('DELETE FROM rotational_shifts WHERE id = ? AND company_id = ?').run(id, companyId);
+  deleteRotationalShift(id, companyId);
+
+  res.json({ success: true, message: 'Rotational shift deleted successfully.' });
 });
 
 module.exports = router;

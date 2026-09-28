@@ -721,6 +721,12 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
     if (userRecord) {
       syncUser(userRecord).catch(() => {});
     }
+    if (finalManagerId) {
+      const mapRecord = db.prepare('SELECT * FROM employee_mappings WHERE manager_id = ? AND employee_id = ?').get(finalManagerId, empId);
+      if (mapRecord) syncEmployeeMapping(mapRecord).catch(() => {});
+    } else if (manager_id !== undefined) {
+      deleteEmployeeMapping(currentEmp.company_id, null, null, empId).catch(() => {});
+    }
   } catch (e) {}
 
   res.json({ success: true, message: 'Personnel updated successfully.' });

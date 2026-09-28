@@ -1,9 +1,18 @@
 const db = require('../db');
 
+// One-time startup migration: Ensure Casual Leave (CL) never has monthly auto-accrual
+try {
+  db.prepare(`
+    UPDATE leave_types
+    SET monthly_accrual_rate = 0.0
+    WHERE name LIKE '%Casual%' OR name = 'CL' OR UPPER(name) LIKE '%(CL)%'
+  `).run();
+} catch (e) {}
+
 /**
  * Ensures default leave types exist for a company:
- * - Casual Leave (CL): 12.0 days/year, monthly_accrual_rate = 1.0
- * - Earned Leave (EL): 15.0 days/year, monthly_accrual_rate = 1.25, carry forward enabled
+ * - Casual Leave (CL): 12.0 days/year, monthly_accrual_rate = 0.0 (NO monthly auto-credit)
+ * - Earned Leave (EL): 15.0 days/year, monthly_accrual_rate = 1.25, carry forward enabled (ONLY EL auto-credits monthly)
  */
 function ensureCompanyLeaveTypes(companyId) {
   if (!companyId) return { clType: null, elType: null };
@@ -13,7 +22,7 @@ function ensureCompanyLeaveTypes(companyId) {
     db.prepare("DELETE FROM leave_types WHERE company_id = ? AND name LIKE '%Paid Leave%'").run(companyId);
   } catch (e) {}
 
-  // 2. Ensure Casual Leave (CL) exists
+  // 2. Ensure Casual Leave (CL) exists (strictly monthly_accrual_rate = 0.0)
   let clType = db.prepare(`
     SELECT * FROM leave_types
     WHERE company_id = ? AND (name LIKE '%Casual%' OR name = 'CL' OR UPPER(name) LIKE '%(CL)%')
@@ -22,9 +31,12 @@ function ensureCompanyLeaveTypes(companyId) {
   if (!clType) {
     const res = db.prepare(`
       INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate, is_carry_forward, max_carry_forward)
-      VALUES (?, 'Casual Leave (CL)', 12.0, 1.0, 0, 0.0)
+      VALUES (?, 'Casual Leave (CL)', 12.0, 0.0, 0, 0.0)
     `).run(companyId);
     clType = db.prepare('SELECT * FROM leave_types WHERE id = ?').get(res.lastInsertRowid);
+  } else if (Number(clType.monthly_accrual_rate || 0) !== 0.0) {
+    db.prepare('UPDATE leave_types SET monthly_accrual_rate = 0.0 WHERE id = ?').run(clType.id);
+    clType.monthly_accrual_rate = 0.0;
   }
 
   // 3. Ensure Earned Leave (EL) exists

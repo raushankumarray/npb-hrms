@@ -642,6 +642,7 @@ Please deregister this device in Support Panel so I can register and log in on m
 
     // 3. Cross-Tab Instant Broadcast Sync
     let syncChannel = null;
+    let leaveSyncChannel = null;
     try {
       syncChannel = new BroadcastChannel('npb_hrms_attendance_sync');
       syncChannel.onmessage = (ev) => {
@@ -651,9 +652,33 @@ Please deregister this device in Support Panel so I can register and log in on m
       };
     } catch (e) {}
 
+    try {
+      leaveSyncChannel = new BroadcastChannel('npb_hrms_leave_sync');
+      leaveSyncChannel.onmessage = async (ev) => {
+        try {
+          const balRes = await apiRequest('/leave/balances');
+          setLeaveBalances(balRes.balances || []);
+          setAccrualHistory(balRes.accrualHistory || []);
+          const reqRes = await apiRequest('/leave/requests');
+          setLeaveRequests(reqRes.requests || []);
+        } catch (e) {}
+        fetchData();
+      };
+    } catch (e) {}
+
     // 4. Cross-Window LocalStorage Event Listener
-    const handleStorageChange = (e) => {
+    const handleStorageChange = async (e) => {
       if (e.key === 'hrms_attendance_updated') {
+        fetchData();
+      }
+      if (e.key === 'hrms_leave_updated') {
+        try {
+          const balRes = await apiRequest('/leave/balances');
+          setLeaveBalances(balRes.balances || []);
+          setAccrualHistory(balRes.accrualHistory || []);
+          const reqRes = await apiRequest('/leave/requests');
+          setLeaveRequests(reqRes.requests || []);
+        } catch (err) {}
         fetchData();
       }
     };
@@ -669,7 +694,12 @@ Please deregister this device in Support Panel so I can register and log in on m
     window.addEventListener('focus', fetchData);
 
     // 6. Master Refresh Custom Event Listener
-    const handleMasterRefresh = () => {
+    const handleMasterRefresh = async () => {
+      try {
+        const balRes = await apiRequest('/leave/balances');
+        setLeaveBalances(balRes.balances || []);
+        setAccrualHistory(balRes.accrualHistory || []);
+      } catch (e) {}
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
@@ -680,6 +710,7 @@ Please deregister this device in Support Panel so I can register and log in on m
       }
       clearInterval(syncInterval);
       if (syncChannel) syncChannel.close();
+      if (leaveSyncChannel) leaveSyncChannel.close();
       window.removeEventListener('storage', handleStorageChange);
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('focus', fetchData);
@@ -1064,6 +1095,12 @@ Please deregister this device in Support Panel so I can register and log in on m
         body: leaveForm
       });
       setSuccess('Leave application submitted successfully for approval.');
+      try {
+        localStorage.setItem('hrms_leave_updated', Date.now().toString());
+        const bc = new BroadcastChannel('npb_hrms_leave_sync');
+        bc.postMessage({ type: 'LEAVE_UPDATED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
       const tomorrow = new Date();
       setLeaveForm({
         leave_type_id: leaveBalances[0]?.leave_type_id || '',
@@ -1091,6 +1128,12 @@ Please deregister this device in Support Panel so I can register and log in on m
         method: 'POST'
       });
       setSuccess(res.message || 'Leave request cancelled successfully.');
+      try {
+        localStorage.setItem('hrms_leave_updated', Date.now().toString());
+        const bc = new BroadcastChannel('npb_hrms_leave_sync');
+        bc.postMessage({ type: 'LEAVE_UPDATED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
       const balRes = await apiRequest('/leave/balances');
       setLeaveBalances(balRes.balances || []);
       const reqRes = await apiRequest('/leave/requests');

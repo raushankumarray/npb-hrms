@@ -4,7 +4,15 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { syncGeofence, deleteFromFirebase, syncCompanySettings, syncCompanyModules } = require('../services/firebase');
+const {
+  syncGeofence,
+  syncGeofenceAssignment,
+  deleteGeofenceAssignment,
+  syncEmployee,
+  deleteFromFirebase,
+  syncCompanySettings,
+  syncCompanyModules
+} = require('../services/firebase');
 
 // List Geofences, Employee Assignments & Company Policy
 router.get('/', verifyAuth, (req, res) => {
@@ -205,6 +213,19 @@ router.post('/bulk-assign', verifyAuth, requireRole(['company_admin', 'super_adm
 
   transaction();
 
+  // Instant dual-write to Firebase for updated employee geofence modes and assignments
+  try {
+    for (const empId of employee_ids) {
+      const eRow = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(empId);
+      if (eRow) syncEmployee(eRow);
+      if (!isAnywhere && targetGeofence) {
+        syncGeofenceAssignment({ geofence_id: targetGeofence.id, employee_id: empId });
+      } else {
+        deleteGeofenceAssignment(geofence_id, empId);
+      }
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     count: employee_ids.length,
@@ -258,6 +279,11 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req
   try {
     const gfRow = db.prepare('SELECT * FROM geofences WHERE id = ?').get(createdId);
     if (gfRow) syncGeofence(gfRow);
+    if (Array.isArray(employee_ids)) {
+      for (const eId of employee_ids) {
+        syncGeofenceAssignment({ geofence_id: createdId, employee_id: eId });
+      }
+    }
   } catch (e) {}
 
   res.status(201).json({ success: true, geofenceId: createdId, message: 'Geofence location created successfully.' });
@@ -319,6 +345,11 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (r
   try {
     const gfRow = db.prepare('SELECT * FROM geofences WHERE id = ?').get(gfId);
     if (gfRow) syncGeofence(gfRow);
+    if (Array.isArray(employee_ids)) {
+      for (const eId of employee_ids) {
+        syncGeofenceAssignment({ geofence_id: gfId, employee_id: eId });
+      }
+    }
   } catch (e) {}
 
   res.json({ success: true, message: 'Geofence updated successfully.' });
@@ -344,7 +375,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
   });
 
   try {
-    deleteFromFirebase('geofences', gfId);
+    deleteFromFirebase('geofences', gfId, { companyId });
   } catch (e) {}
 
   res.json({ success: true, message: 'Geofence deleted successfully.' });

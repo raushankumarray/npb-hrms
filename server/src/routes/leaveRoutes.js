@@ -18,8 +18,10 @@ router.get('/types', verifyAuth, (req, res) => {
   if (!cl) {
     db.prepare(`
       INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate, is_carry_forward, max_carry_forward)
-      VALUES (?, 'Casual Leave (CL)', 12.0, 1.0, 0, 0.0)
+      VALUES (?, 'Casual Leave (CL)', 12.0, 0.0, 0, 0.0)
     `).run(companyId);
+  } else if (Number(cl.monthly_accrual_rate || 0) !== 0.0) {
+    db.prepare("UPDATE leave_types SET monthly_accrual_rate = 0.0 WHERE id = ?").run(cl.id);
   }
 
   let el = db.prepare("SELECT * FROM leave_types WHERE company_id = ? AND (name LIKE '%Earned%' OR name = 'EL')").get(companyId);
@@ -51,17 +53,21 @@ router.post('/master-apply', verifyAuth, requireRole(['company_admin', 'super_ad
   // Clean up Paid Leave
   db.prepare("DELETE FROM leave_types WHERE company_id = ? AND name LIKE '%Paid Leave%'").run(companyId);
 
+  let clType = null;
+  let elType = null;
+  let affectedEmployees = [];
+
   const transaction = db.transaction(() => {
-    // 1. Update/Insert Casual Leave (CL)
+    // 1. Update/Insert Casual Leave (CL) - strictly 0.0 monthly accrual
     db.prepare(`
       INSERT INTO leave_types (company_id, name, default_yearly_quota, monthly_accrual_rate, is_carry_forward, max_carry_forward)
-      VALUES (?, 'Casual Leave (CL)', ?, 1.0, 0, 0.0)
+      VALUES (?, 'Casual Leave (CL)', ?, 0.0, 0, 0.0)
       ON CONFLICT(company_id, name) DO UPDATE SET
         default_yearly_quota = excluded.default_yearly_quota,
-        monthly_accrual_rate = 1.0
+        monthly_accrual_rate = 0.0
     `).run(companyId, clQuota);
 
-    const clType = db.prepare("SELECT id FROM leave_types WHERE company_id = ? AND (name LIKE '%Casual%' OR name = 'CL')").get(companyId);
+    clType = db.prepare("SELECT * FROM leave_types WHERE company_id = ? AND (name LIKE '%Casual%' OR name = 'CL')").get(companyId);
 
     // 2. Update/Insert Earned Leave (EL)
     db.prepare(`
@@ -72,10 +78,10 @@ router.post('/master-apply', verifyAuth, requireRole(['company_admin', 'super_ad
         monthly_accrual_rate = excluded.monthly_accrual_rate
     `).run(companyId, elRate * 12, elRate);
 
-    const elType = db.prepare("SELECT id FROM leave_types WHERE company_id = ? AND (name LIKE '%Earned%' OR name = 'EL')").get(companyId);
+    elType = db.prepare("SELECT * FROM leave_types WHERE company_id = ? AND (name LIKE '%Earned%' OR name = 'EL')").get(companyId);
 
     // 3. Batch apply to all active employees in the company
-    const employees = db.prepare(`
+    affectedEmployees = db.prepare(`
       SELECT id, full_name FROM employees
       WHERE company_id = ? AND status = 'active' AND is_deleted = 0
     `).all(companyId);
@@ -101,7 +107,7 @@ router.post('/master-apply', verifyAuth, requireRole(['company_admin', 'super_ad
       ON CONFLICT(employee_id, leave_type_id, year) DO NOTHING
     `);
 
-    for (const emp of employees) {
+    for (const emp of affectedEmployees) {
       if (clType) {
         upsertClBalance.run(emp.id, clType.id, currentYear, clQuota, clQuota);
         insertTx.run(emp.id, clType.id, clQuota, clQuota, req.user.id);
@@ -119,14 +125,33 @@ router.post('/master-apply', verifyAuth, requireRole(['company_admin', 'super_ad
       panel: 'Leave Master Management',
       action: 'MASTER_LEAVE_POLICY_APPLIED',
       targetEntity: 'leave_types',
-      newValues: { clQuota, elRate, totalEmployeesAffected: employees.length },
-      reason: `Master leave policy applied: CL = ${clQuota} days/yr, EL = ${elRate} days/mo across ${employees.length} employees.`
+      newValues: { clQuota, elRate, totalEmployeesAffected: affectedEmployees.length },
+      reason: `Master leave policy applied: CL = ${clQuota} days/yr, EL = ${elRate} days/mo across ${affectedEmployees.length} employees.`
     });
 
-    return employees.length;
+    return affectedEmployees.length;
   });
 
   const affectedCount = transaction();
+
+  // Instant dual-write to Firebase for types and balances
+  try {
+    const { syncLeaveType, syncLeaveBalance } = require('../services/firebase');
+    if (clType && syncLeaveType) syncLeaveType(clType).catch(() => {});
+    if (elType && syncLeaveType) syncLeaveType(elType).catch(() => {});
+    if (syncLeaveBalance && affectedEmployees.length > 0) {
+      for (const emp of affectedEmployees) {
+        if (clType) {
+          const clBal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(emp.id, clType.id, currentYear);
+          if (clBal) syncLeaveBalance(clBal).catch(() => {});
+        }
+        if (elType) {
+          const elBal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(emp.id, elType.id, currentYear);
+          if (elBal) syncLeaveBalance(elBal).catch(() => {});
+        }
+      }
+    }
+  } catch (e) {}
 
   res.json({
     success: true,
@@ -874,6 +899,18 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
 
   transaction();
 
+  // Instant dual-write to Firebase for credited balances
+  try {
+    const { syncLeaveBalance } = require('../services/firebase');
+    if (syncLeaveBalance && targetEmployees.length > 0) {
+      for (const emp of targetEmployees) {
+        const balRow = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+          .get(emp.id, leaveType.id, currentYear);
+        if (balRow) syncLeaveBalance(balRow).catch(() => {});
+      }
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     message: `Successfully credited +${numDays} days (${cadence}-wise) of "${leaveType.name}" to ${targetEmployees.length} employee(s).`,
@@ -982,6 +1019,18 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
   });
 
   transaction();
+
+  // Instant dual-write to Firebase for deducted/reset balances
+  try {
+    const { syncLeaveBalance } = require('../services/firebase');
+    if (syncLeaveBalance && targetEmployees.length > 0) {
+      for (const emp of targetEmployees) {
+        const balRow = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+          .get(emp.id, leaveType.id, currentYear);
+        if (balRow) syncLeaveBalance(balRow).catch(() => {});
+      }
+    }
+  } catch (e) {}
 
   res.json({
     success: true,

@@ -155,7 +155,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
   db.prepare('DELETE FROM holidays WHERE id = ? AND company_id = ?').run(holidayId, companyId);
 
   try {
-    deleteFromFirebase('holidays', holidayId);
+    deleteFromFirebase('holidays', holidayId, { companyId });
   } catch (e) {}
 
   res.json({ success: true, message: 'Holiday removed successfully.' });

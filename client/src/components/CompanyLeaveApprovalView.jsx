@@ -52,11 +52,31 @@ export default function CompanyLeaveApprovalView({ role = 'company_admin', title
   useEffect(() => {
     fetchRequests();
 
+    let leaveSyncChannel = null;
+    try {
+      leaveSyncChannel = new BroadcastChannel('npb_hrms_leave_sync');
+      leaveSyncChannel.onmessage = () => {
+        fetchRequests();
+      };
+    } catch (e) {}
+
+    const handleStorageChange = (e) => {
+      if (e.key === 'hrms_leave_updated') {
+        fetchRequests();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
     const handleMasterRefresh = () => {
       fetchRequests();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
-    return () => window.removeEventListener('master-refresh', handleMasterRefresh);
+
+    return () => {
+      if (leaveSyncChannel) leaveSyncChannel.close();
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('master-refresh', handleMasterRefresh);
+    };
   }, [statusFilter]);
 
   const handleOpenReview = (req, action) => {
