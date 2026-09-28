@@ -1133,7 +1133,8 @@ router.delete('/mapping/:id', verifyAuth, requireRole(['company_admin', 'super_a
 
   // Real-time Firebase Sync deletion
   try {
-    deleteEmployeeMapping(mapping.company_id, mappingId);
+    deleteEmployeeMapping({ id: mappingId, companyId: mapping.company_id, managerId: mapping.manager_id, employeeId: mapping.employee_id });
+    deleteFromFirebase('employee_mappings', mappingId, { companyId: mapping.company_id, managerId: mapping.manager_id, employeeId: mapping.employee_id });
     const eRow = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(mapping.employee_id);
     if (eRow) syncEmployee(eRow);
   } catch (e) {

@@ -619,6 +619,29 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
   const company = db.prepare('SELECT id, name, code, logo FROM companies WHERE id = ?').get(companyId);
   if (!company) return null;
 
+  // Pre-fetch all related IDs for full Firebase cascade deletion
+  let companyEmployees = [];
+  let companyUsers = [];
+  let companyGeofences = [];
+  let companyShifts = [];
+  let companyRotShifts = [];
+  let companyHolidays = [];
+  let companyWeeklyOffs = [];
+  let companyLeaveTypes = [];
+  let companyTickets = [];
+
+  try {
+    companyEmployees = db.prepare('SELECT id, user_id FROM employees WHERE company_id = ?').all(companyId);
+    companyUsers = db.prepare('SELECT id FROM users WHERE company_id = ?').all(companyId);
+    companyGeofences = db.prepare('SELECT id FROM geofences WHERE company_id = ?').all(companyId);
+    companyShifts = db.prepare('SELECT id FROM shifts WHERE company_id = ?').all(companyId);
+    companyRotShifts = db.prepare('SELECT id FROM rotational_shifts WHERE company_id = ?').all(companyId);
+    companyHolidays = db.prepare('SELECT id FROM holidays WHERE company_id = ?').all(companyId);
+    companyWeeklyOffs = db.prepare('SELECT id FROM weekly_off_settings WHERE company_id = ?').all(companyId);
+    companyLeaveTypes = db.prepare('SELECT id FROM leave_types WHERE company_id = ?').all(companyId);
+    companyTickets = db.prepare('SELECT id FROM service_requests WHERE company_id = ?').all(companyId);
+  } catch (e) {}
+
   // 1. Service Requests & Chat Messages (request_id points to service_requests.id, user_id points to users.id)
   try {
     db.prepare(`
@@ -858,8 +881,18 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
     });
   } catch (e) {}
 
-  // Delete from Firebase
-  deleteFromFirebase('companies', companyId).catch(() => {});
+  // Delete from Firebase (Firestore + Realtime Database)
+  deleteFromFirebase('companies', companyId, {
+    employeeIds: companyEmployees.map(e => e.id),
+    userIds: companyUsers.map(u => u.id),
+    geofenceIds: companyGeofences.map(g => g.id),
+    shiftIds: companyShifts.map(s => s.id),
+    rotationalShiftIds: companyRotShifts.map(r => r.id),
+    holidayIds: companyHolidays.map(h => h.id),
+    weeklyOffIds: companyWeeklyOffs.map(w => w.id),
+    leaveTypeIds: companyLeaveTypes.map(l => l.id),
+    ticketIds: companyTickets.map(t => t.id)
+  }).catch(() => {});
 
   return company.name;
 }

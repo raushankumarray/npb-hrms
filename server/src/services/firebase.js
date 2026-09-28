@@ -1432,18 +1432,189 @@ async function syncCompanyReports(companyId) {
 }
 
 /**
- * Real-time permanent delete from Firebase
+ * Helper to delete a document and any subcollections recursively in Firestore
+ */
+async function safeDeleteFirestoreDoc(collectionName, docId) {
+  if (!firestoreDb || !docId) return;
+  try {
+    const docRef = firestoreDb.collection(collectionName).doc(String(docId));
+    if (typeof firestoreDb.recursiveDelete === 'function') {
+      await firestoreDb.recursiveDelete(docRef).catch(() => docRef.delete().catch(() => {}));
+    } else {
+      await docRef.delete().catch(() => {});
+    }
+  } catch (e) {}
+}
+
+/**
+ * Helper to delete documents in a Firestore collection where a field equals a value
+ */
+async function deleteFirestoreMatching(collectionName, fieldName, value) {
+  if (!firestoreDb || value === undefined || value === null) return;
+  try {
+    const valuesToTry = [value];
+    if (typeof value === 'number') {
+      valuesToTry.push(String(value));
+    } else if (typeof value === 'string' && !isNaN(Number(value))) {
+      valuesToTry.push(Number(value));
+    }
+
+    for (const val of valuesToTry) {
+      const snap = await firestoreDb.collection(collectionName).where(fieldName, '==', val).get().catch(() => null);
+      if (snap && !snap.empty) {
+        for (const doc of snap.docs) {
+          if (typeof firestoreDb.recursiveDelete === 'function') {
+            await firestoreDb.recursiveDelete(doc.ref).catch(() => doc.ref.delete().catch(() => {}));
+          } else {
+            await doc.ref.delete().catch(() => {});
+          }
+        }
+      }
+    }
+  } catch (err) {}
+}
+
+/**
+ * Helper to delete documents in Firestore where doc ID starts with a given prefix
+ */
+async function deleteFirestoreDocPrefix(collectionName, prefix) {
+  if (!firestoreDb || !prefix) return;
+  try {
+    const strPrefix = String(prefix);
+    const snap = await firestoreDb.collection(collectionName)
+      .where('__name__', '>=', strPrefix)
+      .where('__name__', '<=', strPrefix + '\uf8ff')
+      .get()
+      .catch(() => null);
+    if (snap && !snap.empty) {
+      for (const doc of snap.docs) {
+        if (typeof firestoreDb.recursiveDelete === 'function') {
+          await firestoreDb.recursiveDelete(doc.ref).catch(() => doc.ref.delete().catch(() => {}));
+        } else {
+          await doc.ref.delete().catch(() => {});
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+/**
+ * Real-time permanent delete from Firebase (Firestore + Realtime Database)
+ * Handles instant automatic cascade deletion for Companies, Employees, Geofences, Shifts,
+ * Leaves, Holidays, Weekly Offs, Service Requests / Tickets, Mappings, and Device Locks.
  */
 async function deleteFromFirebase(entityType, id, extra = {}) {
   if (!firebaseStatus.connected || !id) return null;
   try {
     const strId = String(id);
+    const numId = Number(id);
+
     if (entityType === 'companies') {
+      const compId = numId;
       if (firestoreDb) {
-        await firestoreDb.collection('companies').doc(strId).delete().catch(() => {});
-        await firestoreDb.collection('company_settings').doc(strId).delete().catch(() => {});
-        await firestoreDb.collection('company_modules').doc(strId).delete().catch(() => {});
+        // 1. Delete company document and its subcollections (employees, users, attendance, devices, etc.)
+        await safeDeleteFirestoreDoc('companies', strId);
+        await safeDeleteFirestoreDoc('company_settings', strId);
+        await safeDeleteFirestoreDoc('company_modules', strId);
+
+        // 2. Cascade delete all documents belonging to this company from top-level collections
+        const companyCollections = [
+          'employees',
+          'users',
+          'attendance_records',
+          'attendance_punches',
+          'attendance_corrections',
+          'leave_requests',
+          'leave_types',
+          'leave_balances',
+          'shifts',
+          'rotational_shifts',
+          'geofences',
+          'geofence_assignments',
+          'holidays',
+          'weekly_off_settings',
+          'employee_mappings',
+          'service_requests',
+          'support_tickets',
+          'notifications',
+          'audit_logs'
+        ];
+
+        for (const col of companyCollections) {
+          await deleteFirestoreMatching(col, 'companyId', compId);
+          await deleteFirestoreMatching(col, 'company_id', compId);
+        }
+
+        // Attendance, punch, mapping, and leave_type doc IDs starting with `${strId}_`
+        await deleteFirestoreDocPrefix('attendance_records', `${strId}_`);
+        await deleteFirestoreDocPrefix('attendance_punches', `${strId}_`);
+        await deleteFirestoreDocPrefix('leave_types', `${strId}_`);
+        await deleteFirestoreDocPrefix('employee_mappings', `${strId}_`);
+
+        // Delete any specific employee / user IDs passed in extra
+        if (Array.isArray(extra.employeeIds)) {
+          for (const empId of extra.employeeIds) {
+            await safeDeleteFirestoreDoc('employees', empId);
+            await safeDeleteFirestoreDoc('device_bindings', empId);
+            await deleteFirestoreDocPrefix('attendance_records', `${strId}_${empId}_`);
+            await deleteFirestoreDocPrefix('attendance_punches', `${strId}_${empId}_`);
+            await deleteFirestoreDocPrefix('leave_balances', `${empId}_`);
+          }
+        }
+        if (Array.isArray(extra.userIds)) {
+          for (const uId of extra.userIds) {
+            await safeDeleteFirestoreDoc('users', uId);
+            await safeDeleteFirestoreDoc('employee_devices', `user_${uId}`);
+            await safeDeleteFirestoreDoc('employee_devices', uId);
+          }
+        }
+        if (Array.isArray(extra.geofenceIds)) {
+          for (const gId of extra.geofenceIds) {
+            await safeDeleteFirestoreDoc('geofences', gId);
+            await deleteFirestoreMatching('geofence_assignments', 'geofenceId', gId);
+            await deleteFirestoreMatching('geofence_assignments', 'geofence_id', gId);
+          }
+        }
+        if (Array.isArray(extra.shiftIds)) {
+          for (const sId of extra.shiftIds) {
+            await safeDeleteFirestoreDoc('shifts', sId);
+            await deleteFirestoreMatching('shift_assignments', 'shiftId', sId);
+            await deleteFirestoreMatching('shift_assignments', 'shift_id', sId);
+          }
+        }
+        if (Array.isArray(extra.rotationalShiftIds)) {
+          for (const rId of extra.rotationalShiftIds) {
+            await safeDeleteFirestoreDoc('rotational_shifts', rId);
+          }
+        }
+        if (Array.isArray(extra.holidayIds)) {
+          for (const hId of extra.holidayIds) {
+            await safeDeleteFirestoreDoc('holidays', hId);
+          }
+        }
+        if (Array.isArray(extra.weeklyOffIds)) {
+          for (const wId of extra.weeklyOffIds) {
+            await safeDeleteFirestoreDoc('weekly_off_settings', wId);
+          }
+        }
+        if (Array.isArray(extra.leaveTypeIds)) {
+          for (const ltId of extra.leaveTypeIds) {
+            await safeDeleteFirestoreDoc('leave_types', ltId);
+            await safeDeleteFirestoreDoc('leave_types', `${strId}_${ltId}`);
+            await deleteFirestoreMatching('leave_balances', 'leaveTypeId', ltId);
+            await deleteFirestoreMatching('leave_balances', 'leave_type_id', ltId);
+          }
+        }
+        if (Array.isArray(extra.ticketIds)) {
+          for (const tId of extra.ticketIds) {
+            await safeDeleteFirestoreDoc('service_requests', tId);
+            await safeDeleteFirestoreDoc('support_tickets', tId);
+            await deleteFirestoreMatching('service_request_messages', 'requestId', tId);
+            await deleteFirestoreMatching('service_request_messages', 'request_id', tId);
+          }
+        }
       }
+
       if (realtimeDb) {
         await realtimeDb.ref(`companies/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`company_settings/${strId}`).remove().catch(() => {});
@@ -1451,53 +1622,297 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
         await realtimeDb.ref(`company_employees/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`company_attendance/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`live_locations/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`attendance_punches/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`attendance_corrections/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`leave_requests/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`leave_types/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`shifts/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`rotational_shifts/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`geofences/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`holidays/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`weekly_off_settings/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`employee_mappings/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`company_reports/${strId}`).remove().catch(() => {});
+
+        if (Array.isArray(extra.employeeIds)) {
+          for (const empId of extra.employeeIds) {
+            await realtimeDb.ref(`employees/${empId}`).remove().catch(() => {});
+            await realtimeDb.ref(`employee_attendance/${empId}`).remove().catch(() => {});
+            await realtimeDb.ref(`leave_balances/${empId}`).remove().catch(() => {});
+          }
+        }
+        if (Array.isArray(extra.userIds)) {
+          for (const uId of extra.userIds) {
+            await realtimeDb.ref(`users/${uId}`).remove().catch(() => {});
+            await realtimeDb.ref(`devices/${uId}`).remove().catch(() => {});
+            await realtimeDb.ref(`employee_devices/${uId}`).remove().catch(() => {});
+          }
+        }
       }
     } else if (entityType === 'employees') {
+      const empId = numId;
+      const compId = extra.companyId;
+      const userId = extra.userId;
+
       if (firestoreDb) {
-        await firestoreDb.collection('employees').doc(strId).delete().catch(() => {});
-        if (extra.companyId) {
-          await firestoreDb.collection('companies').doc(String(extra.companyId)).collection('employees').doc(strId).delete().catch(() => {});
-          await firestoreDb.collection('companies').doc(String(extra.companyId)).collection('devices').doc(strId).delete().catch(() => {});
+        // 1. Delete main employee document & company subcollection
+        await safeDeleteFirestoreDoc('employees', strId);
+        if (compId) {
+          await safeDeleteFirestoreDoc(`companies/${compId}/employees`, strId);
+          await safeDeleteFirestoreDoc(`companies/${compId}/devices`, strId);
         }
-        if (extra.userId) {
-          await firestoreDb.collection('users').doc(String(extra.userId)).delete().catch(() => {});
-          await firestoreDb.collection('employee_devices').doc(String(extra.userId)).delete().catch(() => {});
-          if (extra.companyId) {
-            await firestoreDb.collection('companies').doc(String(extra.companyId)).collection('users').doc(String(extra.userId)).delete().catch(() => {});
+
+        // 2. Delete linked user and device binding
+        if (userId) {
+          await safeDeleteFirestoreDoc('users', userId);
+          await safeDeleteFirestoreDoc('employee_devices', `user_${userId}`);
+          await safeDeleteFirestoreDoc('employee_devices', userId);
+          if (compId) {
+            await safeDeleteFirestoreDoc(`companies/${compId}/users`, userId);
           }
+          await deleteFirestoreMatching('notifications', 'userId', userId);
+          await deleteFirestoreMatching('notifications', 'user_id', userId);
         }
-        await firestoreDb.collection('device_bindings').doc(strId).delete().catch(() => {});
+        await safeDeleteFirestoreDoc('device_bindings', strId);
+
+        // 3. Delete attendance records & punches for this employee
+        await deleteFirestoreMatching('attendance_records', 'employeeId', empId);
+        await deleteFirestoreMatching('attendance_records', 'employee_id', empId);
+        await deleteFirestoreMatching('attendance_punches', 'employeeId', empId);
+        await deleteFirestoreMatching('attendance_punches', 'employee_id', empId);
+        if (compId) {
+          await deleteFirestoreDocPrefix('attendance_records', `${compId}_${strId}_`);
+          await deleteFirestoreDocPrefix('attendance_punches', `${compId}_${strId}_`);
+        }
+
+        // 4. Delete attendance corrections
+        await deleteFirestoreMatching('attendance_corrections', 'employeeId', empId);
+        await deleteFirestoreMatching('attendance_corrections', 'employee_id', empId);
+
+        // 5. Delete leave requests & balances
+        await deleteFirestoreMatching('leave_requests', 'employeeId', empId);
+        await deleteFirestoreMatching('leave_requests', 'employee_id', empId);
+        await deleteFirestoreMatching('leave_balances', 'employeeId', empId);
+        await deleteFirestoreMatching('leave_balances', 'employee_id', empId);
+        await deleteFirestoreDocPrefix('leave_balances', `${strId}_`);
+
+        // 6. Delete geofence & shift assignments
+        await deleteFirestoreMatching('geofence_assignments', 'employeeId', empId);
+        await deleteFirestoreMatching('geofence_assignments', 'employee_id', empId);
+        await deleteFirestoreMatching('shift_assignments', 'employeeId', empId);
+        await deleteFirestoreMatching('shift_assignments', 'employee_id', empId);
+
+        // 7. Delete employee mappings (where this employee is either the employee or the manager)
+        await deleteFirestoreMatching('employee_mappings', 'employeeId', empId);
+        await deleteFirestoreMatching('employee_mappings', 'employee_id', empId);
+        await deleteFirestoreMatching('employee_mappings', 'managerId', empId);
+        await deleteFirestoreMatching('employee_mappings', 'manager_id', empId);
+
+        // 8. Delete service requests & support tickets
+        await deleteFirestoreMatching('service_requests', 'employeeId', empId);
+        await deleteFirestoreMatching('service_requests', 'employee_id', empId);
+        await deleteFirestoreMatching('support_tickets', 'employeeId', empId);
+        await deleteFirestoreMatching('support_tickets', 'employee_id', empId);
       }
+
       if (realtimeDb) {
         await realtimeDb.ref(`employees/${strId}`).remove().catch(() => {});
-        if (extra.companyId) {
-          await realtimeDb.ref(`companies/${extra.companyId}/employees/${strId}`).remove().catch(() => {});
-          await realtimeDb.ref(`company_employees/${extra.companyId}/${strId}`).remove().catch(() => {});
-          await realtimeDb.ref(`live_locations/${extra.companyId}/${strId}`).remove().catch(() => {});
-          await realtimeDb.ref(`companies/${extra.companyId}/devices/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`employee_attendance/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`leave_balances/${strId}`).remove().catch(() => {});
+
+        if (compId) {
+          await realtimeDb.ref(`companies/${compId}/employees/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`company_employees/${compId}/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`live_locations/${compId}/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`companies/${compId}/devices/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`attendance_punches/${compId}/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`companies/${compId}/leave_balances/${strId}`).remove().catch(() => {});
         }
-        if (extra.userId) {
-          await realtimeDb.ref(`users/${extra.userId}`).remove().catch(() => {});
-          await realtimeDb.ref(`devices/${extra.userId}`).remove().catch(() => {});
-          await realtimeDb.ref(`employee_devices/${extra.userId}`).remove().catch(() => {});
-          if (extra.companyId) {
-            await realtimeDb.ref(`companies/${extra.companyId}/users/${extra.userId}`).remove().catch(() => {});
+
+        if (userId) {
+          await realtimeDb.ref(`users/${userId}`).remove().catch(() => {});
+          await realtimeDb.ref(`devices/${userId}`).remove().catch(() => {});
+          await realtimeDb.ref(`employee_devices/${userId}`).remove().catch(() => {});
+          if (compId) {
+            await realtimeDb.ref(`companies/${compId}/users/${userId}`).remove().catch(() => {});
           }
+        }
+      }
+    } else if (entityType === 'geofences') {
+      const gfId = numId;
+      const compId = extra.companyId;
+
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('geofences', strId);
+        await deleteFirestoreMatching('geofence_assignments', 'geofenceId', gfId);
+        await deleteFirestoreMatching('geofence_assignments', 'geofence_id', gfId);
+        await deleteFirestoreDocPrefix('geofence_assignments', `${strId}_`);
+      }
+
+      if (realtimeDb) {
+        await realtimeDb.ref(`geofences/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`geofences/${compId}/${strId}`).remove().catch(() => {});
+        }
+        await realtimeDb.ref(`geofence_assignments/${strId}`).remove().catch(() => {});
+      }
+    } else if (entityType === 'shifts') {
+      const shiftId = numId;
+      const compId = extra.companyId;
+
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('shifts', strId);
+        await deleteFirestoreMatching('shift_assignments', 'shiftId', shiftId);
+        await deleteFirestoreMatching('shift_assignments', 'shift_id', shiftId);
+      }
+
+      if (realtimeDb) {
+        await realtimeDb.ref(`shifts/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`shifts/${compId}/${strId}`).remove().catch(() => {});
+        }
+        await realtimeDb.ref(`shift_assignments/${strId}`).remove().catch(() => {});
+      }
+    } else if (entityType === 'rotational_shifts') {
+      const compId = extra.companyId;
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('rotational_shifts', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`rotational_shifts/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`rotational_shifts/${compId}/${strId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'holidays') {
+      const compId = extra.companyId;
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('holidays', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`holidays/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`holidays/${compId}/${strId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'weekly_off_settings') {
+      const compId = extra.companyId;
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('weekly_off_settings', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`weekly_off_settings/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`weekly_off_settings/${compId}/${strId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'leave_types') {
+      const ltId = numId;
+      const compId = extra.companyId;
+
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('leave_types', strId);
+        if (compId) {
+          await safeDeleteFirestoreDoc('leave_types', `${compId}_${strId}`);
+        }
+        await deleteFirestoreMatching('leave_balances', 'leaveTypeId', ltId);
+        await deleteFirestoreMatching('leave_balances', 'leave_type_id', ltId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`leave_types/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`leave_types/${compId}/${strId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'leave_requests') {
+      const compId = extra.companyId;
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('leave_requests', strId);
+        if (compId) {
+          await safeDeleteFirestoreDoc(`companies/${compId}/leave_requests`, strId);
+        }
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`leave_requests/${strId}`).remove().catch(() => {});
+        if (compId) {
+          await realtimeDb.ref(`leave_requests/${compId}/${strId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'service_requests' || entityType === 'support_tickets') {
+      const reqId = numId;
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('service_requests', strId);
+        await safeDeleteFirestoreDoc('support_tickets', strId);
+        await deleteFirestoreMatching('service_request_messages', 'requestId', reqId);
+        await deleteFirestoreMatching('service_request_messages', 'request_id', reqId);
+        await deleteFirestoreMatching('service_request_messages', 'ticket_id', reqId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`service_requests/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`service_request_messages/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`support_tickets/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`ticket_messages/${strId}`).remove().catch(() => {});
+      }
+    } else if (entityType === 'employee_mappings') {
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('employee_mappings', strId);
+        if (extra.companyId && extra.managerId && extra.employeeId) {
+          await safeDeleteFirestoreDoc('employee_mappings', `${extra.companyId}_${extra.managerId}_${extra.employeeId}`);
+        }
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`employee_mappings/${strId}`).remove().catch(() => {});
+        if (extra.companyId && extra.managerId && extra.employeeId) {
+          await realtimeDb.ref(`employee_mappings/${extra.companyId}/${extra.managerId}_${extra.employeeId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'attendance_records' || entityType === 'attendance_punches') {
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('attendance_records', strId);
+        await safeDeleteFirestoreDoc('attendance_punches', strId);
+        if (extra.companyId) {
+          await safeDeleteFirestoreDoc(`companies/${extra.companyId}/attendance`, strId);
+        }
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`attendance_punches/${strId}`).remove().catch(() => {});
+        if (extra.companyId && extra.employeeId && extra.date) {
+          await realtimeDb.ref(`attendance_punches/${extra.companyId}/${extra.employeeId}/${extra.date}`).remove().catch(() => {});
+          await realtimeDb.ref(`companies/${extra.companyId}/attendance/${extra.date}/${extra.employeeId}`).remove().catch(() => {});
+          await realtimeDb.ref(`company_attendance/${extra.companyId}/${extra.date}/${extra.employeeId}`).remove().catch(() => {});
+          await realtimeDb.ref(`employee_attendance/${extra.employeeId}/${extra.date}`).remove().catch(() => {});
         }
       }
     } else if (entityType === 'users') {
       if (firestoreDb) {
-        await firestoreDb.collection('users').doc(strId).delete().catch(() => {});
-        await firestoreDb.collection('employee_devices').doc(strId).delete().catch(() => {});
+        await safeDeleteFirestoreDoc('users', strId);
+        await safeDeleteFirestoreDoc('support_users', strId);
+        await safeDeleteFirestoreDoc('employee_devices', `user_${strId}`);
+        await safeDeleteFirestoreDoc('employee_devices', strId);
+        if (extra.companyId) {
+          await safeDeleteFirestoreDoc(`companies/${extra.companyId}/users`, strId);
+        }
+        await deleteFirestoreMatching('notifications', 'userId', numId);
+        await deleteFirestoreMatching('notifications', 'user_id', numId);
       }
       if (realtimeDb) {
         await realtimeDb.ref(`users/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`devices/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`employee_devices/${strId}`).remove().catch(() => {});
+        if (extra.companyId) {
+          await realtimeDb.ref(`companies/${extra.companyId}/users/${strId}`).remove().catch(() => {});
+        }
+      }
+    } else if (entityType === 'notifications') {
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('notifications', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`notifications/${strId}`).remove().catch(() => {});
       }
     } else {
       if (firestoreDb) {
-        await firestoreDb.collection(entityType).doc(strId).delete().catch(() => {});
+        await safeDeleteFirestoreDoc(entityType, strId);
       }
       if (realtimeDb) {
         await realtimeDb.ref(`${entityType}/${strId}`).remove().catch(() => {});

@@ -533,9 +533,49 @@ router.delete('/rotational/:id', verifyAuth, requireRole(['company_admin', 'supe
   const companyId = getTenantCompanyId(req);
 
   db.prepare('DELETE FROM rotational_shifts WHERE id = ? AND company_id = ?').run(id, companyId);
-  deleteRotationalShift(id, companyId);
+  try {
+    deleteRotationalShift(id, companyId);
+    deleteFromFirebase('rotational_shifts', id, { companyId });
+  } catch (e) {}
 
   res.json({ success: true, message: 'Rotational shift deleted successfully.' });
+});
+
+// Delete Weekly Off Setting
+router.delete('/weekly-off/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = getTenantCompanyId(req);
+
+  const existing = db.prepare('SELECT * FROM weekly_off_settings WHERE id = ? AND company_id = ?').get(id, companyId);
+  if (!existing) {
+    return res.status(404).json({ error: 'Weekly off setting not found.' });
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare('UPDATE employees SET weekly_off_id = NULL WHERE weekly_off_id = ? AND company_id = ?').run(id, companyId);
+    db.prepare('DELETE FROM employee_weekly_offs WHERE weekly_off_id = ?').run(id);
+    db.prepare('DELETE FROM weekly_off_settings WHERE id = ? AND company_id = ?').run(id, companyId);
+
+    logAudit({
+      companyId,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Shift Management',
+      action: 'WEEKLY_OFF_DELETED',
+      targetEntity: 'weekly_off_settings',
+      targetId: id,
+      reason: `Deleted weekly off schedule "${existing.name}"`
+    });
+  });
+
+  transaction();
+
+  try {
+    deleteFromFirebase('weekly_off_settings', id, { companyId }).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: `Weekly off schedule "${existing.name}" deleted successfully.` });
 });
 
 module.exports = router;

@@ -360,25 +360,31 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin']),
   const gfId = parseInt(req.params.id, 10);
   const companyId = getTenantCompanyId(req);
 
-  db.prepare('DELETE FROM geofences WHERE id = ? AND company_id = ?').run(gfId, companyId);
+  const transaction = db.transaction(() => {
+    db.prepare('UPDATE employees SET geofence_id = NULL WHERE geofence_id = ? AND company_id = ?').run(gfId, companyId);
+    db.prepare('DELETE FROM geofence_assignments WHERE geofence_id = ?').run(gfId);
+    db.prepare('DELETE FROM geofences WHERE id = ? AND company_id = ?').run(gfId, companyId);
 
-  logAudit({
-    companyId,
-    userId: req.user.id,
-    userName: req.user.username,
-    role: req.user.role_name,
-    panel: 'Geofence Management',
-    action: 'GEOFENCE_DELETED',
-    targetEntity: 'geofences',
-    targetId: gfId,
-    reason: 'Deleted geofence boundary'
+    logAudit({
+      companyId,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Geofence Management',
+      action: 'GEOFENCE_DELETED',
+      targetEntity: 'geofences',
+      targetId: gfId,
+      reason: 'Deleted geofence boundary and cleared employee assignments'
+    });
   });
 
+  transaction();
+
   try {
-    deleteFromFirebase('geofences', gfId, { companyId });
+    deleteFromFirebase('geofences', gfId, { companyId }).catch(() => {});
   } catch (e) {}
 
-  res.json({ success: true, message: 'Geofence deleted successfully.' });
+  res.json({ success: true, message: 'Geofence and all assignments deleted successfully.' });
 });
 
 module.exports = router;

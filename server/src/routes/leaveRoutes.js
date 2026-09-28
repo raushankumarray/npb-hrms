@@ -4,6 +4,7 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
+const { deleteFromFirebase } = require('../services/firebase');
 
 // List Leave Types for Company (Strictly Casual Leave [12/yr] and Earned Leave [1.25/mo])
 router.get('/types', verifyAuth, (req, res) => {
@@ -267,6 +268,47 @@ router.post('/types', verifyAuth, requireRole(['company_admin', 'super_admin']),
   });
 
   res.json({ success: true, message: 'Leave type configured successfully.' });
+});
+
+// Delete Leave Type (Company Admin, Super Admin)
+router.delete('/types/:id', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
+  const companyId = getTenantCompanyId(req);
+  const typeId = parseInt(req.params.id, 10);
+
+  const leaveType = db.prepare('SELECT * FROM leave_types WHERE id = ? AND company_id = ?').get(typeId, companyId);
+  if (!leaveType) {
+    return res.status(404).json({ error: 'Leave type not found.' });
+  }
+
+  const transaction = db.transaction(() => {
+    // Delete associated balances and transactions
+    try { db.prepare('DELETE FROM leave_balances WHERE leave_type_id = ?').run(typeId); } catch (e) {}
+    try { db.prepare('DELETE FROM leave_transactions WHERE leave_type_id = ?').run(typeId); } catch (e) {}
+    // Delete leave type
+    db.prepare('DELETE FROM leave_types WHERE id = ? AND company_id = ?').run(typeId, companyId);
+
+    logAudit({
+      companyId,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Leave Management',
+      action: 'LEAVE_TYPE_DELETED',
+      targetEntity: 'leave_types',
+      targetId: typeId,
+      oldValues: leaveType,
+      reason: `Leave type "${leaveType.name}" deleted by ${req.user.username}`
+    });
+  });
+
+  transaction();
+
+  // Instant real-time delete from Firebase
+  try {
+    deleteFromFirebase('leave_types', typeId, { companyId }).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: `Leave type "${leaveType.name}" deleted successfully.` });
 });
 
 // Get Leave Balances for an Employee (or logged in employee)
@@ -721,6 +763,80 @@ const handleCancelLeave = (req, res) => {
 
 router.post('/requests/:id/cancel', verifyAuth, handleCancelLeave);
 router.put('/requests/:id/cancel', verifyAuth, handleCancelLeave);
+
+// Delete Leave Request (Admin / Super Admin, or Employee if pending)
+router.delete('/requests/:id', verifyAuth, (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const companyId = getTenantCompanyId(req);
+
+  const request = db.prepare(`
+    SELECT lr.*, e.user_id, e.full_name
+    FROM leave_requests lr
+    JOIN employees e ON lr.employee_id = e.id
+    WHERE lr.id = ?
+  `).get(requestId);
+
+  if (!request) {
+    return res.status(404).json({ error: 'Leave request not found.' });
+  }
+
+  if (req.user.role_name === 'employee' && request.employee_id !== req.user.employee_id) {
+    return res.status(403).json({ error: 'You are not authorized to delete this leave request.' });
+  }
+  if (req.user.role_name !== 'super_admin' && request.company_id !== companyId) {
+    return res.status(403).json({ error: 'Unauthorized company access.' });
+  }
+
+  const transaction = db.transaction(() => {
+    // If request was approved, restore the used days back to balance
+    if (request.status === 'approved') {
+      const currentYear = new Date(request.start_date).getFullYear();
+      db.prepare(`
+        UPDATE leave_balances SET
+          used = MAX(0, used - ?),
+          balance = balance + ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE employee_id = ? AND leave_type_id = ? AND year = ?
+      `).run(request.total_days, request.total_days, request.employee_id, request.leave_type_id, currentYear);
+
+      // Remove the corresponding attendance records that were marked as Leave
+      const start = new Date(request.start_date);
+      const end = new Date(request.end_date);
+      const deleteAtt = db.prepare(`
+        DELETE FROM attendance_records 
+        WHERE company_id = ? AND employee_id = ? AND date = ? AND status = 'Leave'
+      `);
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        deleteAtt.run(request.company_id, request.employee_id, dateStr);
+      }
+    }
+
+    db.prepare('DELETE FROM leave_requests WHERE id = ?').run(requestId);
+
+    logAudit({
+      companyId: request.company_id,
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Leave Management',
+      action: 'LEAVE_REQUEST_DELETED',
+      targetEntity: 'leave_requests',
+      targetId: requestId,
+      oldValues: request,
+      reason: `Leave request #${requestId} deleted by ${req.user.username}`
+    });
+  });
+
+  transaction();
+
+  // Instant real-time delete from Firebase
+  try {
+    deleteFromFirebase('leave_requests', requestId, { companyId: request.company_id }).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: 'Leave request deleted successfully.' });
+});
 
 // Run Monthly Accrual for Earned Leave (Company Admin, Super Admin)
 router.post('/accrual/monthly', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {

@@ -555,6 +555,13 @@ router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
       reason: `Deleted ${deletedCount} record(s): ${description} by Level 4 Support`
     });
 
+    if (mode === 'single' && id) {
+      try {
+        const { deleteFromFirebase } = require('../services/firebase');
+        deleteFromFirebase('audit_logs', id).catch(() => {});
+      } catch (e) {}
+    }
+
     res.json({
       success: true,
       deletedCount,
