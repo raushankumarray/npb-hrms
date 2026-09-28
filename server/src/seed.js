@@ -31,6 +31,13 @@ function seedDatabase() {
       db.prepare("ALTER TABLE employees ADD COLUMN city TEXT DEFAULT ''").run();
       console.log('Migration: Added city column to employees.');
     }
+    try {
+      const supCols = db.prepare("PRAGMA table_info(support_users)").all();
+      if (supCols.length > 0 && !supCols.some(c => c.name === 'enable_ai_assistant')) {
+        db.prepare("ALTER TABLE support_users ADD COLUMN enable_ai_assistant INTEGER DEFAULT 0").run();
+        console.log('Migration: Added enable_ai_assistant column to support_users.');
+      }
+    } catch (e) {}
     // Migration: Allow blank employee_id by making it nullable with partial unique index
     const empIdCol = empCols.find(c => c.name === 'employee_id');
     if (empIdCol && empIdCol.notnull === 1) {
@@ -134,6 +141,13 @@ function seedDatabase() {
   // Read and execute schema
   const schemaSql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8');
   db.exec(schemaSql);
+  try {
+    const supColsAfter = db.prepare("PRAGMA table_info(support_users)").all();
+    if (supColsAfter.length > 0 && !supColsAfter.some(c => c.name === 'enable_ai_assistant')) {
+      db.prepare("ALTER TABLE support_users ADD COLUMN enable_ai_assistant INTEGER DEFAULT 0").run();
+      console.log('Migration: Ensured enable_ai_assistant column in support_users.');
+    }
+  } catch (e) {}
   console.log('Schema created successfully.');
 
   // Check if super admin already exists

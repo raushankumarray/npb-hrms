@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS support_users (
   full_name TEXT NOT NULL,
   permission_level INTEGER DEFAULT 1 CHECK(permission_level BETWEEN 1 AND 4),
   device_status TEXT DEFAULT 'active',
+  enable_ai_assistant INTEGER DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

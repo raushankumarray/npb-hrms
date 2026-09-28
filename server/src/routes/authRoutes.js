@@ -18,10 +18,10 @@ router.post('/login', async (req, res) => {
   const cleanLoginInput = username.trim();
 
   const lookupUser = (input) => {
-    return db.prepare(`
+    const u = db.prepare(`
       SELECT u.id, u.username, u.password_hash, u.email, u.mobile, u.role_id, u.company_id, u.status, u.is_deleted,
              r.name as role_name,
-             s.permission_level as support_level, COALESCE(s.enable_ai_assistant, 0) as support_ai_enabled,
+             s.permission_level as support_level,
              e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id,
              e.employment_start_date, e.employment_end_date
       FROM users u
@@ -37,6 +37,16 @@ router.post('/login', async (req, res) => {
       )
       LIMIT 1
     `).get(input, input, input, input, input, input, input);
+
+    if (u && u.role_name === 'support') {
+      try {
+        const sRow = db.prepare("SELECT enable_ai_assistant FROM support_users WHERE user_id = ?").get(u.id);
+        u.support_ai_enabled = sRow ? (sRow.enable_ai_assistant === 1 ? 1 : 0) : 0;
+      } catch (e) {
+        u.support_ai_enabled = 0;
+      }
+    }
+    return u;
   };
 
   let user = lookupUser(cleanLoginInput);

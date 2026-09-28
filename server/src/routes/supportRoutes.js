@@ -9,9 +9,22 @@ const { logAudit } = require('../services/audit');
 
 // List Support Accounts (Super Admin only)
 router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
+  let hasAiCol = true;
+  try {
+    const cols = db.prepare("PRAGMA table_info(support_users)").all();
+    hasAiCol = cols.some(c => c.name === 'enable_ai_assistant');
+    if (!hasAiCol) {
+      db.prepare("ALTER TABLE support_users ADD COLUMN enable_ai_assistant INTEGER DEFAULT 0").run();
+      hasAiCol = true;
+    }
+  } catch (e) {
+    hasAiCol = false;
+  }
+
+  const aiSelect = hasAiCol ? 'COALESCE(s.enable_ai_assistant, 0)' : '0';
   const users = db.prepare(`
     SELECT u.id as user_id, u.username, u.email, u.status, u.created_at, u.last_login_at,
-           s.id as support_id, s.full_name, s.permission_level, s.device_status, COALESCE(s.enable_ai_assistant, 0) as enable_ai_assistant
+           s.id as support_id, s.full_name, s.permission_level, s.device_status, ${aiSelect} as enable_ai_assistant
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.is_deleted = 0

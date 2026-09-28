@@ -31,7 +31,7 @@ function verifyAuth(req, res, next) {
     const user = db.prepare(`
       SELECT u.id, u.username, u.email, u.role_id, u.company_id, u.status, u.is_deleted,
              r.name as role_name,
-             s.permission_level as support_level, COALESCE(s.enable_ai_assistant, 0) as support_ai_enabled,
+             s.permission_level as support_level,
              e.id as employee_id, e.employee_id as employee_code,
              COALESCE(e.full_name, sa.full_name, s.full_name, u.username) as full_name,
              COALESCE(e.mobile, u.mobile, '') as mobile,
@@ -70,7 +70,16 @@ function verifyAuth(req, res, next) {
       }
     }
 
-    if (user) { user.enable_ai_assistant = user.role_name === "support" ? (user.support_ai_enabled === 1) : undefined; }
+    if (user && user.role_name === 'support') {
+      try {
+        const sRow = db.prepare("SELECT enable_ai_assistant FROM support_users WHERE user_id = ?").get(user.id);
+        user.enable_ai_assistant = sRow ? (sRow.enable_ai_assistant === 1) : false;
+      } catch (e) {
+        user.enable_ai_assistant = false;
+      }
+    } else if (user) {
+      user.enable_ai_assistant = undefined;
+    }
     req.user = user;
     next();
   } catch (err) {
