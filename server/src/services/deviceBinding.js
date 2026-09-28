@@ -90,7 +90,7 @@ function checkAndBindDevice({ userId, roleName, deviceId, macAddress, deviceType
 
   return {
     allowed: false,
-    message: `Device Lock Active: This account is locked to another registered device (${existingDevice.device_name || 'Registered Device'} | MAC: ${lockedMac}). You cannot log in from a different device. To change your registered device, please contact Support to deregister device via MAC address / Device Lock.`,
+    message: 'Your account is already registered on another device. In accordance with the 1-device policy, you cannot log in from a different device. If you want to de-register, please raise a ticket.',
     registeredDevice: {
       macAddress: lockedMac,
       deviceName: existingDevice.device_name || existingDevice.device_type || 'Registered Device',

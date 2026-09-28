@@ -682,63 +682,199 @@ router.post('/search-account', (req, res) => {
 
 // Raise Device Deregistration Ticket from Login page
 router.post('/raise-device-ticket', (req, res) => {
-  const { userId, currentMac, deviceName, reason } = req.body;
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required to raise a ticket.' });
+  const { username, password, userId, currentMac, mac_address, deviceName, device_name, reason } = req.body;
+  const targetMac = currentMac || mac_address || null;
+  const targetDevice = deviceName || device_name || (req.headers['user-agent']?.includes('Mobile') ? 'Registered Smartphone' : 'Workstation PC');
+
+  let user = null;
+
+  if (username && password) {
+    user = db.prepare(`
+      SELECT u.id, u.username, u.password_hash, u.status, u.company_id, r.name as role_name,
+             e.id as emp_id, e.full_name, e.employee_id as emp_code
+      FROM users u
+      JOIN roles r ON u.role_id = r.id
+      LEFT JOIN employees e ON u.id = e.user_id
+      WHERE (LOWER(u.username) = LOWER(?) OR LOWER(u.email) = LOWER(?) OR u.mobile = ?)
+        AND u.is_deleted = 0
+    `).get(username.trim(), username.trim(), username.trim());
+
+    if (!user) {
+      return res.status(401).json({ error: 'No active employee account found matching this username/email/mobile.' });
+    }
+
+    if (user.status !== 'active') {
+      return res.status(403).json({ error: `Account is ${user.status}. Please contact administrator.` });
+    }
+
+    const isValid = bcrypt.compareSync(password, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid password. Please enter your correct account password to verify identity.' });
+    }
+  } else if (userId) {
+    user = db.prepare(`
+      SELECT u.id, u.username, u.password_hash, u.status, u.company_id, r.name as role_name,
+             e.id as emp_id, e.full_name, e.employee_id as emp_code
+      FROM users u
+      JOIN roles r ON u.role_id = r.id
+      LEFT JOIN employees e ON u.id = e.user_id
+      WHERE u.id = ? AND u.is_deleted = 0
+    `).get(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User account not found.' });
+    }
+
+    if (password) {
+      const isValid = bcrypt.compareSync(password, user.password_hash);
+      if (!isValid) {
+        return res.status(401).json({ error: 'Invalid password. Please enter your correct account password to verify identity.' });
+      }
+    }
+  } else {
+    return res.status(400).json({ error: 'Username and password are required to verify your identity and raise a de-registration ticket.' });
   }
 
-  const user = db.prepare(`
-    SELECT u.id, u.username, u.company_id, r.name as role_name, e.id as emp_id, e.full_name, e.employee_id as emp_code
-    FROM users u
-    JOIN roles r ON u.role_id = r.id
-    LEFT JOIN employees e ON u.id = e.user_id
-    WHERE u.id = ? AND u.is_deleted = 0
-  `).get(userId);
-
-  if (!user || user.role_name !== 'employee') {
-    return res.status(403).json({ error: 'Device deregistration tickets can only be raised for employee accounts.' });
+  if (user.role_name !== 'employee' && user.role_name !== 'manager') {
+    return res.status(403).json({ error: 'Device de-registration tickets can only be raised for employee and manager accounts.' });
   }
 
-  const ticketNo = `TKT-DEV-${Date.now().toString().slice(-6)}`;
+  // Ensure linked employee profile exists
+  let employeeId = user.emp_id;
+  if (!employeeId) {
+    const empRow = db.prepare('SELECT id FROM employees WHERE user_id = ?').get(user.id);
+    if (empRow) {
+      employeeId = empRow.id;
+    } else if (user.company_id) {
+      const resEmp = db.prepare(`
+        INSERT INTO employees (company_id, user_id, employee_id, full_name, role_id, status)
+        VALUES (?, ?, ?, ?, ?, 'active')
+      `).run(user.company_id, user.id, 'EMP_' + user.id, user.full_name || user.username, user.role_id);
+      employeeId = resEmp.lastInsertRowid;
+    }
+  }
+
+  if (!employeeId) {
+    return res.status(400).json({ error: 'Linked employee profile not found.' });
+  }
+
   const empName = user.full_name || user.username;
-  const macInfo = currentMac ? ` Current Device MAC: ${currentMac}.` : '';
-  const devInfo = deviceName ? ` Device: ${deviceName}.` : '';
-  const reasonInfo = reason ? ` Reason: ${reason}.` : ' Reason: Device switch / upgrade.';
+  const macInfo = targetMac ? ` Current Device MAC: ${targetMac}.` : '';
+  const devInfo = targetDevice ? ` Device: ${targetDevice}.` : '';
+  const reasonInfo = reason ? ` Reason: ${reason.trim()}` : ' Reason: Device change / upgrade.';
+  const desc = `Device De-registration Request for ${empName} (@${user.username}, ID: ${user.emp_code || employeeId}).${macInfo}${devInfo}${reasonInfo} Please de-register previous device lock so employee can log in from this new device.`;
 
-  const desc = `Device Deregistration Request for ${empName} (${user.username}, Code: ${user.emp_code || 'N/A'}).${macInfo}${devInfo}${reasonInfo} Please deregister previous bound device so employee can log in from this device.`;
+  // Check if a pending device de-registration ticket already exists
+  const existingPending = db.prepare(`
+    SELECT id, created_at FROM service_requests
+    WHERE employee_id = ? AND request_type = 'device_change' AND status IN ('pending', 'in_progress')
+    ORDER BY id DESC LIMIT 1
+  `).get(employeeId);
 
-  db.prepare(`
-    INSERT INTO support_tickets (
-      ticket_number, company_id, created_by_user_id, category, subject, description, priority, status
-    ) VALUES (?, ?, ?, 'Device Deregistration', ?, ?, 'high', 'open')
-  `).run(
-    ticketNo,
-    user.company_id,
-    user.id,
-    `Device Deregistration Request - ${empName}`,
-    desc
-  );
+  let reqId;
+  let ticketNumber;
 
-  // Sync to Firebase if connected
+  if (existingPending) {
+    reqId = existingPending.id;
+    ticketNumber = `TKT-${reqId}`;
+    db.prepare(`
+      UPDATE service_requests
+      SET description = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(desc, reqId);
+
+    try {
+      const followUpMsg = `Follow-up de-registration request from ${empName}: "${reasonInfo}". Device: ${targetDevice} (${targetMac || 'N/A'}).`;
+      db.prepare(`
+        INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(reqId, user.id, empName, user.role_name, followUpMsg);
+    } catch (e) {}
+  } else {
+    // Insert into service_requests table so it displays in Employee Panel and Support Team queue!
+    const result = db.prepare(`
+      INSERT INTO service_requests (
+        company_id, employee_id, request_type, title, description,
+        status, assigned_role, assigned_to
+      ) VALUES (?, ?, 'device_change', 'Device De-registration Request', ?, 'pending', 'support', NULL)
+    `).run(user.company_id, employeeId, desc);
+
+    reqId = result.lastInsertRowid;
+    ticketNumber = `TKT-${reqId}`;
+
+    // Insert initial chat message
+    try {
+      const initMsg = `Ticket created by ${empName}: "Device De-registration Request". Device: ${targetDevice} (${targetMac || 'N/A'}). Directly routed to Technical Support Team for device de-registration.`;
+      db.prepare(`
+        INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(reqId, user.id, empName, user.role_name, initMsg);
+    } catch (e) {}
+  }
+
+  // Also maintain support_tickets entry for cross-compatibility
   try {
-    const { syncTicketMessage } = require('../services/firebase');
-    syncTicketMessage(ticketNo, {
-      ticketNo,
-      companyId: user.company_id,
-      userId: user.id,
-      userName: user.username,
-      category: 'Device Deregistration',
-      subject: `Device Deregistration Request - ${empName}`,
-      description: desc,
-      status: 'open',
-      createdAt: new Date().toISOString()
-    }).catch(() => {});
+    const existingSt = db.prepare('SELECT id FROM support_tickets WHERE ticket_number = ?').get(ticketNumber);
+    if (!existingSt) {
+      db.prepare(`
+        INSERT INTO support_tickets (
+          ticket_number, company_id, created_by_user_id, category, subject, description, priority, status
+        ) VALUES (?, ?, ?, 'Device Deregistration', ?, ?, 'high', 'open')
+      `).run(
+        ticketNumber,
+        user.company_id,
+        user.id,
+        `Device De-registration Request - ${empName}`,
+        desc
+      );
+    }
+  } catch (e) {}
+
+  // Send notifications to Support Team and Super Admins
+  try {
+    const supportUsers = db.prepare(`
+      SELECT u.id FROM users u
+      JOIN roles r ON u.role_id = r.id
+      WHERE r.name IN ('support', 'super_admin')
+    `).all();
+    for (const su of supportUsers) {
+      db.prepare(`
+        INSERT INTO notifications (user_id, company_id, title, message, type, link)
+        VALUES (?, ?, 'New Device De-registration Ticket', ?, 'ticket', '/support')
+      `).run(su.id, user.company_id, `Employee ${empName} (@${user.username}) submitted Device De-registration Ticket #${reqId}.`);
+    }
+  } catch (e) {}
+
+  // Sync to Firebase
+  try {
+    const { syncServiceRequest, syncSupportTicket } = require('../services/firebase');
+    const freshSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(reqId);
+    if (freshSr && syncServiceRequest) {
+      syncServiceRequest(freshSr).catch(() => {});
+    }
+    if (syncSupportTicket) {
+      syncSupportTicket({
+        id: reqId,
+        ticket_number: ticketNumber,
+        company_id: user.company_id,
+        user_id: user.id,
+        title: 'Device De-registration Request',
+        description: desc,
+        category: 'device_change',
+        priority: 'high',
+        status: 'pending'
+      }).catch(() => {});
+    }
   } catch (e) {}
 
   res.json({
     success: true,
-    ticketNumber: ticketNo,
-    message: `Device deregistration request submitted successfully! Ticket #${ticketNo} has been generated and sent to Support and your Company Admin. It is also recorded in your Employee Tickets page.`
+    ticketNumber,
+    requestId: reqId,
+    alreadyExists: !!existingPending,
+    message: existingPending
+      ? `You already have an active de-registration ticket (#${reqId}). Support team has been alerted to prioritize de-registering your device.`
+      : `Device de-registration ticket #${reqId} submitted successfully! Support team will de-register your previous device. You can track this in your Support Ticket History.`
   });
 });
 

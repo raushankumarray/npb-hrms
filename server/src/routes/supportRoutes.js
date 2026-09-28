@@ -285,15 +285,16 @@ router.delete('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res)
 
 // Deregister & Unbind Device (Support Level 1+ or Super Admin)
 router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => {
-  const { user_id, reason } = req.body;
+  const targetUserId = req.body.user_id || req.body.userId || req.body.id;
+  const reason = req.body.reason;
 
-  if (!user_id) {
+  if (!targetUserId) {
     return res.status(400).json({ error: 'Target user_id is required.' });
   }
 
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
   const result = unbindUserDevice({
-    userId: user_id,
+    userId: targetUserId,
     authorizedUserId: req.user.id,
     authorizerName: req.user.username,
     authorizerRole: req.user.role_name,
@@ -310,8 +311,50 @@ router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => 
     db.prepare(`
       INSERT INTO notifications (user_id, title, message, type)
       VALUES (?, 'Device Deregistered', 'Your device registration and MAC lock have been reset by Support. You can now log in and register your new device.', 'device')
-    `).run(user_id);
+    `).run(targetUserId);
   } catch (e) {}
+
+  // Auto-resolve any open device deregistration tickets for this employee
+  try {
+    const emp = db.prepare('SELECT id FROM employees WHERE user_id = ?').get(targetUserId);
+    if (emp) {
+      const openTickets = db.prepare(`
+        SELECT id FROM service_requests 
+        WHERE employee_id = ? AND request_type = 'device_change' AND status NOT IN ('resolved', 'closed')
+      `).all(emp.id);
+
+      for (const t of openTickets) {
+        db.prepare(`
+          UPDATE service_requests
+          SET status = 'resolved',
+              resolved_by = ?,
+              resolution_notes = 'Device deregistered by Support Team. Employee can now log in and register their new device.',
+              is_archived = 1,
+              archived_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(req.user.id, t.id);
+
+        try {
+          db.prepare(`
+            INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            t.id, req.user.id, req.user.username, req.user.role_name,
+            'Device deregistered by Support Team. Employee can now log in and bind their new device. Ticket marked as resolved.'
+          );
+        } catch (e) {}
+
+        try {
+          const { syncServiceRequest } = require('../services/firebase');
+          const freshSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(t.id);
+          if (freshSr && syncServiceRequest) syncServiceRequest(freshSr).catch(() => {});
+        } catch (e) {}
+      }
+    }
+  } catch (e) {
+    console.warn('Auto-resolving device tickets notice:', e.message);
+  }
 
   res.json({ success: true, message: result.message });
 });
@@ -941,6 +984,45 @@ router.post('/remote/quick-action', verifyAuth, requireSupportLevel(4), (req, re
       ipAddress
     });
     if (!result.success) return res.status(400).json({ error: result.error });
+
+    // Auto-resolve any open device deregistration tickets for this employee
+    try {
+      const openTickets = db.prepare(`
+        SELECT id FROM service_requests 
+        WHERE (employee_id = ? OR employee_id = (SELECT id FROM employees WHERE user_id = ?))
+          AND request_type = 'device_change' AND status NOT IN ('resolved', 'closed')
+      `).all(targetUser.employee_id || 0, user_id);
+
+      for (const t of openTickets) {
+        db.prepare(`
+          UPDATE service_requests
+          SET status = 'resolved',
+              resolved_by = ?,
+              resolution_notes = 'Device deregistered by Support Team. Employee can now log in and register their new device.',
+              is_archived = 1,
+              archived_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(req.user.id, t.id);
+
+        try {
+          db.prepare(`
+            INSERT INTO service_request_messages (request_id, user_id, sender_name, sender_role, message)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            t.id, req.user.id, req.user.username, req.user.role_name,
+            'Device deregistered by Support Team via Remote Control. Employee can now log in and bind their new device. Ticket marked as resolved.'
+          );
+        } catch (e) {}
+
+        try {
+          const { syncServiceRequest } = require('../services/firebase');
+          const freshSr = db.prepare('SELECT * FROM service_requests WHERE id = ?').get(t.id);
+          if (freshSr && syncServiceRequest) syncServiceRequest(freshSr).catch(() => {});
+        } catch (e) {}
+      }
+    } catch (e) {}
+
     return res.json({ success: true, message: 'Device unbound and MAC lock cleared successfully via Remote Control.' });
   }
 
