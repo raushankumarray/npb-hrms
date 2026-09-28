@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
-  Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
-  Radio, Sparkles
+  Layers, Compass, UserCheck, ChevronRight, ChevronDown, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
+  Radio, Sparkles, Database
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -32,6 +32,34 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
       window.__hrmsSelectTab = null;
     };
   }, [onSelectTab]);
+
+  // Dropdown open/close state in navigation (Accounts & Global Data for Super Admin)
+  const [openDropdowns, setOpenDropdowns] = useState(() => {
+    const initial = { accounts: false, 'global-data': false };
+    if (['companies', 'all-employees', 'support-accounts'].includes(activeTab)) {
+      initial.accounts = true;
+    }
+    if (['attendance', 'reports'].includes(activeTab)) {
+      initial['global-data'] = true;
+    }
+    return initial;
+  });
+
+  // Keep dropdown open when activeTab matches a child
+  useEffect(() => {
+    if (['companies', 'all-employees', 'support-accounts'].includes(activeTab)) {
+      setOpenDropdowns(prev => ({ ...prev, accounts: true }));
+    } else if (['attendance', 'reports'].includes(activeTab)) {
+      setOpenDropdowns(prev => ({ ...prev, 'global-data': true }));
+    }
+  }, [activeTab]);
+
+  const toggleDropdown = (dropdownId) => {
+    setOpenDropdowns(prev => ({
+      ...prev,
+      [dropdownId]: !prev[dropdownId]
+    }));
+  };
 
   // Periodic master auto-sync every 30 seconds
   useEffect(() => {
@@ -122,12 +150,28 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
       case 'super_admin':
         return [
           { id: 'dashboard', label: 'Global Dashboard', icon: Layers },
-          { id: 'companies', label: 'Company Portals', icon: Building2 },
-          { id: 'all-employees', label: 'All Employees Directory', icon: Users },
-          { id: 'support-accounts', label: 'Support Accounts', icon: Shield },
-          { id: 'attendance', label: 'Global Attendance', icon: Clock },
+          {
+            id: 'accounts',
+            label: 'Accounts',
+            icon: Users,
+            isDropdown: true,
+            children: [
+              { id: 'companies', label: 'Company Portals', icon: Building2 },
+              { id: 'all-employees', label: 'All Employees Directory', icon: Users },
+              { id: 'support-accounts', label: 'Support Accounts', icon: Shield }
+            ]
+          },
+          {
+            id: 'global-data',
+            label: 'Global Data',
+            icon: Database,
+            isDropdown: true,
+            children: [
+              { id: 'attendance', label: 'Global Attendance', icon: Clock },
+              { id: 'reports', label: 'Global Reports', icon: FileText }
+            ]
+          },
           { id: 'calendar', label: 'System Calendar', icon: Calendar },
-          { id: 'reports', label: 'Global Reports', icon: FileText },
           { id: 'audit-logs', label: 'System Audit Logs', icon: FileSpreadsheet },
           { id: 'settings', label: 'Platform Settings', icon: Settings }
         ];
@@ -200,6 +244,112 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
     setMobileMenuOpen(false);
   };
 
+  const getActiveNavLabel = () => {
+    for (const item of navItems) {
+      if (item.id === activeTab) return item.label;
+      if (item.children) {
+        const child = item.children.find(c => c.id === activeTab);
+        if (child) return `${item.label} › ${child.label}`;
+      }
+    }
+    return 'Dashboard';
+  };
+
+  const renderNavItem = (item, isMobile = false) => {
+    const Icon = item.icon;
+
+    if (item.isDropdown && item.children) {
+      const isOpen = !!openDropdowns[item.id];
+      const isAnyChildActive = item.children.some(c => c.id === activeTab);
+
+      return (
+        <div key={item.id} className="space-y-1">
+          <button
+            type="button"
+            onClick={() => toggleDropdown(item.id)}
+            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer select-none ${
+              isAnyChildActive
+                ? 'bg-sky-50/80 text-sky-800 font-bold border border-sky-200/60 shadow-2xs'
+                : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+            title={`Click to ${isOpen ? 'collapse' : 'expand'} ${item.label}`}
+          >
+            <div className="flex items-center gap-3 truncate">
+              <Icon className={`w-4 h-4 shrink-0 ${isAnyChildActive ? 'text-sky-600' : 'text-slate-500'}`} />
+              <span className="truncate">{item.label}</span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border ${
+                isAnyChildActive
+                  ? 'bg-sky-100 text-sky-700 border-sky-200'
+                  : 'bg-slate-100 text-slate-500 border-slate-200/80'
+              }`}>
+                {item.children.length}
+              </span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isOpen ? 'rotate-180 text-sky-600' : 'text-slate-400'}`} />
+            </div>
+          </button>
+
+          {isOpen && (
+            <div className="pl-3 pr-1 py-1 space-y-1 ml-2.5 border-l-2 border-slate-200 animate-in fade-in slide-in-from-top-1 duration-150">
+              {item.children.map((child) => {
+                const ChildIcon = child.icon;
+                const isChildActive = activeTab === child.id;
+                return (
+                  <button
+                    key={child.id}
+                    type="button"
+                    onClick={() => handleNavClick(child.id)}
+                    className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      isChildActive
+                        ? 'bg-sky-50 text-sky-700 font-bold border border-sky-200/60 shadow-xs'
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 truncate">
+                      <ChildIcon className={`w-3.5 h-3.5 shrink-0 ${isChildActive ? 'text-sky-600' : 'text-slate-400'}`} />
+                      <span className="truncate">{child.label}</span>
+                    </div>
+                    {isChildActive && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-sky-500 shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Standard flat nav button
+    const isActive = activeTab === item.id;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        onClick={() => handleNavClick(item.id)}
+        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+          isActive
+            ? 'bg-sky-50 text-sky-700 font-bold border border-sky-200/60 shadow-sm'
+            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+        }`}
+      >
+        <div className="flex items-center gap-3 truncate">
+          <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
+          <span className="truncate">{item.label}</span>
+        </div>
+        {item.badge && (
+          <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase shrink-0 ${
+            isActive ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-700'
+          }`}>
+            {item.badge}
+          </span>
+        )}
+      </button>
+    );
+  };
+
   return (
     <div className="h-screen overflow-hidden bg-slate-100 flex flex-col font-sans relative">
       {/* Floating Android-style Notification Cards (stacked at top center, mirroring phone notifications) */}
@@ -264,7 +414,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
             <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-slate-200">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 text-sky-800 text-xs font-semibold border border-sky-200/70 shadow-xs">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                {navItems.find(i => i.id === activeTab)?.label || 'Dashboard'}
+                {getActiveNavLabel()}
               </span>
             </div>
           </div>
@@ -327,33 +477,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
             Navigation Menu
           </div>
           <div className="space-y-1 flex-1">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => handleNavClick(item.id)}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-all ${
-                    isActive
-                      ? 'bg-sky-50 text-sky-700 font-bold border border-sky-200/60 shadow-sm'
-                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 truncate">
-                    <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
-                    <span className="truncate">{item.label}</span>
-                  </div>
-                  {item.badge && (
-                    <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase shrink-0 ${
-                      isActive ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-700'
-                    }`}>
-                      {item.badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {navItems.map((item) => renderNavItem(item))}
           </div>
 
           {/* Desktop Sidebar Footer for All Panels */}
@@ -391,33 +515,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
               </div>
 
               <div className="space-y-1 flex-1">
-                {navItems.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeTab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => handleNavClick(item.id)}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold ${
-                        isActive
-                          ? 'bg-sky-50 text-sky-700 font-bold'
-                          : 'text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 truncate">
-                        <Icon className={`w-4 h-4 ${isActive ? 'text-sky-600' : 'text-slate-400'}`} />
-                        <span className="truncate">{item.label}</span>
-                      </div>
-                      {item.badge && (
-                        <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black tracking-wider uppercase shrink-0 ${
-                          isActive ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-700'
-                        }`}>
-                          {item.badge}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+                {navItems.map((item) => renderNavItem(item, true))}
               </div>
 
               {/* Mobile Drawer Footer with User details & Logout Button */}
