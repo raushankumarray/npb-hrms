@@ -21,6 +21,19 @@ function sanitizeDatabase() {
 
   try {
     const sanitizeTransaction = db.transaction(() => {
+      // 0. Remove any phantom auto-generated companies and their dependencies
+      const phantomComps = db.prepare(`
+        SELECT id FROM companies 
+        WHERE code LIKE 'COMP_1790610485%'
+           OR LOWER(name) IN ('attendance', 'employees', 'leave_balances', 'modules', 'reports', 'users')
+           OR LOWER(code) IN ('attendance', 'employees', 'leave_balances', 'modules', 'reports', 'users')
+      `).all();
+      for (const pc of phantomComps) {
+        db.prepare('DELETE FROM company_modules WHERE company_id = ?').run(pc.id);
+        db.prepare('DELETE FROM company_settings WHERE company_id = ?').run(pc.id);
+        db.prepare('DELETE FROM companies WHERE id = ?').run(pc.id);
+      }
+
       // 1. Remove orphaned employees whose company does not exist or is deleted
       const empRes = db.prepare(`
         DELETE FROM employees

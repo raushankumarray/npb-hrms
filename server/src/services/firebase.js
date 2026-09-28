@@ -2630,13 +2630,23 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (val && typeof val === 'object') {
             Object.entries(val).forEach(([k, v]) => {
               if (v && typeof v === 'object') {
+                if (refPath === 'companies') {
+                  // In RTDB /companies, each top-level key k IS a company.
+                  // NEVER expand nested properties (employees, attendance, etc.) as companies!
+                  const compId = v.id || k;
+                  if (compId && !targetMap.has(String(compId))) {
+                    targetMap.set(String(compId), { id: compId, ...v });
+                  }
+                  return;
+                }
+
                 const itemId = v.id || v.companyId || v.company_id || k;
                 if (itemId) {
                   const id = String(itemId);
                   if (!targetMap.has(id)) targetMap.set(id, { id: itemId, ...v });
                 }
-                // Also check if v has nested child objects (e.g. subcollections or companyId -> items map)
-                if (!v.id && !v.modules && !v.timezone) {
+                // Only for nested collections where parent key is companyId (e.g. company_attendance or attendance_punches)
+                if (!v.id && !v.modules && !v.timezone && !['companies', 'users', 'company_settings', 'company_modules'].includes(refPath)) {
                   Object.entries(v).forEach(([subK, subV]) => {
                     if (subV && typeof subV === 'object') {
                       const subId = String(subV.id || subK);
@@ -2784,17 +2794,31 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       // Phase 1: Restore Companies & Setup Default Structures
       for (const [docKey, c] of companiesMap) {
         let rawId = Number(c.id);
-        const rawCode = (c.code || (!isNaN(rawId) && rawId > 0 ? `COMP${rawId}` : `COMP_${Date.now()}_${Math.floor(Math.random() * 1000)}`)).trim().toUpperCase();
-        const name = (c.name || c.portalName || c.portal_name || rawCode || 'Company').trim();
-        const portalName = (c.portal_name || c.portalName || name || 'Portal').trim();
+        const rawCodeUpper = String(c.code || '').trim().toUpperCase();
+        const rawNameLower = String(c.name || c.portalName || c.portal_name || '').trim().toLowerCase();
+        const rawDocKeyUpper = String(docKey || '').trim().toUpperCase();
 
         // Permanent Exclusion for legacy demo companies requested by user
         const isLegacyExcluded =
-          ['NPB01', 'BSES01', 'MAN01'].includes(rawCode) ||
-          ['npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies'].includes(name.toLowerCase());
+          ['NPB01', 'BSES01', 'MAN01'].includes(rawCodeUpper) ||
+          ['npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies'].includes(rawNameLower);
         if (isLegacyExcluded) {
           continue;
         }
+
+        // Strict Exclusion: Filter out any phantom auto-generated codes or non-company subproperties
+        const isPhantomExcluded =
+          rawCodeUpper.startsWith('COMP_1790610485') ||
+          rawDocKeyUpper.startsWith('COMP_1790610485') ||
+          ['ATTENDANCE', 'EMPLOYEES', 'LEAVE_BALANCES', 'MODULES', 'REPORTS', 'USERS'].includes(rawDocKeyUpper) ||
+          ['attendance', 'employees', 'leave_balances', 'modules', 'reports', 'users'].includes(rawNameLower);
+        if (isPhantomExcluded) {
+          continue;
+        }
+
+        const rawCode = (c.code || (!isNaN(rawId) && rawId > 0 ? `COMP${rawId}` : `COMP_${Date.now()}_${Math.floor(Math.random() * 1000)}`)).trim().toUpperCase();
+        const name = (c.name || c.portalName || c.portal_name || rawCode || 'Company').trim();
+        const portalName = (c.portal_name || c.portalName || name || 'Portal').trim();
 
         const email = c.email || '';
         const phone = c.phone || '';

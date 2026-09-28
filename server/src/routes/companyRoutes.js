@@ -56,6 +56,8 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
     WHERE c.is_deleted = 0
       AND UPPER(c.code) NOT IN ('NPB01', 'BSES01', 'MAN01')
       AND LOWER(c.name) NOT IN ('npb attendance solutions', 'bses yamuna power ltd', 'mannully technologies')
+      AND c.code NOT LIKE 'COMP_1790610485%'
+      AND LOWER(c.name) NOT IN ('attendance', 'employees', 'leave_balances', 'modules', 'reports', 'users')
   `;
   const params = [];
 
