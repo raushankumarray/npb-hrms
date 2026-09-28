@@ -53,7 +53,13 @@ export async function apiRequest(endpoint, options = {}) {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || `Request failed with status ${response.status}`);
+    const error = new Error(data.error || `Request failed with status ${response.status}`);
+    error.data = data;
+    error.status = response.status;
+    error.code = data.code;
+    error.registeredDevice = data.registeredDevice;
+    error.currentDevice = data.currentDevice;
+    throw error;
   }
 
   return data;

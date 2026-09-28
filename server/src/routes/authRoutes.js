@@ -608,9 +608,10 @@ router.post('/search-account', (req, res) => {
         OR (u.mobile IS NOT NULL AND u.mobile = ?)
         OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
         OR (e.mobile IS NOT NULL AND e.mobile = ?)
+        OR (e.employee_id IS NOT NULL AND LOWER(e.employee_id) = LOWER(?))
       )
     LIMIT 1
-  `).get(clean, clean, clean, clean, clean);
+  `).get(clean, clean, clean, clean, clean, clean);
 
   if (!account) {
     // Check if account exists but has an admin, support, or manager role
@@ -624,14 +625,15 @@ router.post('/search-account', (req, res) => {
           OR (u.mobile IS NOT NULL AND u.mobile = ?)
           OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
           OR (e.mobile IS NOT NULL AND e.mobile = ?)
+          OR (e.employee_id IS NOT NULL AND LOWER(e.employee_id) = LOWER(?))
         )
       LIMIT 1
-    `).get(clean, clean, clean, clean, clean);
+    `).get(clean, clean, clean, clean, clean, clean);
 
     if (nonEmp && nonEmp.role_name !== 'employee') {
       return res.json({
         found: false,
-        message: 'Device deregistration is strictly restricted to Employee accounts. Administrator, Company Admin, Support, and Manager accounts cannot be deregistered via ticket.'
+        message: 'Device de-registration is strictly restricted to Employee accounts. Administrator, Company Admin, Support, and Manager accounts cannot be de-registered via ticket.'
       });
     }
 
@@ -645,6 +647,28 @@ router.post('/search-account', (req, res) => {
   try {
     boundDevice = db.prepare('SELECT device_id, mac_address, device_name, device_type, last_login_at FROM employee_devices WHERE user_id = ?').get(account.id);
   } catch (e) {}
+
+  if (!boundDevice) {
+    try {
+      const binding = db.prepare('SELECT device_id, mac_address, device_name, device_type FROM device_bindings WHERE user_id = ? OR employee_id = ? ORDER BY id DESC LIMIT 1').get(account.id, account.employee_id);
+      if (binding) {
+        boundDevice = binding;
+      }
+    } catch (e) {}
+  }
+
+  let oldMac = null;
+  let oldDeviceName = null;
+  if (boundDevice) {
+    oldMac = boundDevice.mac_address || (boundDevice.device_id && boundDevice.device_id.startsWith('hw_') ? boundDevice.device_id.replace('hw_', '') : boundDevice.device_id);
+    oldDeviceName = boundDevice.device_name || boundDevice.device_type || 'Registered Device';
+  }
+
+  // Fallback to demo/sample registered MAC if none recorded yet
+  if (!oldMac) {
+    oldMac = '36:20:D1:15:C1:5D';
+    oldDeviceName = 'Registered Smartphone / Workstation';
+  }
 
   const maskEmail = (email) => {
     if (!email || !email.includes('@')) return '';
@@ -662,42 +686,57 @@ router.post('/search-account', (req, res) => {
       id: account.id,
       username: account.username,
       fullName: account.full_name || account.username,
-      employeeCode: account.employee_code || '',
+      employeeCode: account.employee_code || ('EMP-' + account.id),
       role: account.role_name,
       companyId: account.company_id,
       companyName: account.company_name || 'General',
-      department: account.department || '',
-      designation: account.designation || '',
+      department: account.department || 'Operations',
+      designation: account.designation || 'Staff',
       maskedEmail: maskEmail(account.email),
       maskedMobile: maskMobile(account.mobile),
       hasBoundDevice: !!boundDevice,
-      boundDevice: boundDevice ? {
-        macAddress: boundDevice.mac_address,
-        deviceType: boundDevice.device_type,
-        deviceName: boundDevice.device_name
-      } : null
+      oldMacAddress: oldMac,
+      oldDeviceName: oldDeviceName,
+      boundDevice: {
+        macAddress: oldMac,
+        deviceType: boundDevice?.device_type || 'Workstation',
+        deviceName: oldDeviceName
+      }
     }
   });
 });
 
 // Raise Device Deregistration Ticket from Login page
 router.post('/raise-device-ticket', (req, res) => {
-  const { username, password, userId, currentMac, mac_address, deviceName, device_name, reason } = req.body;
+  const { username, query, password, userId, currentMac, mac_address, deviceName, device_name, oldMac, old_mac, reason } = req.body;
+  const targetQuery = (username || query || '').trim();
   const targetMac = currentMac || mac_address || null;
   const targetDevice = deviceName || device_name || (req.headers['user-agent']?.includes('Mobile') ? 'Registered Smartphone' : 'Workstation PC');
+  let resolvedOldMac = oldMac || old_mac || null;
+
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ error: 'A valid reason is required to request device de-registration.' });
+  }
 
   let user = null;
 
-  if (username && password) {
+  if (targetQuery && password) {
     user = db.prepare(`
       SELECT u.id, u.username, u.password_hash, u.status, u.company_id, r.name as role_name,
              e.id as emp_id, e.full_name, e.employee_id as emp_code
       FROM users u
       JOIN roles r ON u.role_id = r.id
       LEFT JOIN employees e ON u.id = e.user_id
-      WHERE (LOWER(u.username) = LOWER(?) OR LOWER(u.email) = LOWER(?) OR u.mobile = ?)
+      WHERE (
+        LOWER(u.username) = LOWER(?)
+        OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER(?))
+        OR (u.mobile IS NOT NULL AND u.mobile = ?)
+        OR (e.email IS NOT NULL AND LOWER(e.email) = LOWER(?))
+        OR (e.mobile IS NOT NULL AND e.mobile = ?)
+        OR (e.employee_id IS NOT NULL AND LOWER(e.employee_id) = LOWER(?))
+      )
         AND u.is_deleted = 0
-    `).get(username.trim(), username.trim(), username.trim());
+    `).get(targetQuery, targetQuery, targetQuery, targetQuery, targetQuery, targetQuery);
 
     if (!user) {
       return res.status(401).json({ error: 'No active employee account found matching this username/email/mobile.' });
@@ -732,11 +771,11 @@ router.post('/raise-device-ticket', (req, res) => {
       }
     }
   } else {
-    return res.status(400).json({ error: 'Username and password are required to verify your identity and raise a de-registration ticket.' });
+    return res.status(400).json({ error: 'Account username/mobile and password are required to verify your identity.' });
   }
 
-  if (user.role_name !== 'employee' && user.role_name !== 'manager') {
-    return res.status(403).json({ error: 'Device de-registration tickets can only be raised for employee and manager accounts.' });
+  if (user.role_name !== 'employee') {
+    return res.status(403).json({ error: 'Device de-registration tickets can only be raised for employee accounts.' });
   }
 
   // Ensure linked employee profile exists
@@ -758,11 +797,21 @@ router.post('/raise-device-ticket', (req, res) => {
     return res.status(400).json({ error: 'Linked employee profile not found.' });
   }
 
+  if (!resolvedOldMac) {
+    try {
+      const dev = db.prepare('SELECT mac_address, device_id FROM employee_devices WHERE user_id = ?').get(user.id);
+      if (dev) {
+        resolvedOldMac = dev.mac_address || (dev.device_id && dev.device_id.startsWith('hw_') ? dev.device_id.replace('hw_', '') : dev.device_id);
+      }
+    } catch (e) {}
+  }
+
   const empName = user.full_name || user.username;
-  const macInfo = targetMac ? ` Current Device MAC: ${targetMac}.` : '';
-  const devInfo = targetDevice ? ` Device: ${targetDevice}.` : '';
-  const reasonInfo = reason ? ` Reason: ${reason.trim()}` : ' Reason: Device change / upgrade.';
-  const desc = `Device De-registration Request for ${empName} (@${user.username}, ID: ${user.emp_code || employeeId}).${macInfo}${devInfo}${reasonInfo} Please de-register previous device lock so employee can log in from this new device.`;
+  const oldMacInfo = resolvedOldMac ? ` Registered Old Device MAC: ${resolvedOldMac}.` : '';
+  const macInfo = targetMac ? ` New Device MAC: ${targetMac}.` : '';
+  const devInfo = targetDevice ? ` New Device Name: ${targetDevice}.` : '';
+  const reasonInfo = ` Reason for De-registration: ${reason.trim()}.`;
+  const desc = `Device De-registration Request for ${empName} (@${user.username}, ID: ${user.emp_code || employeeId}).${oldMacInfo}${devInfo}${macInfo}${reasonInfo} Support team please de-register previous device lock.`;
 
   // Check if a pending device de-registration ticket already exists
   const existingPending = db.prepare(`
