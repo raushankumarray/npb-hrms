@@ -24,6 +24,10 @@ try {
 } catch (e) {}
 
 try {
+  db.prepare("ALTER TABLE support_users ADD COLUMN enable_ai_assistant INTEGER DEFAULT 0").run();
+} catch (e) {}
+
+try {
   db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_role TEXT DEFAULT 'manager'").run();
 } catch (e) {}
 

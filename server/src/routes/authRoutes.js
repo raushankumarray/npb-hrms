@@ -21,7 +21,7 @@ router.post('/login', async (req, res) => {
     return db.prepare(`
       SELECT u.id, u.username, u.password_hash, u.email, u.mobile, u.role_id, u.company_id, u.status, u.is_deleted,
              r.name as role_name,
-             s.permission_level as support_level,
+             s.permission_level as support_level, COALESCE(s.enable_ai_assistant, 0) as support_ai_enabled,
              e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id,
              e.employment_start_date, e.employment_end_date
       FROM users u
@@ -210,6 +210,7 @@ router.post('/login', async (req, res) => {
       mobile: user.mobile || '',
       role: user.role_name,
       supportLevel: user.support_level,
+      enable_ai_assistant: user.role_name === "support" ? (user.support_ai_enabled === 1) : undefined,
       companyId: user.company_id,
       employeeId: user.employee_id,
       employeeCode: user.employee_code,
@@ -287,6 +288,7 @@ router.get('/me', verifyAuth, (req, res) => {
       mobile: req.user.mobile || '',
       role: req.user.role_name,
       supportLevel: req.user.support_level,
+      enable_ai_assistant: req.user.role_name === "support" ? !!req.user.enable_ai_assistant : undefined,
       companyId: req.user.company_id,
       companyName: req.user.company_name || (companyInfo?.name) || '',
       employeeId: req.user.employee_id,

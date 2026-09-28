@@ -3,7 +3,7 @@ import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
   Layers, Compass, UserCheck, ChevronRight, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
-  Radio, Sparkles, ShoppingBag
+  Radio, Sparkles
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -91,8 +91,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         return modules.reports !== false;
       case 'correction':
         return modules.corrections !== false;
-      case 'billing':
-        return modules.billing !== false;
       default:
         return true;
     }
@@ -141,7 +139,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'holidays', label: 'Holidays & Weekly Off', icon: Calendar },
           { id: 'live-map', label: 'Live Tracking Map', icon: MapPin },
           { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
-          { id: 'billing', label: 'Merchant & Billing', icon: ShoppingBag, badge: 'POS' },
           { id: 'reports', label: 'Custom Reports & Export', icon: FileText },
           { id: 'settings', label: 'Company Settings', icon: Settings }
         ];
@@ -496,8 +493,12 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         onUserUpdate={onUserUpdate}
       />
 
-      {/* UNIVERSAL PIHU AI ASSISTANT (Super Admin and Support always access; tenant panels respect company.modules.ai_assistant) */}
-      {(!company || user?.role === 'super_admin' || user?.role === 'support' || company?.modules?.ai_assistant !== false) && (
+      {/* UNIVERSAL PIHU AI ASSISTANT:
+          - Super Admin always has access
+          - Support staff access ONLY if Super Admin enabled AI feature for that support account
+          - Tenant company users access only if ai_assistant module is enabled for that company
+      */}
+      {(user?.role === 'super_admin' || (user?.role === 'support' ? !!user?.enable_ai_assistant : (company ? company?.modules?.ai_assistant !== false : false))) && (
         <PihuAssistant
           user={user}
           company={company}

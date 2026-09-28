@@ -11,7 +11,7 @@ const { logAudit } = require('../services/audit');
 router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const users = db.prepare(`
     SELECT u.id as user_id, u.username, u.email, u.status, u.created_at, u.last_login_at,
-           s.id as support_id, s.full_name, s.permission_level, s.device_status
+           s.id as support_id, s.full_name, s.permission_level, s.device_status, COALESCE(s.enable_ai_assistant, 0) as enable_ai_assistant
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.is_deleted = 0
@@ -26,7 +26,7 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
 
 // Create Support Account (Super Admin only)
 router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
-  const { full_name, username, password, email, permission_level } = req.body;
+  const { full_name, username, password, email, permission_level, enable_ai_assistant } = req.body;
 
   if (!full_name || !username || !password) {
     return res.status(400).json({ error: 'Full Name, Username, and Password are required.' });
@@ -40,6 +40,7 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const roleSupport = db.prepare("SELECT id FROM roles WHERE name = 'support'").get();
   const passHash = bcrypt.hashSync(password, 10);
   const pLevel = Math.min(Math.max(parseInt(permission_level || 1, 10), 1), 4);
+  const aiEnabled = enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0;
 
   let createdSupportId = null;
   const transaction = db.transaction(() => {
@@ -49,9 +50,9 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
     `).run(username.trim(), passHash, email, roleSupport.id);
 
     const supportRes = db.prepare(`
-      INSERT INTO support_users (user_id, full_name, permission_level, device_status)
-      VALUES (?, ?, ?, 'active')
-    `).run(userRes.lastInsertRowid, full_name.trim(), pLevel);
+      INSERT INTO support_users (user_id, full_name, permission_level, device_status, enable_ai_assistant)
+      VALUES (?, ?, ?, 'active', ?)
+    `).run(userRes.lastInsertRowid, full_name.trim(), pLevel, aiEnabled);
 
     createdSupportId = supportRes.lastInsertRowid;
 
@@ -75,10 +76,10 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
 // Update Support Account & Permission Level (Super Admin only)
 router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const userId = parseInt(req.params.id, 10);
-  const { username, full_name, email, permission_level, status, password } = req.body;
+  const { username, full_name, email, permission_level, status, password, enable_ai_assistant } = req.body;
 
   const currentSupport = db.prepare(`
-    SELECT u.*, s.permission_level, s.full_name
+    SELECT u.*, s.permission_level, s.full_name, s.enable_ai_assistant
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.id = ?
@@ -119,13 +120,17 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
     // Update support_users table
     const updatedName = (full_name && full_name.trim()) ? full_name.trim() : currentSupport.full_name;
     const pLevel = permission_level ? Math.min(Math.max(parseInt(permission_level, 10), 1), 4) : currentSupport.permission_level;
+    const aiEnabled = enable_ai_assistant !== undefined
+      ? (enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0)
+      : (currentSupport.enable_ai_assistant || 0);
 
     db.prepare(`
       UPDATE support_users SET
         full_name = ?,
-        permission_level = ?
+        permission_level = ?,
+        enable_ai_assistant = ?
       WHERE user_id = ?
-    `).run(updatedName, pLevel, userId);
+    `).run(updatedName, pLevel, aiEnabled, userId);
 
     logAudit({
       userId: req.user.id,

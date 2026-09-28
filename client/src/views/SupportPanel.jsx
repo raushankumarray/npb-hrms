@@ -1777,7 +1777,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* CONFIRMATION MODAL: DELETE AUDIT LOGS (L4) */}
       {showDeleteAuditModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
               <div className="p-2.5 rounded-xl bg-rose-100 text-rose-600 shrink-0">
                 <Trash2 className="w-6 h-6" />
@@ -2491,7 +2491,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* CREATE TICKET MODAL FROM HUB */}
       {showNewTicketModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               Log Ticket for {selectedUserDiag?.full_name || selectedUserDiag?.username}
             </h3>
@@ -2559,7 +2559,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* SEND REMOTE ALERT MODAL */}
       {remoteShowAlertModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               Dispatch Priority Alert to {remoteSelectedUser?.full_name}
             </h3>
@@ -2612,7 +2612,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* DEREGISTER DEVICE MODAL */}
       {showUnbindModal && selectedDevice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
               <Unlock className="w-5 h-5 text-purple-600" />
               Deregister Employee Device (Unlock Account)
@@ -2682,7 +2682,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* RESOLVE TICKET MODAL */}
       {showTicketModal && selectedTicket && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               Process Ticket #{selectedTicket.id}
             </h3>
@@ -2729,7 +2729,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* EDIT ATTENDANCE MODAL */}
       {editAttendanceModal && selectedAtt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               Correct Attendance Record
             </h3>

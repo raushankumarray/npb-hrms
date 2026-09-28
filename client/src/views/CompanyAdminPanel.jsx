@@ -21,7 +21,7 @@ import CompanyLeaveApprovalView from '../components/CompanyLeaveApprovalView';
 import ShiftManagementView from '../components/ShiftManagementView';
 import HolidaysWeeklyOffView from '../components/HolidaysWeeklyOffView';
 import CompanyCustomReportsView from '../components/CompanyCustomReportsView';
-import MerchantBillingView from './MerchantBillingView';
+
 
 export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCompany }) {
   const [employees, setEmployees] = useState([]);
@@ -2634,11 +2634,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         <LiveTrackingMap companyId={company?.id} />
       )}
 
-      {/* MERCHANT & BILLING TAB */}
-      {activeTab === 'billing' && (
-        <MerchantBillingView company={company} user={user} />
-      )}
-
       {/* SETTINGS & LOGO UPLOAD TAB */}
       {activeTab === 'settings' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -3222,7 +3217,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: EDIT STAFF */}
       {showEditStaffModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4 my-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
@@ -3564,7 +3559,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: RAISE COMPLAINT TO SUPPORT */}
       {showRaiseComplaintModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -3672,7 +3667,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: MANUAL LEAVE CREDIT */}
       {showManualLeaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
@@ -3872,7 +3867,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: DELETE OR DEDUCT LEAVE */}
       {showDeleteLeaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-2 bg-rose-50 text-rose-600 rounded-xl">
@@ -4046,7 +4041,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: ADD GEOFENCE */}
       {showGeofenceModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <div className="flex items-center gap-2">
                 <Building2 className="w-5 h-5 text-sky-600" />
@@ -4155,7 +4150,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: EDIT GEOFENCE */}
       {showEditGeofenceModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <div className="flex items-center gap-2">
                 <Edit3 className="w-5 h-5 text-sky-600" />
@@ -4275,7 +4270,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: ADD SHIFT */}
       {showShiftModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               Create Work Shift
             </h3>
@@ -4361,7 +4356,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* MODAL: ADD HOLIDAY */}
       {showHolidayModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
               Add Official Holiday
             </h3>

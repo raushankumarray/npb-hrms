@@ -65,7 +65,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     name: '', code: '', email: '', phone: '', address: '',
     plan_expiry_date: '',
     admin_username: '', admin_password: '', admin_email: '',
-    enable_ai_assistant: true, enable_billing: true,
+    enable_ai_assistant: true,
     timezone: 'Asia/Kolkata', working_hours_per_day: 8.0,
     half_day_min_hours: 4.0, full_day_min_hours: 8.0,
     show_branding_mode: 'both'
@@ -73,14 +73,14 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
   // New Support User Form State
   const [newSupport, setNewSupport] = useState({
-    full_name: '', username: '', password: '', email: '', permission_level: 3
+    full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true
   });
 
   // Support Account Management States
   const [showEditSupport, setShowEditSupport] = useState(false);
   const [editingSupportId, setEditingSupportId] = useState(null);
   const [editSupportForm, setEditSupportForm] = useState({
-    username: '', full_name: '', email: '', permission_level: 1, status: 'active', password: ''
+    username: '', full_name: '', email: '', permission_level: 1, status: 'active', password: '', enable_ai_assistant: false
   });
 
   const [showSupportPasswordModal, setShowSupportPasswordModal] = useState(false);
@@ -564,8 +564,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         method: 'POST',
         body: {
           ...newComp,
-          enable_ai_assistant: newComp.enable_ai_assistant !== false,
-          enable_billing: newComp.enable_billing !== false,
+          enable_ai_assistant: newComp.enable_ai_assistant === true,
           portal_name: newComp.name.trim()
         }
       });
@@ -574,7 +573,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setNewComp({
         name: '', code: '', email: '', phone: '', address: '',
         admin_username: '', admin_password: '', admin_email: '',
-        enable_ai_assistant: true, enable_billing: true,
+        enable_ai_assistant: true,
         timezone: 'Asia/Kolkata', working_hours_per_day: 8.0,
         half_day_min_hours: 4.0, full_day_min_hours: 8.0,
         show_branding_mode: 'both'
@@ -739,11 +738,14 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     try {
       await apiRequest('/support/users', {
         method: 'POST',
-        body: newSupport
+        body: {
+          ...newSupport,
+          enable_ai_assistant: newSupport.enable_ai_assistant === true
+        }
       });
       setSuccess(`Support account "${newSupport.username}" created successfully.`);
       setShowCreateSupport(false);
-      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3 });
+      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true });
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -759,7 +761,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       email: s.email || '',
       permission_level: s.permission_level || 1,
       status: s.status || 'active',
-      password: ''
+      password: '',
+      enable_ai_assistant: s.enable_ai_assistant === 1 || s.enable_ai_assistant === true
     });
     setShowEditSupport(true);
   };
@@ -776,7 +779,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           email: editSupportForm.email ? editSupportForm.email.trim() : null,
           permission_level: parseInt(editSupportForm.permission_level, 10),
           status: editSupportForm.status,
-          password: editSupportForm.password ? editSupportForm.password.trim() : undefined
+          password: editSupportForm.password ? editSupportForm.password.trim() : undefined,
+          enable_ai_assistant: editSupportForm.enable_ai_assistant === true
         }
       });
       setSuccess(`Support account "${editSupportForm.username}" updated successfully.`);
@@ -2031,6 +2035,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   <th className="p-3">Username</th>
                   <th className="p-3">Permission Level</th>
                   <th className="p-3">Assigned Authority</th>
+                  <th className="p-3">AI Access</th>
                   <th className="p-3">Status</th>
                   <th className="p-3">Created</th>
                   <th className="p-3 text-right">Actions</th>
@@ -2054,6 +2059,22 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       {s.permission_level === 2 && 'Level 2 – Edit Employee & Attendance'}
                       {s.permission_level === 3 && 'Level 3 – Advanced (Device Unlock & Attendance Correction)'}
                       {s.permission_level === 4 && 'Level 4 – Full Support Authority'}
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 w-fit ${
+                        s.enable_ai_assistant
+                          ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                          : 'bg-slate-100 text-slate-500 border border-slate-200'
+                      }`}>
+                        {s.enable_ai_assistant ? (
+                          <>
+                            <Sparkles className="w-3 h-3 text-indigo-600" />
+                            <span>AI Enabled</span>
+                          </>
+                        ) : (
+                          <span>AI Disabled</span>
+                        )}
+                      </span>
                     </td>
                     <td className="p-3">
                       <button
@@ -2838,154 +2859,189 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
       {/* MODAL: CREATE COMPANY */}
       {showCreateCompany && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
-            <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
-              Create New Tenant Company & Portal
-            </h3>
-
-            <form onSubmit={handleCreateCompany} className="space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Company Legal Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={newComp.name}
-                    onChange={(e) => setNewComp({ ...newComp, name: e.target.value })}
-                    placeholder="e.g. Acme Corporation"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Company Code *</label>
-                  <input
-                    type="text"
-                    required
-                    value={newComp.code}
-                    onChange={(e) => setNewComp({ ...newComp, code: e.target.value.toUpperCase() })}
-                    placeholder="e.g. ACM01"
-                    className="w-full px-3 py-2 border rounded-lg uppercase focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Create New Tenant Company & Portal
+                </h3>
+                <p className="text-xs text-slate-500">Register new enterprise workspace & admin account</p>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateCompany(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Company Email (Optional)</label>
-                  <input
-                    type="email"
-                    value={newComp.email}
-                    onChange={(e) => setNewComp({ ...newComp, email: e.target.value })}
-                    placeholder="contact@acme.com"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Company Phone (Optional)</label>
-                  <input
-                    type="text"
-                    value={newComp.phone}
-                    onChange={(e) => setNewComp({ ...newComp, phone: e.target.value })}
-                    placeholder="+91 9876543210"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Company Address (Optional)</label>
-                  <input
-                    type="text"
-                    value={newComp.address}
-                    onChange={(e) => setNewComp({ ...newComp, address: e.target.value })}
-                    placeholder="e.g. Tower B, Tech Park, Bangalore"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Plan Expiry Date (Optional)</label>
-                  <input
-                    type="date"
-                    value={newComp.plan_expiry_date}
-                    onChange={(e) => setNewComp({ ...newComp, plan_expiry_date: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500 font-semibold"
-                  />
-                  <span className="text-[10px] text-slate-400">Account auto-suspends after this date</span>
-                </div>
-              </div>
-
-              <div className="border-t border-slate-100 pt-3">
-                <span className="font-bold text-slate-800 block mb-0.5">Company Administrator Account (Required on Signup)</span>
-                <p className="text-[11px] text-slate-500 mb-2.5">
-                  Set username as Mobile Number, Email Address, or Custom User ID. The administrator can log in using any of these credentials with their custom password.
-                </p>
+            <form onSubmit={handleCreateCompany} className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4 text-xs">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">
-                      Admin Username (Mobile No. / Email / Custom User ID) *
-                    </label>
+                    <label className="font-semibold text-slate-700 block mb-1">Company Legal Name *</label>
                     <input
                       type="text"
                       required
-                      value={newComp.admin_username}
-                      onChange={(e) => setNewComp({ ...newComp, admin_username: e.target.value })}
-                      placeholder="e.g. 9876543210, admin@acme.com, or acme_admin"
+                      value={newComp.name}
+                      onChange={(e) => setNewComp({ ...newComp, name: e.target.value })}
+                      placeholder="e.g. Acme Corporation"
                       className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
                   <div>
-                    <label className="font-semibold text-slate-700 block mb-1">
-                      Admin Password (Custom Password) *
-                    </label>
+                    <label className="font-semibold text-slate-700 block mb-1">Company Code *</label>
                     <input
-                      type="password"
+                      type="text"
                       required
-                      value={newComp.admin_password}
-                      onChange={(e) => setNewComp({ ...newComp, admin_password: e.target.value })}
-                      placeholder="••••••••"
+                      value={newComp.code}
+                      onChange={(e) => setNewComp({ ...newComp, code: e.target.value.toUpperCase() })}
+                      placeholder="e.g. ACM01"
+                      className="w-full px-3 py-2 border rounded-lg uppercase focus:ring-1 focus:ring-sky-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Company Email (Optional)</label>
+                    <input
+                      type="email"
+                      value={newComp.email}
+                      onChange={(e) => setNewComp({ ...newComp, email: e.target.value })}
+                      placeholder="contact@acme.com"
+                      className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Company Phone (Optional)</label>
+                    <input
+                      type="text"
+                      value={newComp.phone}
+                      onChange={(e) => setNewComp({ ...newComp, phone: e.target.value })}
+                      placeholder="+91 9876543210"
                       className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
                     />
                   </div>
                 </div>
-                <div className="mt-2.5">
-                  <label className="font-semibold text-slate-700 block mb-1">Admin Email (Optional / Recovery)</label>
-                  <input
-                    type="email"
-                    value={newComp.admin_email}
-                    onChange={(e) => setNewComp({ ...newComp, admin_email: e.target.value })}
-                    placeholder="admin@acme.com"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
-                  />
-                </div>
-              </div>
 
-              {/* AI Assistant Assignment Toggle */}
-              <div className="flex items-center justify-between p-3 rounded-xl border border-indigo-100 bg-indigo-50/50">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-pink-500 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
-                    AI
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Company Address (Optional)</label>
+                    <input
+                      type="text"
+                      value={newComp.address}
+                      onChange={(e) => setNewComp({ ...newComp, address: e.target.value })}
+                      placeholder="e.g. Tower B, Tech Park, Bangalore"
+                      className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
+                    />
                   </div>
                   <div>
-                    <div className="font-bold text-slate-800">Assign AI Assistant (Pihu AI)</div>
-                    <div className="text-[11px] text-slate-500">
-                      Enable Pihu AI Assistant across Company Admin, Manager, and Employee panels
+                    <label className="font-semibold text-slate-700 block mb-1">Plan Expiry Date (Optional)</label>
+                    <input
+                      type="date"
+                      value={newComp.plan_expiry_date}
+                      onChange={(e) => setNewComp({ ...newComp, plan_expiry_date: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500 font-semibold"
+                    />
+                    <span className="text-[10px] text-slate-400">Account auto-suspends after this date</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-3">
+                  <span className="font-bold text-slate-800 block mb-0.5">Company Administrator Account (Required on Signup)</span>
+                  <p className="text-[11px] text-slate-500 mb-2.5">
+                    Set username as Mobile Number, Email Address, or Custom User ID. The administrator can log in using any of these credentials with their custom password.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="font-semibold text-slate-700 block mb-1">
+                        Admin Username (Mobile No. / Email / Custom User ID) *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newComp.admin_username}
+                        onChange={(e) => setNewComp({ ...newComp, admin_username: e.target.value })}
+                        placeholder="e.g. 9876543210, admin@acme.com, or acme_admin"
+                        className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-semibold text-slate-700 block mb-1">
+                        Admin Password (Custom Password) *
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={newComp.admin_password}
+                        onChange={(e) => setNewComp({ ...newComp, admin_password: e.target.value })}
+                        placeholder="••••••••"
+                        className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
+                      />
                     </div>
                   </div>
+                  <div className="mt-2.5">
+                    <label className="font-semibold text-slate-700 block mb-1">Admin Email (Optional / Recovery)</label>
+                    <input
+                      type="email"
+                      value={newComp.admin_email}
+                      onChange={(e) => setNewComp({ ...newComp, admin_email: e.target.value })}
+                      placeholder="admin@acme.com"
+                      className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-sky-500"
+                    />
+                  </div>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={newComp.enable_ai_assistant !== false}
-                    onChange={(e) => setNewComp({ ...newComp, enable_ai_assistant: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                </label>
+
+                {/* AI Assistant Question & Selection Buttons */}
+                <div className="p-3.5 rounded-xl border border-indigo-150 bg-gradient-to-br from-indigo-50/80 via-purple-50/40 to-pink-50/60 space-y-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-pink-500 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <Sparkles className="w-4 h-4 text-yellow-300" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Do you want to add AI Feature (Pihu AI) for this Company?
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        If enabled, Pihu AI Assistant is accessible across all panels (Admin, Manager, Employee).
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setNewComp({ ...newComp, enable_ai_assistant: true })}
+                      className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newComp.enable_ai_assistant === true
+                          ? 'bg-indigo-600 text-white border-indigo-700 shadow-md ring-2 ring-indigo-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <Sparkles className={`w-3.5 h-3.5 ${newComp.enable_ai_assistant === true ? 'text-yellow-300' : 'text-indigo-500'}`} />
+                      <span>Yes, Add AI Feature</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setNewComp({ ...newComp, enable_ai_assistant: false })}
+                      className={`py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newComp.enable_ai_assistant === false
+                          ? 'bg-slate-800 text-white border-slate-900 shadow-md ring-2 ring-slate-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                      }`}
+                    >
+                      <X className="w-3.5 h-3.5 text-slate-400" />
+                      <span>No, Do Not Add AI</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="p-4 border-t border-slate-100 flex justify-end gap-2 shrink-0 bg-slate-50">
                 <button
                   type="button"
                   onClick={() => setShowCreateCompany(false)}
@@ -2995,7 +3051,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
+                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm transition-all"
                 >
                   Create Company
                 </button>
@@ -3007,74 +3063,144 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
       {/* MODAL: CREATE SUPPORT USER */}
       {showCreateSupport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
-              Provision Support Account
-            </h3>
-
-            <form onSubmit={handleCreateSupport} className="space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Staff Member Full Name *</label>
-                <input
-                  type="text"
-                  required
-                  value={newSupport.full_name}
-                  onChange={(e) => setNewSupport({ ...newSupport, full_name: e.target.value })}
-                  placeholder="e.g. Support Specialist"
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
+                <h3 className="text-base font-bold text-slate-900">
+                  Provision Support Account
+                </h3>
+                <p className="text-xs text-slate-500">Create new support personnel credentials & authority</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateSupport(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateSupport} className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-4 text-xs">
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Staff Member Full Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newSupport.full_name}
+                    onChange={(e) => setNewSupport({ ...newSupport, full_name: e.target.value })}
+                    placeholder="e.g. Support Specialist"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Username *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newSupport.username}
+                    onChange={(e) => setNewSupport({ ...newSupport, username: e.target.value })}
+                    placeholder="e.g. support_agent"
+                    className="w-full px-3 py-2 border rounded-lg font-mono focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Password *</label>
+                  <input
+                    type="password"
+                    required
+                    value={newSupport.password}
+                    onChange={(e) => setNewSupport({ ...newSupport, password: e.target.value })}
+                    placeholder="••••••••"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Email Address (Optional)</label>
+                  <input
+                    type="email"
+                    value={newSupport.email}
+                    onChange={(e) => setNewSupport({ ...newSupport, email: e.target.value })}
+                    placeholder="agent@npbhrms.com"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Support Permission Level *</label>
+                  <select
+                    value={newSupport.permission_level}
+                    onChange={(e) => setNewSupport({ ...newSupport, permission_level: parseInt(e.target.value, 10) })}
+                    className="w-full px-3 py-2 border rounded-lg bg-white focus:ring-1 focus:ring-purple-500"
+                  >
+                    <option value={1}>Level 1 – View Only Support</option>
+                    <option value={2}>Level 2 – Edit Employee & Attendance</option>
+                    <option value={3}>Level 3 – Advanced (Device Unlock & Attendance Correction)</option>
+                    <option value={4}>Level 4 – Full Support Authority</option>
+                  </select>
+                </div>
+
+                {/* AI Feature Question & Selection for Support Account */}
+                <div className="p-3.5 rounded-xl border border-purple-150 bg-gradient-to-br from-purple-50/80 via-indigo-50/40 to-pink-50/60 space-y-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <Sparkles className="w-4 h-4 text-yellow-300" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Do you want to add AI Feature (Pihu AI) for this Support Account?
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        If enabled, this support staff member can access and chat with Pihu AI.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setNewSupport({ ...newSupport, enable_ai_assistant: true })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newSupport.enable_ai_assistant === true
+                          ? 'bg-purple-600 text-white border-purple-700 shadow-md ring-2 ring-purple-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                      }`}
+                    >
+                      <Sparkles className={`w-3.5 h-3.5 ${newSupport.enable_ai_assistant === true ? 'text-yellow-300' : 'text-purple-500'}`} />
+                      <span>Yes, Add AI Feature</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setNewSupport({ ...newSupport, enable_ai_assistant: false })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newSupport.enable_ai_assistant === false
+                          ? 'bg-slate-800 text-white border-slate-900 shadow-md ring-2 ring-slate-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                      }`}
+                    >
+                      <X className="w-3.5 h-3.5 text-slate-400" />
+                      <span>No, Do Not Add AI</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Username *</label>
-                <input
-                  type="text"
-                  required
-                  value={newSupport.username}
-                  onChange={(e) => setNewSupport({ ...newSupport, username: e.target.value })}
-                  placeholder="e.g. support_agent"
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Password *</label>
-                <input
-                  type="password"
-                  required
-                  value={newSupport.password}
-                  onChange={(e) => setNewSupport({ ...newSupport, password: e.target.value })}
-                  placeholder="••••••••"
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Support Permission Level *</label>
-                <select
-                  value={newSupport.permission_level}
-                  onChange={(e) => setNewSupport({ ...newSupport, permission_level: parseInt(e.target.value, 10) })}
-                  className="w-full px-3 py-2 border rounded-lg bg-white"
-                >
-                  <option value={1}>Level 1 – View Only Support</option>
-                  <option value={2}>Level 2 – Edit Employee & Attendance</option>
-                  <option value={3}>Level 3 – Advanced (Device Unlock & Attendance Correction)</option>
-                  <option value={4}>Level 4 – Full Support Authority</option>
-                </select>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="p-4 border-t border-slate-100 flex justify-end gap-2 shrink-0 bg-slate-50">
                 <button
                   type="button"
                   onClick={() => setShowCreateSupport(false)}
-                  className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-medium shadow-sm"
+                  className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-medium shadow-sm transition-all"
                 >
                   Provision Account
                 </button>
@@ -3084,66 +3210,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         </div>
       )}
 
-      {/* MODAL: CONFIGURE MODULES */}
-      {modulesModalOpen && selectedCompanyModules && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
-              Configure Modules: {selectedCompanyModules.companyName}
-            </h3>
-
-            <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar pr-1">
-              {Object.keys(selectedCompanyModules.modules).map(modName => {
-                const isEnabled = selectedCompanyModules.modules[modName];
-                return (
-                  <div key={modName} className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 bg-slate-50/50">
-                    <span className="text-xs font-semibold text-slate-800 capitalize">
-                      {modName.replace(/_/g, ' ')}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedCompanyModules({
-                        ...selectedCompanyModules,
-                        modules: {
-                          ...selectedCompanyModules.modules,
-                          [modName]: !isEnabled
-                        }
-                      })}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
-                        isEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'
-                      }`}
-                    >
-                      {isEnabled ? 'ENABLED' : 'DISABLED'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setModulesModalOpen(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-600 hover:text-slate-800"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={saveModules}
-                className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-medium"
-              >
-                Save Module Configuration
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* MODAL: EDIT COMPANY & ADMIN DETAILS */}
       {showEditCompany && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden my-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">Edit Company & Administrator Details</h3>
@@ -3158,7 +3228,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditCompany} className="space-y-4 text-xs">
+            <form onSubmit={handleSaveEditCompany} className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Company Legal Name *</label>
@@ -3309,7 +3379,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: CHANGE ADMIN PASSWORD */}
       {showPasswordModal && passwordTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
               <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
                 <Key className="w-5 h-5" />
@@ -3368,7 +3438,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: PERMANENTLY DELETE COMPANY */}
       {showDeleteModal && deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-rose-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-rose-200 space-y-4">
             <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
               <div className="p-2.5 rounded-xl bg-rose-100 text-rose-600 shrink-0">
                 <AlertTriangle className="w-6 h-6" />
@@ -3422,7 +3492,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: BULK DELETE COMPANIES PERMANENTLY */}
       {showBulkDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-rose-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-rose-200 space-y-4">
             <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
               <div className="p-2.5 rounded-xl bg-rose-100 text-rose-600 shrink-0">
                 <AlertTriangle className="w-6 h-6" />
@@ -3496,12 +3566,15 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
       {/* MODAL: EDIT SUPPORT USER */}
       {showEditSupport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <h3 className="text-base font-bold text-slate-900">
-                Edit Support Staff Account
-              </h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Edit Support Staff Account
+                </h3>
+                <p className="text-xs text-slate-500">Update support user permissions and settings</p>
+              </div>
               <button
                 type="button"
                 onClick={() => setShowEditSupport(false)}
@@ -3511,81 +3584,128 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditSupport} className="space-y-3 text-xs">
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Staff Full Name *</label>
-                <input
-                  type="text"
-                  required
-                  value={editSupportForm.full_name}
-                  onChange={(e) => setEditSupportForm({ ...editSupportForm, full_name: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Username *</label>
-                <input
-                  type="text"
-                  required
-                  value={editSupportForm.username}
-                  onChange={(e) => setEditSupportForm({ ...editSupportForm, username: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg font-mono focus:ring-1 focus:ring-purple-500"
-                />
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Email Address</label>
-                <input
-                  type="email"
-                  value={editSupportForm.email}
-                  onChange={(e) => setEditSupportForm({ ...editSupportForm, email: e.target.value })}
-                  placeholder="support@npbhrms.com"
-                  className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
+            <form onSubmit={handleSaveEditSupport} className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-3.5 text-xs">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Support Level *</label>
-                  <select
-                    value={editSupportForm.permission_level}
-                    onChange={(e) => setEditSupportForm({ ...editSupportForm, permission_level: parseInt(e.target.value, 10) })}
-                    className="w-full px-2.5 py-2 border rounded-lg bg-white"
-                  >
-                    <option value={1}>Level 1 – View Only</option>
-                    <option value={2}>Level 2 – Edit Attendance</option>
-                    <option value={3}>Level 3 – Device Unlock</option>
-                    <option value={4}>Level 4 – Full Authority</option>
-                  </select>
+                  <label className="font-semibold text-slate-700 block mb-1">Staff Full Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editSupportForm.full_name}
+                    onChange={(e) => setEditSupportForm({ ...editSupportForm, full_name: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
+                  />
                 </div>
+
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Status *</label>
-                  <select
-                    value={editSupportForm.status}
-                    onChange={(e) => setEditSupportForm({ ...editSupportForm, status: e.target.value })}
-                    className="w-full px-2.5 py-2 border rounded-lg bg-white font-semibold"
-                  >
-                    <option value="active">Active</option>
-                    <option value="disabled">Disabled / Suspended</option>
-                  </select>
+                  <label className="font-semibold text-slate-700 block mb-1">Username *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editSupportForm.username}
+                    onChange={(e) => setEditSupportForm({ ...editSupportForm, username: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-lg font-mono focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={editSupportForm.email}
+                    onChange={(e) => setEditSupportForm({ ...editSupportForm, email: e.target.value })}
+                    placeholder="support@npbhrms.com"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Support Level *</label>
+                    <select
+                      value={editSupportForm.permission_level}
+                      onChange={(e) => setEditSupportForm({ ...editSupportForm, permission_level: parseInt(e.target.value, 10) })}
+                      className="w-full px-2.5 py-2 border rounded-lg bg-white"
+                    >
+                      <option value={1}>Level 1 – View Only</option>
+                      <option value={2}>Level 2 – Edit Attendance</option>
+                      <option value={3}>Level 3 – Device Unlock</option>
+                      <option value={4}>Level 4 – Full Authority</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-semibold text-slate-700 block mb-1">Status *</label>
+                    <select
+                      value={editSupportForm.status}
+                      onChange={(e) => setEditSupportForm({ ...editSupportForm, status: e.target.value })}
+                      className="w-full px-2.5 py-2 border rounded-lg bg-white font-semibold"
+                    >
+                      <option value="active">Active</option>
+                      <option value="disabled">Disabled / Suspended</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* AI Feature Assignment for Edit Support */}
+                <div className="p-3.5 rounded-xl border border-purple-150 bg-gradient-to-br from-purple-50/80 via-indigo-50/40 to-pink-50/60 space-y-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <Sparkles className="w-4 h-4 text-yellow-300" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        AI Feature (Pihu AI) Access
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Enable or disable Pihu AI assistant for this support staff user
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditSupportForm({ ...editSupportForm, enable_ai_assistant: true })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        editSupportForm.enable_ai_assistant === true
+                          ? 'bg-purple-600 text-white border-purple-700 shadow-md ring-2 ring-purple-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                      }`}
+                    >
+                      <Sparkles className={`w-3.5 h-3.5 ${editSupportForm.enable_ai_assistant === true ? 'text-yellow-300' : 'text-purple-500'}`} />
+                      <span>Enabled</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditSupportForm({ ...editSupportForm, enable_ai_assistant: false })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        editSupportForm.enable_ai_assistant === false
+                          ? 'bg-slate-800 text-white border-slate-900 shadow-md ring-2 ring-slate-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                      }`}
+                    >
+                      <X className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Disabled</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 block mb-1">
+                    New Password <span className="font-normal text-slate-400">(Leave blank to keep unchanged)</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={editSupportForm.password}
+                    onChange={(e) => setEditSupportForm({ ...editSupportForm, password: e.target.value })}
+                    placeholder="••••••••"
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
+                  />
                 </div>
               </div>
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">
-                  New Password <span className="font-normal text-slate-400">(Leave blank to keep unchanged)</span>
-                </label>
-                <input
-                  type="password"
-                  value={editSupportForm.password}
-                  onChange={(e) => setEditSupportForm({ ...editSupportForm, password: e.target.value })}
-                  placeholder="••••••••"
-                  className="w-full px-3 py-2 border rounded-lg focus:ring-1 focus:ring-purple-500"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="p-4 border-t border-slate-100 flex justify-end gap-2 shrink-0 bg-slate-50">
                 <button
                   type="button"
                   onClick={() => setShowEditSupport(false)}
@@ -3608,7 +3728,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: CHANGE SUPPORT PASSWORD */}
       {showSupportPasswordModal && supportPasswordTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
               <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
                 <Key className="w-5 h-5" />
@@ -3667,7 +3787,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: DELETE SUPPORT USER */}
       {showDeleteSupportModal && supportToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-rose-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-rose-200 space-y-4">
             <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
               <div className="p-2.5 rounded-xl bg-rose-100 text-rose-600 shrink-0">
                 <AlertTriangle className="w-6 h-6" />
@@ -3712,7 +3832,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: EDIT DIRECTORY EMPLOYEE */}
       {showEditDirEmployeeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4 my-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">

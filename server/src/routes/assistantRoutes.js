@@ -159,7 +159,7 @@ router.post('/chat', verifyAuth, async (req, res) => {
   const employeeId = user.employee_id;
   const role = user.role_name || user.role;
 
-  // 0. Super Admin AI Assistant Module Toggle Check
+  // 0. Super Admin AI Assistant Module / Permission Toggle Check
   if (companyId && role !== 'super_admin' && role !== 'support') {
     try {
       const aiMod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'ai_assistant'").get(companyId);
@@ -174,6 +174,17 @@ router.post('/chat', verifyAuth, async (req, res) => {
         });
       }
     } catch (e) {}
+  }
+
+  if (role === 'support' && !user.enable_ai_assistant) {
+    return res.status(403).json({
+      reply: isHindi
+        ? "⚠️ आपके सपोर्ट खाते के लिए AI सहायक (Pihu AI) को सुपर एडमिन द्वारा सक्षम नहीं किया गया है।"
+        : "⚠️ AI Assistant (Pihu AI) has not been enabled for your Support Account by the Super Administrator.",
+      action: 'AI_DISABLED',
+      disabled: true,
+      conversationState: {}
+    });
   }
 
   // 1. Strict Confidentiality & Security Guardrails
@@ -1072,35 +1083,7 @@ function searchPortalDatabase(user, rawMsg, language) {
     }
   }
 
-  // G. Billing / Invoices Query
-  else if (lowerMsg.includes('bill') || lowerMsg.includes('invoice') || lowerMsg.includes('pos') || lowerMsg.includes('merchant')) {
-    thinkingSteps.push(`• Detected merchant billing inquiry. Querying billing_invoices table...`);
-    let invs = [];
-    try {
-      invs = db.prepare(`
-        SELECT invoice_no, bill_date, customer_name, grand_total, status
-        FROM billing_invoices
-        WHERE company_id = ?
-        ORDER BY id DESC LIMIT 5
-      `).all(companyId);
-    } catch (e) {}
-
-    if (invs.length > 0) {
-      dataFound = true;
-      reply = isHindi
-        ? `🧾 **मर्चेंट बिलिंग रिकॉर्ड्स (${invs.length} बिल मिले)**:\n\n` +
-          invs.map(b => `• **${b.invoice_no}** (${b.bill_date}) - ${b.customer_name}: **₹${b.grand_total}** [\`${b.status}\`]`).join('\n')
-        : `🧾 **Merchant Billing Records (${invs.length} bills found)**:\n\n` +
-          invs.map(b => `• **${b.invoice_no}** (${b.bill_date}) - ${b.customer_name}: **₹${b.grand_total}** [\`${b.status}\`]`).join('\n');
-    } else {
-      dataFound = false;
-      reply = isHindi
-        ? `🔍 **पोर्टल सर्च परिणाम (बिलिंग)**:\n\nकंपनी डेटाबेस में कोई बिल या इनवॉइस दर्ज नहीं मिला। आप **Merchant & Billing** टैब से नया बिल बना सकते हैं।`
-        : `🔍 **Portal Search Result (Billing)**:\n\nNo invoices or bills found in the portal database. You can create a new bill from the **Merchant & Billing** tab.`;
-    }
-  }
-
-  // H. Fallback General Search across portal
+  // G. Fallback General Search across portal
   else {
     thinkingSteps.push(`• Querying general portal directories (employees, holidays, company metrics)...`);
     const todayStr = new Date().toISOString().split('T')[0];

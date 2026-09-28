@@ -87,6 +87,11 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
     return null;
   }
 
+  // If support account does not have AI enabled by Super Admin, hide completely
+  if (user?.role === 'support' && !user?.enable_ai_assistant) {
+    return null;
+  }
+
   const [isOpen, setIsOpen] = useState(false);
   const [language, setLanguage] = useState(() => {
     return localStorage.getItem('pihu_lang') || 'en';
@@ -1041,26 +1046,6 @@ export default function PihuAssistant({ user, company, onSelectTab }) {
                 <X className="w-4 h-4" />
               </button>
             </div>
-          </div>
-
-          {/* Quick Suggestion Chips */}
-          <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 overflow-x-auto flex gap-1.5 scrollbar-none">
-            {suggestions.map((s, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => {
-                  if (s.action) {
-                    s.action();
-                  } else {
-                    handleSendMessage(s.query);
-                  }
-                }}
-                className="text-[11px] whitespace-nowrap px-2.5 py-1 bg-white hover:bg-pink-50 hover:text-pink-700 hover:border-pink-300 border border-slate-200 rounded-full text-slate-700 font-medium transition-all shadow-2xs cursor-pointer active:scale-95"
-              >
-                {s.label}
-              </button>
-            ))}
           </div>
 
           {/* Messages Body */}

@@ -216,10 +216,9 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
     const insertMod = db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled) VALUES (?, ?, ?)');
     modules.forEach(m => insertMod.run(newCompanyId, m, 1));
 
-    const enableAiAssistant = req.body.enable_ai_assistant !== false && req.body.enable_ai_assistant !== 0 && req.body.enable_ai_assistant !== 'false';
-    const enableBilling = req.body.enable_billing !== false && req.body.enable_billing !== 0 && req.body.enable_billing !== 'false';
+    const enableAiAssistant = req.body.enable_ai_assistant === true || req.body.enable_ai_assistant === 1 || req.body.enable_ai_assistant === 'true';
     insertMod.run(newCompanyId, 'ai_assistant', enableAiAssistant ? 1 : 0);
-    insertMod.run(newCompanyId, 'billing', enableBilling ? 1 : 0);
+
 
     // 4. Create Company Admin User (with support for Mobile / Email / Custom Username)
     const passHash = bcrypt.hashSync(admin_password, 10);
