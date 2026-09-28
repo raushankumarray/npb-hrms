@@ -205,7 +205,7 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
       `${name} HRMS Portal`
     );
 
-    // 3. Enable standard modules (all 14 modules + aliases + ai_assistant + billing)
+    // 3. Enable standard modules (all 14 modules + aliases + ai_assistant)
     const modules = [
       'employees', 'mapping', 'attendance_punch', 'manager_punch',
       'corrections', 'leave_management', 'geofencing', 'shift_management',

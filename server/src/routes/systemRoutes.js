@@ -34,13 +34,15 @@ router.get('/settings', (req, res) => {
     const platformLogo = getSetting('platform_logo', null);
     const browserFavicon = getSetting('browser_favicon', null);
     const showBrandingMode = getSetting('show_branding_mode', 'both');
+    const enableSuperAdminAi = getSetting('enable_super_admin_ai', 'false') === 'true';
 
     res.json({
       settings: {
         platform_name: platformName,
         platform_logo: platformLogo,
         browser_favicon: browserFavicon,
-        show_branding_mode: showBrandingMode
+        show_branding_mode: showBrandingMode,
+        enable_super_admin_ai: enableSuperAdminAi
       }
     });
   } catch (err) {
@@ -50,7 +52,7 @@ router.get('/settings', (req, res) => {
 
 // 2. PUT /api/system/settings - Update Platform Branding, Logo & Favicon (Super Admin only)
 router.put('/settings', verifyAuth, requireRole(['super_admin']), (req, res) => {
-  const { platform_name, platform_logo, browser_favicon, show_branding_mode } = req.body;
+  const { platform_name, platform_logo, browser_favicon, show_branding_mode, enable_super_admin_ai } = req.body;
 
   try {
     const oldValues = {
@@ -70,6 +72,9 @@ router.put('/settings', verifyAuth, requireRole(['super_admin']), (req, res) => 
     }
     if (show_branding_mode !== undefined) {
       setSetting('show_branding_mode', show_branding_mode, 'Branding display mode');
+    }
+    if (enable_super_admin_ai !== undefined) {
+      setSetting('enable_super_admin_ai', enable_super_admin_ai ? 'true' : 'false', 'Enable AI Assistant in Super Admin panel');
     }
 
     // Dispatch audit log
@@ -103,7 +108,8 @@ router.put('/settings', verifyAuth, requireRole(['super_admin']), (req, res) => 
         platform_name: platform_name !== undefined ? platform_name.trim() : oldValues.platform_name,
         platform_logo: platform_logo !== undefined ? platform_logo : oldValues.platform_logo,
         browser_favicon: browser_favicon !== undefined ? browser_favicon : oldValues.browser_favicon,
-        show_branding_mode: show_branding_mode || 'both'
+        show_branding_mode: show_branding_mode || 'both',
+        enable_super_admin_ai: enable_super_admin_ai !== undefined ? (enable_super_admin_ai === true || enable_super_admin_ai === 'true') : (getSetting('enable_super_admin_ai', 'false') === 'true')
       }
     });
   } catch (err) {

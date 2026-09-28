@@ -95,7 +95,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     platform_name: 'NPB HRMS',
     platform_logo: '',
     browser_favicon: '',
-    show_branding_mode: 'both'
+    show_branding_mode: 'both',
+    enable_super_admin_ai: false
   });
   const [logoSetAsFavicon, setLogoSetAsFavicon] = useState(false);
   const [adminAccountForm, setAdminAccountForm] = useState({
@@ -218,7 +219,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               platform_name: setRes.settings.platform_name || 'NPB HRMS',
               platform_logo: setRes.settings.platform_logo || '',
               browser_favicon: setRes.settings.browser_favicon || '',
-              show_branding_mode: setRes.settings.show_branding_mode || 'both'
+              show_branding_mode: setRes.settings.show_branding_mode || 'both',
+              enable_super_admin_ai: setRes.settings.enable_super_admin_ai === true
             });
             if (setRes.settings.browser_favicon) {
               setBrowserFavicon(setRes.settings.browser_favicon);
@@ -950,7 +952,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     { key: 'reports', label: 'Custom Reports & Export', desc: 'Dynamic Excel, PDF matrix export, and historical attendance reports' },
     { key: 'payroll', label: 'Payroll Module', desc: 'Salary slip generation, payroll calculation, and compensation data' },
     { key: 'ai_assistant', label: 'Pihu AI Assistant', desc: 'Universal AI Assistant for Employee, Manager, and Company Admin panels' },
-    { key: 'billing', label: 'Merchant & Invoicing (POS)', desc: 'Retail point of sale, stock catalog, A4 smart invoice and 58mm thermal receipts' },
   ];
 
   const openModulesModal = async (companyId) => {
@@ -2426,6 +2427,61 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       Reset
                     </button>
                   )}
+                </div>
+              </div>
+
+              {/* Super Administrator AI Assistant Setting (Default OFF) */}
+              <div className="p-4 rounded-xl border border-indigo-150 bg-gradient-to-br from-indigo-50/80 via-purple-50/40 to-pink-50/60 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-pink-500 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <Sparkles className="w-4 h-4 text-yellow-300" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Super Administrator AI Assistant (Pihu AI)
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Default: OFF. When enabled and saved, Pihu AI Assistant is available in the Super Admin panel.
+                      </div>
+                    </div>
+                  </div>
+
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                    settingsForm.enable_super_admin_ai
+                      ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                      : 'bg-slate-100 text-slate-500 border border-slate-200'
+                  }`}>
+                    {settingsForm.enable_super_admin_ai ? 'AI Enabled' : 'AI Disabled (OFF)'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsForm({ ...settingsForm, enable_super_admin_ai: true })}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      settingsForm.enable_super_admin_ai === true
+                        ? 'bg-indigo-600 text-white border-indigo-700 shadow-md ring-2 ring-indigo-400/30'
+                        : 'bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/40'
+                    }`}
+                  >
+                    <Sparkles className={`w-3.5 h-3.5 ${settingsForm.enable_super_admin_ai === true ? 'text-yellow-300' : 'text-indigo-500'}`} />
+                    <span>Enable AI Assistant</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSettingsForm({ ...settingsForm, enable_super_admin_ai: false })}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      settingsForm.enable_super_admin_ai === false
+                        ? 'bg-slate-800 text-white border-slate-900 shadow-md ring-2 ring-slate-400/30'
+                        : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                    }`}
+                  >
+                    <X className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Disable AI Assistant (Default OFF)</span>
+                  </button>
                 </div>
               </div>
 

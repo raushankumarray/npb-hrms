@@ -176,6 +176,23 @@ router.post('/chat', verifyAuth, async (req, res) => {
     } catch (e) {}
   }
 
+  if (role === 'super_admin') {
+    try {
+      const row = db.prepare("SELECT setting_value FROM application_settings WHERE setting_key = 'enable_super_admin_ai'").get();
+      const isSuperAdminAiEnabled = row && row.setting_value === 'true';
+      if (!isSuperAdminAiEnabled) {
+        return res.status(403).json({
+          reply: isHindi
+            ? "⚠️ सुपर एडमिन पैनल में AI सहायक (Pihu AI) सेटिंग्स में अक्षम (Disable) है। इसे सेटिंग्स से सक्षम करें।"
+            : "⚠️ AI Assistant (Pihu AI) is currently disabled in the Super Admin panel. Enable it from System Settings to use AI.",
+          action: 'AI_DISABLED',
+          disabled: true,
+          conversationState: {}
+        });
+      }
+    } catch (e) {}
+  }
+
   if (role === 'support' && !user.enable_ai_assistant) {
     return res.status(403).json({
       reply: isHindi

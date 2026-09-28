@@ -494,11 +494,11 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
       />
 
       {/* UNIVERSAL PIHU AI ASSISTANT:
-          - Super Admin always has access
+          - Super Admin access ONLY if enabled in System Settings (default off)
           - Support staff access ONLY if Super Admin enabled AI feature for that support account
           - Tenant company users access only if ai_assistant module is enabled for that company
       */}
-      {(user?.role === 'super_admin' || (user?.role === 'support' ? !!user?.enable_ai_assistant : (company ? company?.modules?.ai_assistant !== false : false))) && (
+      {((user?.role === 'super_admin' ? !!systemSettings?.enable_super_admin_ai : (user?.role === 'support' ? !!user?.enable_ai_assistant : (company ? company?.modules?.ai_assistant !== false : false)))) && (
         <PihuAssistant
           user={user}
           company={company}
