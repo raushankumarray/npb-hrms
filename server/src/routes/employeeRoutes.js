@@ -519,6 +519,16 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'manager', 'super_adm
     balRecords.forEach(lb => syncLeaveBalance(lb).catch(() => {}));
   } catch (e) {}
 
+  try {
+    const { notifyCompanyAdmins } = require('../services/notificationService');
+    notifyCompanyAdmins(companyId, {
+      title: 'New Personnel Registered',
+      message: `${full_name} (${finalEmpId || 'ID Pending'}) added to ${department || 'Staff'}.`,
+      type: 'system',
+      link: '/employees'
+    });
+  } catch (e) {}
+
   res.status(201).json({ success: true, employeeId: createdId, employeeCode: finalEmpId, message: 'Personnel added successfully.' });
 });
 
@@ -801,6 +811,18 @@ router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'man
     if (userRecord) {
       syncUser(userRecord).catch(() => {});
     }
+  } catch (e) {}
+
+  try {
+    const { createNotification } = require('../services/notificationService');
+    createNotification({
+      userId: emp.user_id,
+      companyId: emp.company_id,
+      title: 'Account Status Changed',
+      message: `Your account status has been changed to "${targetStatus}".`,
+      type: 'system',
+      link: '/profile'
+    });
   } catch (e) {}
 
   res.json({ success: true, status: targetStatus, message: `Account for "${emp.full_name}" is now ${targetStatus}.` });

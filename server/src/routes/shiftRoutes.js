@@ -244,12 +244,17 @@ router.post('/assign', verifyAuth, requireRole(['company_admin', 'super_admin'])
           insertShiftAssignStmt.run(emp.id, targetShift.id, effectiveDate);
 
           // Send notification to employee
-          insertNotification.run(
-            emp.user_id,
-            companyId,
-            `Shift Assignment Updated: ${targetShift.name}`,
-            `Your work shift has been updated to "${targetShift.name}" (${targetShift.start_time} - ${targetShift.end_time}, Grace: ${targetShift.grace_time_mins} mins). Effective Date: ${effectiveDate}.`
-          );
+          try {
+            const { createNotification } = require('../services/notificationService');
+            createNotification({
+              userId: emp.user_id,
+              companyId,
+              title: `Shift Assigned: ${targetShift.name}`,
+              message: `Work shift assigned: "${targetShift.name}" (${targetShift.start_time} - ${targetShift.end_time}). Effective: ${effectiveDate}.`,
+              type: 'system',
+              link: '/calendar'
+            });
+          } catch(e) {}
         } else {
           // Unassigned notification
           insertNotification.run(

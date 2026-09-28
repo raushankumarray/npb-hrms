@@ -500,6 +500,18 @@ router.post('/punch-in', verifyAuth, async (req, res) => {
   } catch (e) {}
 
   const formattedInTime = format12Hour(nowTime);
+  // Punch In User Notification
+  try {
+    const { createNotification } = require('../services/notificationService');
+    createNotification({
+      userId: req.user.id,
+      companyId,
+      title: 'Punch In Recorded',
+      message: `Punched in successfully at ${formattedInTime}. Location: ${resolvedLocation || 'Office Boundary'}.`,
+      type: 'attendance',
+      link: '/history'
+    });
+  } catch (e) {}
   const gpsCoordStr = (latitude && longitude) ? `${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}` : '--';
   res.json({
     success: true,
@@ -706,6 +718,18 @@ router.post('/punch-out', verifyAuth, async (req, res) => {
   } catch (e) {}
 
   const formattedOutTime = format12Hour(nowTime);
+  // Punch Out User Notification
+  try {
+    const { createNotification } = require('../services/notificationService');
+    createNotification({
+      userId: req.user.id,
+      companyId,
+      title: 'Punch Out Recorded',
+      message: `Punched out successfully at ${formattedOutTime}. Total hours worked: ${totalHours} hrs (${attendanceStatus}).`,
+      type: 'attendance',
+      link: '/history'
+    });
+  } catch (e) {}
   const gpsOutCoordStr = (latitude && longitude) ? `${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}` : '--';
   res.json({
     success: true,
@@ -2897,15 +2921,26 @@ router.post('/correction-request', verifyAuth, (req, res) => {
     }
   }
 
-  for (const uid of notifyUserIds) {
-    db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, link)
-      VALUES (?, ?, 'Attendance Correction Request', ?, 'attendance', '/attendance')
-    `).run(
-      uid, companyId,
-      `${emp ? emp.full_name : 'Employee'} requested attendance correction for ${date} (${finalRequestedStatus}).`
-    );
-  }
+  try {
+    const { notifyUsers, createNotification } = require('../services/notificationService');
+    notifyUsers(Array.from(notifyUserIds), {
+      companyId,
+      title: 'Attendance Correction Request',
+      message: `${emp ? emp.full_name : 'Employee'} requested attendance correction for ${date} (${finalRequestedStatus}).`,
+      type: 'attendance',
+      link: '/approvals'
+    });
+    if (req.user && req.user.id) {
+      createNotification({
+        userId: req.user.id,
+        companyId,
+        title: 'Correction Request Submitted',
+        message: `Your attendance correction request for ${date} (${finalRequestedStatus}) was submitted for review.`,
+        type: 'attendance',
+        link: '/correction'
+      });
+    }
+  } catch (e) {}
 
   // Realtime Firebase sync
   try {
@@ -3100,14 +3135,17 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
       );
 
       // 4. Notify employee
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'Correction Request Approved', ?, 'attendance', '/attendance-history')
-      `).run(
-        request.user_id,
-        request.company_id,
-        `Your attendance correction request for ${request.date} was approved. Status updated to ${targetStatus} (${hours} hrs).`
-      );
+      try {
+        const { createNotification } = require('../services/notificationService');
+        createNotification({
+          userId: request.user_id,
+          companyId: request.company_id,
+          title: 'Correction Request Approved',
+          message: `Your attendance correction request for ${request.date} was approved. Status updated to ${targetStatus} (${hours} hrs).`,
+          type: 'attendance',
+          link: '/history'
+        });
+      } catch (e) {}
     } else {
       // If rejected / cancelled -> Attendance status is set/retained as Absent
       db.prepare(`
@@ -3123,14 +3161,17 @@ router.put('/correction-requests/:id/review', verifyAuth, requireRole(['company_
       `).run(request.company_id, request.employee_id, request.date);
 
       // Notify employee
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'Correction Request Cancelled/Rejected', ?, 'attendance', '/attendance-history')
-      `).run(
-        request.user_id,
-        request.company_id,
-        `Your attendance correction request for ${request.date} was rejected. Status marked as Absent.${review_notes ? ' Note: ' + review_notes : ''}`
-      );
+      try {
+        const { createNotification } = require('../services/notificationService');
+        createNotification({
+          userId: request.user_id,
+          companyId: request.company_id,
+          title: 'Correction Request Rejected',
+          message: `Your attendance correction request for ${request.date} was rejected. Status marked as Absent.${review_notes ? ' Note: ' + review_notes : ''}`,
+          type: 'attendance',
+          link: '/history'
+        });
+      } catch (e) {}
     }
 
     logAudit({

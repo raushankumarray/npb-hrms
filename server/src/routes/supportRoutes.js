@@ -308,10 +308,18 @@ router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => 
 
   // Create notification for employee
   try {
-    db.prepare(`
-      INSERT INTO notifications (user_id, title, message, type)
-      VALUES (?, 'Device Deregistered', 'Your device registration and MAC lock have been reset by Support. You can now log in and register your new device.', 'device')
-    `).run(targetUserId);
+    try {
+      const { createNotification } = require('../services/notificationService');
+      const targetU = db.prepare('SELECT company_id FROM users WHERE id = ?').get(targetUserId);
+      createNotification({
+        userId: targetUserId,
+        companyId: targetU ? targetU.company_id : null,
+        title: 'Device De-Registration Approved',
+        message: 'Your device binding and MAC lock have been cleared by Support. You can now log in from your new device.',
+        type: 'device',
+        link: '/login'
+      });
+    } catch (e) {}
   } catch (e) {}
 
   // Auto-resolve any open device deregistration tickets for this employee

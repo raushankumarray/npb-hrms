@@ -1,29 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, CheckCheck, Clock, ShieldAlert, Calendar, Ticket, Smartphone } from 'lucide-react';
-import { apiRequest } from '../api';
+import { Bell, CheckCheck, Clock, ShieldAlert, Calendar, Ticket, Smartphone, Check, Send, AlertTriangle } from 'lucide-react';
+import { useNotifications } from '../context/NotificationContext';
 
 export default function NotificationDropdown() {
-  const [notifications, setNotifications] = useState([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const {
+    notifications,
+    unreadCount,
+    permission,
+    requestPermission,
+    sendTestNotification,
+    markSingleRead,
+    markAllRead,
+    handleOpenNotification
+  } = useNotifications();
+
   const [open, setOpen] = useState(false);
-  const [filterMode, setFilterMode] = useState('unread'); // 'unread' (auto-hide read) | 'all'
+  const [filterMode, setFilterMode] = useState('unread'); // 'unread' | 'all'
   const dropdownRef = useRef(null);
-
-  const fetchNotifications = async () => {
-    try {
-      const res = await apiRequest('/notifications');
-      setNotifications(res.notifications || []);
-      setUnreadCount(res.unreadCount || 0);
-    } catch (err) {
-      console.error('Failed to load notifications:', err);
-    }
-  };
-
-  useEffect(() => {
-    fetchNotifications();
-    const interval = setInterval(fetchNotifications, 15000); // Poll every 15s for live updates
-    return () => clearInterval(interval);
-  }, []);
 
   // Close when clicked outside
   useEffect(() => {
@@ -35,27 +28,6 @@ export default function NotificationDropdown() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const markAllRead = async () => {
-    try {
-      await apiRequest('/notifications/read-all', { method: 'PUT' });
-      setUnreadCount(0);
-      setNotifications(notifications.map(n => ({ ...n, is_read: 1 })));
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const markSingleRead = async (id) => {
-    try {
-      await apiRequest(`/notifications/${id}/read`, { method: 'PUT' });
-      // Mark as read and auto-hide if in unread mode
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: 1 } : n));
-      setUnreadCount(prev => Math.max(0, prev - 1));
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const getIcon = (type) => {
     switch (type) {
@@ -76,8 +48,8 @@ export default function NotificationDropdown() {
     <div className="relative" ref={dropdownRef}>
       <button
         onClick={() => setOpen(!open)}
-        className="relative p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors focus:outline-none"
-        title="Notifications"
+        className="relative p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors focus:outline-none cursor-pointer"
+        title="Notifications & Device Alerts"
       >
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
@@ -99,16 +71,53 @@ export default function NotificationDropdown() {
                 </span>
               )}
             </div>
-            {unreadCount > 0 && (
+            <div className="flex items-center gap-2">
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={markAllRead}
+                  className="text-xs text-sky-600 hover:text-sky-700 font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Mark all as read"
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  Clear All
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Browser / Phone Push Permission Control Bar */}
+          <div className="px-3.5 py-2 bg-slate-100/70 border-b border-slate-200/80 flex items-center justify-between text-xs">
+            {permission === 'granted' ? (
+              <span className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Phone & Browser Alerts Active</span>
+              </span>
+            ) : permission === 'denied' ? (
+              <span className="flex items-center gap-1.5 text-amber-700 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                <span>Alerts Blocked in Browser</span>
+              </span>
+            ) : (
               <button
-                onClick={markAllRead}
-                className="text-xs text-sky-600 hover:text-sky-700 font-semibold flex items-center gap-1 transition-colors"
-                title="Mark all as read and auto-hide"
+                type="button"
+                onClick={requestPermission}
+                className="flex items-center gap-1.5 text-sky-700 hover:text-sky-800 font-bold hover:underline cursor-pointer"
               >
-                <CheckCheck className="w-3.5 h-3.5" />
-                Clear All
+                <Smartphone className="w-3.5 h-3.5 text-sky-600" />
+                <span>Allow Phone & Browser Alerts</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={sendTestNotification}
+              className="text-[11px] text-slate-600 hover:text-sky-600 font-medium flex items-center gap-1 bg-white px-2 py-0.5 rounded-md border border-slate-200 shadow-2xs hover:border-sky-300 transition-colors cursor-pointer"
+              title="Test notification alert sound and popup"
+            >
+              <Send className="w-2.5 h-2.5" />
+              <span>Test Alert</span>
+            </button>
           </div>
 
           {/* Mode Switcher Tabs */}
@@ -116,24 +125,24 @@ export default function NotificationDropdown() {
             <button
               type="button"
               onClick={() => setFilterMode('unread')}
-              className={`flex-1 py-2 text-center transition-colors border-b-2 ${
+              className={`flex-1 py-2 text-center transition-colors border-b-2 cursor-pointer ${
                 filterMode === 'unread'
                   ? 'border-sky-600 text-sky-700 font-bold bg-white'
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              Unread (Auto-Hide on Read)
+              Unread ({unreadCount})
             </button>
             <button
               type="button"
               onClick={() => setFilterMode('all')}
-              className={`flex-1 py-2 text-center transition-colors border-b-2 ${
+              className={`flex-1 py-2 text-center transition-colors border-b-2 cursor-pointer ${
                 filterMode === 'all'
                   ? 'border-sky-600 text-sky-700 font-bold bg-white'
                   : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
             >
-              All History
+              All History ({notifications.length})
             </button>
           </div>
 
@@ -155,11 +164,14 @@ export default function NotificationDropdown() {
               displayedNotifications.map((n) => (
                 <div
                   key={n.id}
-                  onClick={() => markSingleRead(n.id)}
+                  onClick={() => {
+                    handleOpenNotification(n);
+                    setOpen(false);
+                  }}
                   className={`p-3.5 hover:bg-slate-50 cursor-pointer transition-all flex gap-3 ${
                     !n.is_read ? 'bg-sky-50/40' : 'opacity-70 hover:opacity-100'
                   }`}
-                  title="Click to mark as read (auto-hides)"
+                  title="Click to view and mark as read"
                 >
                   <div className="p-2 rounded-xl bg-slate-100 shrink-0 self-start">
                     {getIcon(n.type)}
@@ -180,11 +192,9 @@ export default function NotificationDropdown() {
                       <span>
                         {new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(n.created_at).toLocaleDateString()}
                       </span>
-                      {!n.is_read && (
-                        <span className="text-[9px] text-sky-600 font-medium hover:underline">
-                          Click to dismiss
-                        </span>
-                      )}
+                      <span className="text-[9px] text-sky-600 font-medium hover:underline">
+                        Tap to open
+                      </span>
                     </div>
                   </div>
                 </div>

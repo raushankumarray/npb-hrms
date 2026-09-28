@@ -7,6 +7,7 @@ import SupportPanel from './views/SupportPanel';
 import CompanyAdminPanel from './views/CompanyAdminPanel';
 import ManagerPanel from './views/ManagerPanel';
 import EmployeePanel from './views/EmployeePanel';
+import { NotificationProvider } from './context/NotificationContext';
 
 export function clearBrowserFavicon() {
   try {
@@ -261,16 +262,18 @@ export default function App() {
   };
 
   return (
-    <Layout
-      user={user}
-      company={company}
-      systemSettings={systemSettings}
-      activeTab={activeTab}
-      onSelectTab={handleSelectTab}
-      onLogout={handleLogout}
-      onUserUpdate={(updatedUser) => setUser(prev => ({ ...prev, ...updatedUser }))}
-    >
-      {renderPanel()}
-    </Layout>
+    <NotificationProvider onSelectTab={handleSelectTab} currentUser={user}>
+      <Layout
+        user={user}
+        company={company}
+        systemSettings={systemSettings}
+        activeTab={activeTab}
+        onSelectTab={handleSelectTab}
+        onLogout={handleLogout}
+        onUserUpdate={(updatedUser) => setUser(prev => ({ ...prev, ...updatedUser }))}
+      >
+        {renderPanel()}
+      </Layout>
+    </NotificationProvider>
   );
 }

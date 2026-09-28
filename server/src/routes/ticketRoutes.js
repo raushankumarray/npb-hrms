@@ -146,12 +146,26 @@ router.post('/service-request', verifyAuth, (req, res) => {
       JOIN roles r ON u.role_id = r.id
       WHERE r.name IN ('support', 'super_admin')
     `).all();
-    for (const su of supportUsers) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'New Support Ticket', ?, 'ticket', '/support')
-      `).run(su.id, companyId, `${senderRoleLabel} ${senderDisplayName} submitted support ticket #${reqId}: "${title.trim()}" (${request_type})`);
-    }
+    try {
+      const { notifyUsers, createNotification } = require('../services/notificationService');
+      notifyUsers(supportUsers.map(su => su.id), {
+        companyId,
+        title: `New Support Ticket #${reqId}`,
+        message: `[${company ? company.name : 'Tenant'}] ${senderRoleLabel} ${senderDisplayName}: "${title.trim()}"`,
+        type: 'ticket',
+        link: '/tickets'
+      });
+      if (req.user && req.user.id) {
+        createNotification({
+          userId: req.user.id,
+          companyId,
+          title: `Ticket #${reqId} Created`,
+          message: `Your ticket "${title.trim()}" has been submitted to support.`,
+          type: 'ticket',
+          link: '/tickets'
+        });
+      }
+    } catch (e) {}
   } catch (e) {}
 
   try {

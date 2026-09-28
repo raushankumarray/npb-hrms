@@ -498,15 +498,26 @@ router.post('/requests', verifyAuth, (req, res) => {
     }
   }
 
-  for (const uid of notifyUserIds) {
-    db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, link)
-      VALUES (?, ?, 'New Leave Request', ?, 'leave', '/leave-approvals')
-    `).run(
-      uid, companyId,
-      `${emp ? emp.full_name : 'Employee'} submitted a leave request for ${total_days} days (${start_date} to ${end_date}).`
-    );
-  }
+  try {
+    const { notifyUsers, createNotification } = require('../services/notificationService');
+    notifyUsers(Array.from(notifyUserIds), {
+      companyId,
+      title: 'New Leave Request',
+      message: `${emp ? emp.full_name : 'Employee'} submitted a leave request for ${total_days} days (${start_date} to ${end_date}).`,
+      type: 'leave',
+      link: '/approvals'
+    });
+    if (req.user && req.user.id) {
+      createNotification({
+        userId: req.user.id,
+        companyId,
+        title: 'Leave Request Submitted',
+        message: `Your leave request for ${total_days} days (${start_date} to ${end_date}) was submitted for approval.`,
+        type: 'leave',
+        link: '/leave'
+      });
+    }
+  } catch (e) {}
 
   // Realtime Firebase sync
   try {
@@ -656,15 +667,17 @@ router.put('/requests/:id', verifyAuth, requireRole(['manager', 'company_admin',
     }
 
     // Send notification to employee
-    db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, link)
-      VALUES (?, ?, ?, ?, 'leave', '/leave-history')
-    `).run(
-      request.user_id,
-      request.company_id,
-      `Leave Request ${status === 'approved' ? 'Approved' : 'Rejected'}`,
-      `Your request for ${request.total_days} days (${request.start_date} to ${request.end_date}) was ${status}.${rejection_reason ? ' Reason: ' + rejection_reason : ''}`
-    );
+    try {
+      const { createNotification } = require('../services/notificationService');
+      createNotification({
+        userId: request.user_id,
+        companyId: request.company_id,
+        title: `Leave Request ${status === 'approved' ? 'Approved' : 'Rejected'}`,
+        message: `Your request for ${request.total_days} days (${request.start_date} to ${request.end_date}) was ${status}.${rejection_reason ? ' Reason: ' + rejection_reason : ''}`,
+        type: 'leave',
+        link: '/leave'
+      });
+    } catch (e) {}
 
     logAudit({
       companyId: request.company_id,

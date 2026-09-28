@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { deleteFromFirebase } = require('../services/firebase');
+const { addSseClient, removeSseClient, createNotification } = require('../services/notificationService');
 
 // Get Notifications for logged-in user
 router.get('/', verifyAuth, (req, res) => {
@@ -25,6 +26,52 @@ router.get('/', verifyAuth, (req, res) => {
   `).get(req.user.id).count;
 
   res.json({ notifications, unreadCount });
+});
+
+// Server-Sent Events (SSE) Stream for Instant Real-Time Push Notifications
+router.get('/stream', verifyAuth, (req, res) => {
+  // Set SSE Headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (res.flushHeaders) res.flushHeaders();
+
+  const userId = req.user.id;
+  addSseClient(userId, res);
+
+  // Send initial connection event
+  res.write(': connected\n\n');
+
+  // Heartbeat to keep connection open through firewalls and mobile proxies
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch (e) {
+      clearInterval(heartbeat);
+      removeSseClient(userId, res);
+    }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    removeSseClient(userId, res);
+  });
+});
+
+// Trigger a Test Notification (for browser permission and audio verification)
+router.post('/test', verifyAuth, (req, res) => {
+  const userRole = req.user.role_name || req.user.role || 'user';
+  const notif = createNotification({
+    userId: req.user.id,
+    companyId: req.user.company_id,
+    title: 'NPB HRMS Notification Test',
+    message: `Phone and browser notifications are successfully active for ${req.user.full_name || req.user.username} (${userRole}).`,
+    type: 'system',
+    link: '/dashboard'
+  });
+
+  res.json({ success: true, notification: notif });
 });
 
 // Mark single notification as read (supports both PUT and PATCH)

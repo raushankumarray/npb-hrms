@@ -1010,6 +1010,17 @@ router.put('/:id/modules', verifyAuth, requireRole(['super_admin']), (req, res) 
     syncCompanyModules(companyId, updatedModMap).catch(() => {});
   } catch (e) {}
 
+  // Notify company admin of module configuration change
+  try {
+    const { notifyCompanyAdmins } = require('../services/notificationService');
+    notifyCompanyAdmins(companyId, {
+      title: 'Company Modules Configuration Updated',
+      message: 'System features and module access settings have been updated by Super Admin.',
+      type: 'system',
+      link: '/dashboard'
+    });
+  } catch (e) {}
+
   res.json({
     success: true,
     message: 'Company modules updated and synced to Firebase successfully.',

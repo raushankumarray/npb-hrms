@@ -320,6 +320,42 @@ async function syncGpsLocation(companyId, employeeId, locationData) {
 /**
  * Real-time sync: Ticket chat messages
  */
+
+/**
+ * Real-time sync: Notifications (Instant delivery to Firestore & RTDB)
+ */
+async function syncNotification(notificationData) {
+  if (!firebaseStatus.connected || !notificationData) return null;
+  try {
+    const notifId = String(notificationData.id);
+    const userId = String(notificationData.user_id || notificationData.userId);
+    const payload = {
+      id: notifId,
+      user_id: Number(userId),
+      userId: Number(userId),
+      company_id: notificationData.company_id || notificationData.companyId || null,
+      companyId: notificationData.company_id || notificationData.companyId || null,
+      title: notificationData.title || 'Notification',
+      message: notificationData.message || '',
+      type: notificationData.type || 'info',
+      link: notificationData.link || null,
+      is_read: notificationData.is_read ? 1 : 0,
+      created_at: notificationData.created_at || new Date().toISOString()
+    };
+
+    if (realtimeDb) {
+      await realtimeDb.ref('notifications/' + userId + '/' + notifId).set(payload).catch(() => {});
+    }
+    if (firestoreDb) {
+      await firestoreDb.collection('notifications').doc(notifId).set(payload, { merge: true }).catch(() => {});
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncNotification error:', err.message);
+    return false;
+  }
+}
+
 async function syncTicketMessage(ticketId, messageData) {
   if (!firebaseStatus.connected) return null;
   try {
@@ -4171,6 +4207,7 @@ module.exports = {
   initFirebase,
   getFirebaseStatus: () => firebaseStatus,
   syncGpsLocation,
+  syncNotification,
   syncTicketMessage,
   syncAttendancePunch,
   syncAttendanceCorrection,

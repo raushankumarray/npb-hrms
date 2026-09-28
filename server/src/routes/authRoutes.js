@@ -886,12 +886,14 @@ router.post('/raise-device-ticket', (req, res) => {
       JOIN roles r ON u.role_id = r.id
       WHERE r.name IN ('support', 'super_admin')
     `).all();
-    for (const su of supportUsers) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, link)
-        VALUES (?, ?, 'New Device De-registration Ticket', ?, 'ticket', '/support')
-      `).run(su.id, user.company_id, `Employee ${empName} (@${user.username}) submitted Device De-registration Ticket #${reqId}.`);
-    }
+        const { notifyUsers } = require('../services/notificationService');
+    notifyUsers(supportUsers.map(su => su.id), {
+      companyId: user.company_id,
+      title: 'New Device De-registration Ticket',
+      message: `Employee ${empName} (@${user.username}) submitted Device De-registration Ticket #${reqId}.`,
+      type: 'ticket',
+      link: '/tickets'
+    });
   } catch (e) {}
 
   // Sync to Firebase
