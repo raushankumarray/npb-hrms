@@ -262,7 +262,7 @@ export default function App() {
   };
 
   return (
-    <NotificationProvider onSelectTab={handleSelectTab} currentUser={user}>
+    <NotificationProvider onSelectTab={handleSelectTab} currentUser={user} company={company} systemSettings={systemSettings}>
       <Layout
         user={user}
         company={company}

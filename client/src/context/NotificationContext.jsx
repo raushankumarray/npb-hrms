@@ -4,7 +4,7 @@ import { playNotificationChime, triggerDeviceVibration, dispatchNativeNotificati
 
 const NotificationContext = createContext(null);
 
-export function NotificationProvider({ children, onSelectTab, currentUser }) {
+export function NotificationProvider({ children, onSelectTab, currentUser, company, systemSettings }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [permission, setPermission] = useState(() => {
@@ -15,9 +15,39 @@ export function NotificationProvider({ children, onSelectTab, currentUser }) {
   const seenIdsRef = useRef(new Set());
   const initialFetchDone = useRef(false);
   const eventSourceRef = useRef(null);
+  // Check whether browser/mobile phone push notifications are allowed for current user & company
+  const isBrowserNotificationAllowed = () => {
+    if (!currentUser) return false;
+
+    // Support team accounts
+    if (currentUser.role === 'support') {
+      if (systemSettings && systemSettings.support_browser_notifications === false) {
+        return false;
+      }
+      return true;
+    }
+
+    // Super Admin accounts
+    if (currentUser.role === 'super_admin') {
+      return true;
+    }
+
+    // Company accounts (Employees, Managers, Company Admin)
+    if (company && company.modules) {
+      if (company.modules.browser_notifications === false) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
 
   // Request browser notification permission
   const requestPermission = async () => {
+    if (!isBrowserNotificationAllowed()) {
+      return 'denied';
+    }
     if (typeof window === 'undefined' || !('Notification' in window)) {
       alert('This browser does not support Web Notifications.');
       return 'denied';
@@ -83,21 +113,21 @@ export function NotificationProvider({ children, onSelectTab, currentUser }) {
     if (seenIdsRef.current.has(notif.id)) return;
     seenIdsRef.current.add(notif.id);
 
-    // Play pleasant chime & vibrate phone
-    playNotificationChime();
-    triggerDeviceVibration();
+    // Only trigger native browser/phone notification, vibration & sound if allowed
+    if (isBrowserNotificationAllowed()) {
+      playNotificationChime();
+      triggerDeviceVibration();
 
-    // Trigger system/browser notification tray alert
-    dispatchNativeNotification({
-      id: notif.id,
-      title: notif.title,
-      message: notif.message,
-      link: notif.link,
-      tab: resolveTabForNotification(notif, currentUser?.role)
-    });
+      dispatchNativeNotification({
+        id: notif.id,
+        title: notif.title,
+        message: notif.message,
+        link: notif.link,
+        tab: resolveTabForNotification(notif, currentUser?.role)
+      });
 
-    // Show floating Android-style notification card at top
-    addFloatingNotification(notif);
+      addFloatingNotification(notif);
+    }
   };
 
   // Fetch full notifications list from server
@@ -272,7 +302,8 @@ export function NotificationProvider({ children, onSelectTab, currentUser }) {
         deleteNotification,
         sendTestNotification,
         handleOpenNotification,
-        fetchNotifications
+        fetchNotifications,
+        isBrowserNotificationAllowed: isBrowserNotificationAllowed()
       }}
     >
       {children}

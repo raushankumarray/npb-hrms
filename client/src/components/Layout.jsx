@@ -22,7 +22,8 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
     requestPermission,
     floatingNotifications,
     dismissFloating,
-    handleOpenNotification
+    handleOpenNotification,
+    isBrowserNotificationAllowed
   } = useNotifications();
 
   // Expose global tab switcher for native push notification clicks
@@ -369,10 +370,12 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
       )}
 
       {/* Browser & Phone Notification Permission Request Banner */}
-      <NotificationPermissionBanner
-        permission={permission}
-        onRequestPermission={requestPermission}
-      />
+      {isBrowserNotificationAllowed && (
+        <NotificationPermissionBanner
+          permission={permission}
+          onRequestPermission={requestPermission}
+        />
+      )}
 
       {/* Top Header */}
       <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm shrink-0">
