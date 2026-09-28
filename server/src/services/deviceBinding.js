@@ -16,6 +16,17 @@ function checkAndBindDevice({ userId, roleName, deviceId, macAddress, deviceType
     return { allowed: true };
   }
 
+  // If company has explicitly disabled device_binding module, bypass device lock
+  try {
+    const userRow = db.prepare('SELECT company_id FROM users WHERE id = ?').get(userId);
+    if (userRow && userRow.company_id) {
+      const mod = db.prepare("SELECT is_enabled FROM company_modules WHERE company_id = ? AND module_name = 'device_binding'").get(userRow.company_id);
+      if (mod && mod.is_enabled === 0) {
+        return { allowed: true, deviceId: activeDeviceId, macAddress: activeMac };
+      }
+    }
+  } catch (e) {}
+
   // Check if user already has an active bound device
   const existingDevice = db.prepare(`
     SELECT * FROM employee_devices 

@@ -95,6 +95,21 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
   query += ' ORDER BY c.created_at DESC';
 
   const companies = db.prepare(query).all(...params);
+
+  if (companies && companies.length > 0) {
+    const compIds = companies.map(c => c.id);
+    const placeholders = compIds.map(() => '?').join(',');
+    const allMods = db.prepare(`SELECT company_id, module_name, is_enabled FROM company_modules WHERE company_id IN (${placeholders})`).all(...compIds);
+    const modMap = {};
+    for (const m of allMods) {
+      if (!modMap[m.company_id]) modMap[m.company_id] = {};
+      modMap[m.company_id][m.module_name] = (m.is_enabled === 1);
+    }
+    for (const c of companies) {
+      c.modules = modMap[c.id] || {};
+    }
+  }
+
   res.json({ companies });
 });
 
@@ -205,13 +220,14 @@ router.post('/', verifyAuth, requireRole(['super_admin']), (req, res) => {
       `${name} HRMS Portal`
     );
 
-    // 3. Enable standard modules (all 14 modules + aliases + ai_assistant)
+    // 3. Enable standard modules (all standard modules + aliases + ai_assistant)
     const modules = [
       'employees', 'mapping', 'attendance_punch', 'manager_punch',
       'corrections', 'leave_management', 'geofencing', 'shift_management',
       'holidays', 'live_tracking', 'tickets', 'calendar', 'reports', 'payroll',
       'gps_attendance', 'holiday_management', 'weekly_off', 'rotational_shift',
-      'excel_update', 'custom_reports', 'service_requests'
+      'excel_update', 'custom_reports', 'service_requests', 'device_binding',
+      'offline_sync', 'biometric_fingerprint'
     ];
     const insertMod = db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled) VALUES (?, ?, ?)');
     modules.forEach(m => insertMod.run(newCompanyId, m, 1));
@@ -981,11 +997,22 @@ router.put('/:id/modules', verifyAuth, requireRole(['super_admin']), (req, res) 
 
   transaction();
 
+  // Retrieve complete updated module state from database
+  const allMods = db.prepare('SELECT module_name, is_enabled FROM company_modules WHERE company_id = ?').all(companyId);
+  const updatedModMap = {};
+  allMods.forEach(m => {
+    updatedModMap[m.module_name] = (m.is_enabled === 1);
+  });
+
   try {
-    syncCompanyModules(companyId, modules).catch(() => {});
+    syncCompanyModules(companyId, updatedModMap).catch(() => {});
   } catch (e) {}
 
-  res.json({ success: true, message: 'Company modules updated successfully.' });
+  res.json({
+    success: true,
+    message: 'Company modules updated and synced to Firebase successfully.',
+    modules: updatedModMap
+  });
 });
 
 // Toggle Manager Attendance Punch Capability (Company Admin or Super Admin)

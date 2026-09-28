@@ -952,13 +952,14 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     { key: 'reports', label: 'Custom Reports & Export', desc: 'Dynamic Excel, PDF matrix export, and historical attendance reports' },
     { key: 'payroll', label: 'Payroll Module', desc: 'Salary slip generation, payroll calculation, and compensation data' },
     { key: 'ai_assistant', label: 'Pihu AI Assistant', desc: 'Universal AI Assistant for Employee, Manager, and Company Admin panels' },
+    { key: 'device_binding', label: '1-Device MAC Address Lock', desc: 'Enforce single device policy per employee with hardware MAC address binding and de-registration tickets' },
   ];
 
   const openModulesModal = async (companyId) => {
     try {
       const res = await apiRequest(`/companies/${companyId}`);
       // Initialize full module map ensuring all available modules have a defined boolean
-      const fullModMap = { ...res.modules };
+      const fullModMap = { ...(res.modules || {}) };
       AVAILABLE_MODULES.forEach(m => {
         if (fullModMap[m.key] === undefined) {
           fullModMap[m.key] = true;
@@ -966,7 +967,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       });
       setSelectedCompanyModules({
         companyId,
-        companyName: res.company.name,
+        companyName: res.company?.name || 'Company',
         modules: fullModMap
       });
       setModulesModalOpen(true);
@@ -992,7 +993,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     }
     if (modKey === 'shift_management') nextModules.rotational_shift = nextVal;
     if (modKey === 'reports') nextModules.custom_reports = nextVal;
-    if (modKey === 'tickets') nextModules.service_requests = nextVal;
+    if (modKey === 'tickets') {
+      nextModules.service_requests = nextVal;
+      nextModules.support_tickets = nextVal;
+    }
 
     setSelectedCompanyModules({
       ...selectedCompanyModules,
@@ -1003,12 +1007,19 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const saveModules = async () => {
     if (!selectedCompanyModules) return;
     try {
-      await apiRequest(`/companies/${selectedCompanyModules.companyId}/modules`, {
+      const res = await apiRequest(`/companies/${selectedCompanyModules.companyId}/modules`, {
         method: 'PUT',
         body: { modules: selectedCompanyModules.modules }
       });
+      const updatedMods = res?.modules || selectedCompanyModules.modules;
+      // Optimistically update local companies state so the row updates immediately
+      setCompanies(prev => prev.map(c => 
+        c.id === selectedCompanyModules.companyId 
+          ? { ...c, modules: { ...(c.modules || {}), ...updatedMods } }
+          : c
+      ));
       setModulesModalOpen(false);
-      setSuccess(`Module configuration for "${selectedCompanyModules.companyName}" updated successfully.`);
+      setSuccess(`Module configuration for "${selectedCompanyModules.companyName}" updated and synchronized with Firebase successfully.`);
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -1586,15 +1597,83 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                               );
                             })()}
                           </td>
-                          <td className="p-3">
-                            <button
-                              type="button"
-                              onClick={() => openModulesModal(c.id)}
-                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors"
-                            >
-                              <Settings2 className="w-3.5 h-3.5" />
-                              <span>Configure</span>
-                            </button>
+                          <td className="p-3 min-w-[220px]">
+                            {(() => {
+                              const mods = c.modules || {};
+                              const activeCount = AVAILABLE_MODULES.filter(m => mods[m.key] !== false).length;
+                              const disabledMods = AVAILABLE_MODULES.filter(m => mods[m.key] === false);
+                              const allActive = disabledMods.length === 0;
+
+                              return (
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded border ${
+                                        allActive
+                                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                                      }`}
+                                      title={allActive ? 'All system modules enabled' : `${disabledMods.length} module(s) currently disabled`}
+                                    >
+                                      <span className={`w-1.5 h-1.5 rounded-full ${allActive ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                                      {activeCount}/{AVAILABLE_MODULES.length} Active
+                                    </span>
+
+                                    {disabledMods.length > 0 ? (
+                                      <span
+                                        className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded bg-rose-50 text-rose-600 border border-rose-200"
+                                        title={`Disabled: ${disabledMods.map(m => m.label).join(', ')}`}
+                                      >
+                                        {disabledMods.length} Off
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-50/60 text-emerald-600 border border-emerald-100">
+                                        All On
+                                      </span>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      onClick={() => openModulesModal(c.id)}
+                                      className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-[11px] font-semibold flex items-center gap-1 transition-colors ml-auto shadow-xs"
+                                      title="Open Module Configuration Modal"
+                                    >
+                                      <Settings2 className="w-3 h-3 text-slate-500" />
+                                      <span>Configure</span>
+                                    </button>
+                                  </div>
+
+                                  {/* Quick visual badge tags of key modules showing ON / OFF status */}
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    {AVAILABLE_MODULES.slice(0, 5).map(m => {
+                                      const isModOn = mods[m.key] !== false;
+                                      return (
+                                        <span
+                                          key={m.key}
+                                          className={`px-1.5 py-0.2 text-[9px] font-medium rounded transition-colors ${
+                                            isModOn
+                                              ? 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                                              : 'bg-rose-50 text-rose-600 border border-rose-200 line-through opacity-80'
+                                          }`}
+                                          title={`${m.label}: ${isModOn ? 'ENABLED (ON)' : 'DISABLED (OFF)'}`}
+                                        >
+                                          {m.label.split(' ')[0]}
+                                        </span>
+                                      );
+                                    })}
+                                    {disabledMods.length > 0 && disabledMods.some(dm => !AVAILABLE_MODULES.slice(0, 5).includes(dm)) && (
+                                      <span
+                                        onClick={() => openModulesModal(c.id)}
+                                        className="px-1.5 py-0.2 text-[9px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded cursor-pointer hover:bg-rose-100"
+                                        title={`Disabled: ${disabledMods.map(m => m.label).join(', ')}`}
+                                      >
+                                        +{disabledMods.filter(dm => !AVAILABLE_MODULES.slice(0, 5).includes(dm)).length} Off
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1.5">

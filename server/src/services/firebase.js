@@ -414,6 +414,31 @@ async function syncCompany(company, extra = {}) {
       payload.adminPassword = extra.password;
     }
 
+    try {
+      if (company.id) {
+        const modRows = db.prepare('SELECT module_name, is_enabled FROM company_modules WHERE company_id = ?').all(company.id);
+        if (modRows && modRows.length > 0) {
+          payload.modules = {};
+          modRows.forEach(m => {
+            payload.modules[m.module_name] = !!m.is_enabled;
+          });
+        }
+        const setRow = db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(company.id);
+        if (setRow) {
+          payload.settings = {
+            timezone: setRow.timezone || 'Asia/Kolkata',
+            workingHoursPerDay: setRow.working_hours_per_day || 8.0,
+            halfDayMinHours: setRow.half_day_min_hours || 4.0,
+            fullDayMinHours: setRow.full_day_min_hours || 8.0,
+            showBrandingMode: setRow.show_branding_mode || 'both',
+            geofencePolicy: setRow.geofence_policy || 'strict',
+            websiteTitle: setRow.website_title || '',
+            contactInfo: setRow.contact_info || ''
+          };
+        }
+      }
+    } catch (e) {}
+
     if (firestoreDb) {
       await firestoreDb.collection('companies').doc(String(company.id)).set(payload, { merge: true });
     }
@@ -1123,6 +1148,7 @@ async function syncCompanySettings(companyId, settings) {
   if (!firebaseStatus.connected || !companyId || !settings) return null;
   try {
     const payload = {
+      id: companyId,
       companyId,
       timezone: settings.timezone || 'Asia/Kolkata',
       workingHoursPerDay: settings.working_hours_per_day || 8.0,
@@ -1136,9 +1162,14 @@ async function syncCompanySettings(companyId, settings) {
     };
     if (firestoreDb) {
       await firestoreDb.collection('company_settings').doc(String(companyId)).set(payload, { merge: true });
+      await firestoreDb.collection('companies').doc(String(companyId)).set({
+        settings: payload,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
     }
     if (realtimeDb) {
       await realtimeDb.ref(`company_settings/${companyId}`).set(payload);
+      await realtimeDb.ref(`companies/${companyId}/settings`).set(payload);
     }
     return true;
   } catch (err) {
@@ -1151,15 +1182,21 @@ async function syncCompanyModules(companyId, modules) {
   if (!firebaseStatus.connected || !companyId) return null;
   try {
     const payload = {
+      id: companyId,
       companyId,
       modules: modules || {},
       syncedAt: new Date().toISOString()
     };
     if (firestoreDb) {
       await firestoreDb.collection('company_modules').doc(String(companyId)).set(payload, { merge: true });
+      await firestoreDb.collection('companies').doc(String(companyId)).set({
+        modules: modules || {},
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
     }
     if (realtimeDb) {
       await realtimeDb.ref(`company_modules/${companyId}`).set(payload);
+      await realtimeDb.ref(`companies/${companyId}/modules`).set(modules || {});
     }
     return true;
   } catch (err) {
@@ -2593,15 +2630,17 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
           if (val && typeof val === 'object') {
             Object.entries(val).forEach(([k, v]) => {
               if (v && typeof v === 'object') {
-                if (v.id) {
-                  const id = String(v.id);
-                  if (!targetMap.has(id)) targetMap.set(id, { id: v.id, ...v });
-                } else {
-                  // Might be companyId -> itemId map
+                const itemId = v.id || v.companyId || v.company_id || k;
+                if (itemId) {
+                  const id = String(itemId);
+                  if (!targetMap.has(id)) targetMap.set(id, { id: itemId, ...v });
+                }
+                // Also check if v has nested child objects (e.g. subcollections or companyId -> items map)
+                if (!v.id && !v.modules && !v.timezone) {
                   Object.entries(v).forEach(([subK, subV]) => {
                     if (subV && typeof subV === 'object') {
-                      const id = String(subV.id || subK);
-                      if (!targetMap.has(id)) targetMap.set(id, { id: subV.id || subK, ...subV });
+                      const subId = String(subV.id || subK);
+                      if (!targetMap.has(subId)) targetMap.set(subId, { id: subV.id || subK, ...subV });
                     }
                   });
                 }
@@ -2842,7 +2881,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         companyIdMap.set(String(targetCompId), targetCompId);
 
         // Settings & Modules restored directly from Firebase if present, or fallback defaults
-        const s = settingsMap.get(String(targetCompId)) || settingsMap.get(String(docKey)) || (c.id ? settingsMap.get(String(c.id)) : null);
+        const s = settingsMap.get(String(targetCompId)) || settingsMap.get(String(docKey)) || (c.id ? settingsMap.get(String(c.id)) : null) || c.settings;
         const timezone = s?.timezone || 'Asia/Kolkata';
         const workingHours = Number(s?.workingHoursPerDay || s?.working_hours_per_day || 8.0);
         const halfDayMin = Number(s?.halfDayMinHours || s?.half_day_min_hours || 4.0);
@@ -2866,15 +2905,64 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
 
         const mObj = modulesMap.get(String(targetCompId)) || modulesMap.get(String(docKey)) || (c.id ? modulesMap.get(String(c.id)) : null);
-        const mods = mObj?.modules || mObj || {};
-        const allModules = ['geofencing', 'live_tracking', 'leave_management', 'payroll', 'support_tickets', 'dynamic_forms'];
-        for (const m of allModules) {
-          const isEnabled = (mods[m] !== undefined) ? (mods[m] ? 1 : 0) : 1;
+        let mods = {};
+        if (mObj && typeof mObj === 'object') {
+          mods = mObj.modules || mObj;
+        }
+        if ((!mods || Object.keys(mods).length === 0) && c.modules && typeof c.modules === 'object') {
+          mods = c.modules;
+        }
+
+        const masterModules = [
+          'employees', 'mapping', 'attendance_punch', 'manager_punch',
+          'corrections', 'leave_management', 'geofencing', 'shift_management',
+          'holidays', 'live_tracking', 'tickets', 'calendar', 'reports', 'payroll',
+          'ai_assistant', 'device_binding', 'offline_sync', 'gps_attendance',
+          'holiday_management', 'weekly_off', 'rotational_shift', 'excel_update',
+          'custom_reports', 'service_requests', 'support_tickets', 'dynamic_forms',
+          'biometric_fingerprint'
+        ];
+        const allModuleKeys = Array.from(new Set([...masterModules, ...Object.keys(mods || {})]));
+
+        for (const m of allModuleKeys) {
+          let isEnabled = 1;
+          if (mods[m] !== undefined && mods[m] !== null) {
+            // Strict boolean check: preserve exact OFF (0) / ON (1) from Firebase
+            if (mods[m] === false || mods[m] === 0 || mods[m] === '0' || mods[m] === 'false' || mods[m] === 'off') {
+              isEnabled = 0;
+            } else {
+              isEnabled = 1;
+            }
+          } else {
+            // Check alias mappings if primary key was absent
+            if (m === 'tickets' && mods.support_tickets !== undefined) {
+              isEnabled = (mods.support_tickets === false || mods.support_tickets === 0 || mods.support_tickets === 'false') ? 0 : 1;
+            } else if (m === 'support_tickets' && mods.tickets !== undefined) {
+              isEnabled = (mods.tickets === false || mods.tickets === 0 || mods.tickets === 'false') ? 0 : 1;
+            } else if (m === 'gps_attendance' && mods.attendance_punch !== undefined) {
+              isEnabled = (mods.attendance_punch === false || mods.attendance_punch === 0 || mods.attendance_punch === 'false') ? 0 : 1;
+            } else if (m === 'attendance_punch' && mods.gps_attendance !== undefined) {
+              isEnabled = (mods.gps_attendance === false || mods.gps_attendance === 0 || mods.gps_attendance === 'false') ? 0 : 1;
+            } else if (m === 'service_requests' && mods.tickets !== undefined) {
+              isEnabled = (mods.tickets === false || mods.tickets === 0 || mods.tickets === 'false') ? 0 : 1;
+            } else if (m === 'custom_reports' && mods.reports !== undefined) {
+              isEnabled = (mods.reports === false || mods.reports === 0 || mods.reports === 'false') ? 0 : 1;
+            } else if (m === 'rotational_shift' && mods.shift_management !== undefined) {
+              isEnabled = (mods.shift_management === false || mods.shift_management === 0 || mods.shift_management === 'false') ? 0 : 1;
+            } else if (m === 'holiday_management' && mods.holidays !== undefined) {
+              isEnabled = (mods.holidays === false || mods.holidays === 0 || mods.holidays === 'false') ? 0 : 1;
+            } else if (m === 'weekly_off' && mods.holidays !== undefined) {
+              isEnabled = (mods.holidays === false || mods.holidays === 0 || mods.holidays === 'false') ? 0 : 1;
+            } else {
+              isEnabled = 1;
+            }
+          }
+
           const existingMod = db.prepare('SELECT id FROM company_modules WHERE company_id = ? AND module_name = ?').get(targetCompId, m);
           if (existingMod) {
-            db.prepare('UPDATE company_modules SET is_enabled = ? WHERE id = ?').run(isEnabled, existingMod.id);
+            db.prepare('UPDATE company_modules SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(isEnabled, existingMod.id);
           } else {
-            db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled) VALUES (?, ?, ?)').run(targetCompId, m, isEnabled);
+            db.prepare('INSERT INTO company_modules (company_id, module_name, is_enabled, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)').run(targetCompId, m, isEnabled);
           }
         }
 
