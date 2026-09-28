@@ -163,6 +163,20 @@ function unbindUserDevice({ userId, authorizedUserId, authorizerName, authorizer
     }
   } catch (e) {}
 
+  // Dispatch real-time push notification to user
+  try {
+    const { createNotification } = require('./notificationService');
+    const uRow = db.prepare('SELECT company_id FROM users WHERE id = ?').get(userId);
+    createNotification({
+      userId,
+      companyId: uRow ? uRow.company_id : null,
+      title: 'Device Lock Released',
+      message: `Your device lock (${macDisplay}) was deregistered by ${authorizerName || 'Support/Admin'}. You can now register and log in from your new device.`,
+      type: 'device',
+      link: '/profile'
+    });
+  } catch (e) {}
+
   return { 
     success: true, 
     message: `Device (${macDisplay}) successfully deregistered and unlocked. The employee may now log in from their new device.` 

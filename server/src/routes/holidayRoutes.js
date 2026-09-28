@@ -80,18 +80,21 @@ router.post('/', verifyAuth, requireRole(['company_admin', 'super_admin']), (req
     if (hRow) syncHoliday(hRow);
   } catch (e) {}
 
-  // Send notification to employees
+  // Send real-time notification to employees
   try {
+    const { notifyUsers } = require('../services/notificationService');
     const allUsers = db.prepare('SELECT user_id FROM employees WHERE company_id = ? AND is_deleted = 0').all(companyId);
-    const notifStmt = db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, is_read)
-      VALUES (?, ?, ?, ?, 'system', 0)
-    `);
     const title = is_optional ? `Optional Holiday: ${name.trim()}` : `Public Holiday Declared: ${name.trim()}`;
     const msg = is_optional
       ? `Optional/Restricted Holiday "${name.trim()}" on ${holiday_date} has been added.`
       : `Official Public Holiday "${name.trim()}" on ${holiday_date} has been declared.`;
-    allUsers.forEach(u => notifStmt.run(u.user_id, companyId, title, msg));
+    notifyUsers(allUsers.map(u => u.user_id), {
+      companyId,
+      title,
+      message: msg,
+      type: 'system',
+      link: '/calendar'
+    });
   } catch (e) {}
 
   res.status(201).json({ success: true, holidayId, message: 'Holiday added and calendar updated successfully.' });

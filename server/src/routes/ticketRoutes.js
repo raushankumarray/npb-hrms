@@ -6,6 +6,7 @@ const { getTenantCompanyId, requireSupportLevel } = require('../middleware/rbac'
 const { logAudit } = require('../services/audit');
 const { unbindUserDevice } = require('../services/deviceBinding');
 const { syncTicketMessage, syncSupportTicket, syncServiceRequest, syncServiceRequestMessage } = require('../services/firebase');
+const { createNotification, notifyUsers, notifyCompanyAdmins, notifySupportTeam } = require('../services/notificationService');
 
 // Helper to auto-archive resolved/old tickets based on company retention setting (default 1 day)
 function autoArchiveExpiredRequests(companyId = null) {
@@ -322,20 +323,29 @@ router.put('/service-requests/:id/assign', verifyAuth, (req, res) => {
     // 3. Notifications
     try {
       if (target_role === 'admin') {
-        const adminUser = db.prepare('SELECT id FROM users WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = "company_admin") LIMIT 1').get(ticket.company_id);
-        if (adminUser) {
-          db.prepare(`
-            INSERT INTO notifications (user_id, company_id, title, message, type, link)
-            VALUES (?, ?, 'Ticket Assigned to Admin', ?, 'ticket', '/service-requests')
-          `).run(adminUser.id, ticket.company_id, `Ticket #${reqId} was escalated/assigned to Admin by ${senderName}.`);
-        }
+        notifyCompanyAdmins(ticket.company_id, {
+          title: 'Ticket Assigned to Admin',
+          message: `Ticket #${reqId} was escalated/assigned to Admin by ${senderName}.${notes ? ' Note: ' + notes : ''}`,
+          type: 'ticket',
+          link: '/service-requests'
+        });
       } else if (target_role === 'support') {
-        const supUsers = db.prepare('SELECT user_id FROM support_users').all();
-        supUsers.forEach(su => {
-          db.prepare(`
-            INSERT INTO notifications (user_id, company_id, title, message, type, link)
-            VALUES (?, ?, 'New Support Ticket Assigned', ?, 'ticket', '/support-tickets')
-          `).run(su.user_id, ticket.company_id, `Ticket #${reqId} from company was assigned to Support.`);
+        notifySupportTeam({
+          companyId: ticket.company_id,
+          title: 'New Support Ticket Assigned',
+          message: `Ticket #${reqId} was assigned to Technical Support by ${senderName}.${notes ? ' Note: ' + notes : ''}`,
+          type: 'ticket',
+          link: '/support-tickets'
+        });
+      }
+      if (target_user_id && target_user_id !== req.user.id) {
+        createNotification({
+          userId: target_user_id,
+          companyId: ticket.company_id,
+          title: 'Ticket Assigned to You',
+          message: `Ticket #${reqId} has been assigned to you by ${senderName}.${notes ? ' Note: ' + notes : ''}`,
+          type: 'ticket',
+          link: '/service-requests'
         });
       }
     } catch (e) {}
@@ -438,16 +448,27 @@ router.put('/service-requests/:id/resolve', verifyAuth, (req, res) => {
       }
     }
 
-    // Notify employee
-    db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, link)
-      VALUES (?, ?, ?, ?, 'ticket', '/service-requests')
-    `).run(
-      current.user_id,
-      current.company_id,
-      `Service Ticket #${reqId} ${status.toUpperCase()}`,
-      `Your ticket "${current.title}" has been marked as ${status}.${resolution_notes ? ' Notes: ' + resolution_notes : ''}`
-    );
+    // Notify employee with full resolution details
+    if (current.user_id) {
+      createNotification({
+        userId: current.user_id,
+        companyId: current.company_id,
+        title: `Service Ticket #${reqId} ${status.toUpperCase()}`,
+        message: `Your ticket "${current.title}" has been marked as ${status}.${resolution_notes ? ' Notes: ' + resolution_notes : ''}`,
+        type: status === 'resolved' || status === 'closed' ? 'success' : 'ticket',
+        link: '/service-requests'
+      });
+    }
+
+    // If resolved/closed by Support or Super Admin, notify company admin
+    if (req.user.role_name === 'support' || req.user.role_name === 'super_admin') {
+      notifyCompanyAdmins(current.company_id, {
+        title: `Ticket #${reqId} ${status.toUpperCase()}`,
+        message: `Ticket #${reqId} "${current.title}" resolved by Support (${req.user.username}).${resolution_notes ? ' Notes: ' + resolution_notes : ''}`,
+        type: 'ticket',
+        link: '/service-requests'
+      });
+    }
 
     // If resolving a device deregistration / device_change request or unbind_device flag is provided, deregister device lock
     let unbindMessage = null;
@@ -697,23 +718,44 @@ router.post('/service-requests/:id/messages', verifyAuth, (req, res) => {
       db.prepare("UPDATE service_requests SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(reqId);
     }
 
-    // 3. Notification dispatch
+    // 3. Notification dispatch with full text for phone & browser
+    const fullReplyText = message.trim();
     if (role === 'employee') {
       try {
-        db.prepare(`
-          INSERT INTO notifications (user_id, company_id, title, message, type, link)
-          VALUES (
-            (SELECT id FROM users WHERE company_id = ? AND role_id = (SELECT id FROM roles WHERE name = 'company_admin') LIMIT 1),
-            ?, 'New Reply on Ticket #' || ?, ?, 'ticket', '/service-requests'
-          )
-        `).run(ticket.company_id, ticket.company_id, reqId, `${senderName} replied: "${message.trim().slice(0, 50)}..."`);
+        notifyCompanyAdmins(ticket.company_id, {
+          title: `New Reply on Ticket #${reqId}`,
+          message: `${senderName}: "${fullReplyText}"`,
+          type: 'ticket',
+          link: '/service-requests'
+        });
+        notifySupportTeam({
+          companyId: ticket.company_id,
+          title: `Ticket #${reqId} Reply`,
+          message: `[${ticket.company_id}] ${senderName}: "${fullReplyText}"`,
+          type: 'ticket',
+          link: '/support-tickets'
+        });
       } catch (e) {}
     } else {
       try {
-        db.prepare(`
-          INSERT INTO notifications (user_id, company_id, title, message, type, link)
-          VALUES (?, ?, 'Update on Ticket #' || ?, ?, 'ticket', '/service-requests')
-        `).run(ticket.emp_user_id, ticket.company_id, reqId, `${senderName} replied: "${message.trim().slice(0, 50)}..."`);
+        if (ticket.emp_user_id) {
+          createNotification({
+            userId: ticket.emp_user_id,
+            companyId: ticket.company_id,
+            title: `Update on Ticket #${reqId}`,
+            message: `${senderName} replied: "${fullReplyText}"`,
+            type: 'ticket',
+            link: '/service-requests'
+          });
+        }
+        if (role === 'support' || role === 'super_admin') {
+          notifyCompanyAdmins(ticket.company_id, {
+            title: `Support Reply on Ticket #${reqId}`,
+            message: `${senderName}: "${fullReplyText}"`,
+            type: 'ticket',
+            link: '/service-requests'
+          });
+        }
       } catch (e) {}
     }
 

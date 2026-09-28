@@ -251,6 +251,17 @@ router.put('/:key/toggle-company', verifyAuth, requireRole(['super_admin']), (re
       }
     } catch (e) {}
 
+    // Dispatch real-time push notification to Company Admin
+    try {
+      const { notifyCompanyAdmins } = require('../services/notificationService');
+      notifyCompanyAdmins(compId, {
+        title: `Module ${enabledVal === 1 ? 'Enabled' : 'Disabled'}: ${moduleRow.name}`,
+        message: `Super Admin has ${enabledVal === 1 ? 'enabled' : 'disabled'} the "${moduleRow.name}" module for your organization.`,
+        type: enabledVal === 1 ? 'success' : 'warning',
+        link: '/modules'
+      });
+    } catch (e) {}
+
     res.json({
       success: true,
       company_id: compId,

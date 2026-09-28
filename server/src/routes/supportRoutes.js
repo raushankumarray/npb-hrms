@@ -6,6 +6,7 @@ const { verifyAuth } = require('../middleware/auth');
 const { requireRole, requireSupportLevel } = require('../middleware/rbac');
 const { unbindUserDevice } = require('../services/deviceBinding');
 const { logAudit } = require('../services/audit');
+const { createNotification } = require('../services/notificationService');
 
 // List Support Accounts (Super Admin only)
 router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
@@ -945,12 +946,16 @@ router.post('/remote/session', verifyAuth, requireSupportLevel(4), (req, res) =>
     reason: reason || 'Support Level 4 initiated live online remote diagnostic session'
   });
 
-  // Dispatch notification to user
+  // Dispatch notification to user via real-time push
   try {
-    db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type)
-      VALUES (?, ?, 'Online Support Remote Assist Active', ?, 'system')
-    `).run(user_id, targetUser.company_id, `Support Engineer ${req.user.username} has initiated an Online Remote Assistance Session (Session PIN: ${sessionPin}) to diagnose and resolve your issue.`);
+    createNotification({
+      userId: user_id,
+      companyId: targetUser.company_id,
+      title: 'Online Support Remote Assist Active',
+      message: `Support Engineer ${req.user.username} has initiated an Online Remote Assistance Session (Session PIN: ${sessionPin}) to diagnose and resolve your issue.`,
+      type: 'system',
+      link: '/support'
+    });
   } catch (e) {}
 
   res.json({
@@ -1120,6 +1125,17 @@ router.post('/remote/quick-action', verifyAuth, requireSupportLevel(4), (req, re
       reason: reason || `Remote account status changed to ${newStatus}`
     });
 
+    try {
+      createNotification({
+        userId: user_id,
+        companyId: targetUser.company_id,
+        title: 'Account Status Changed',
+        message: `Your account status was remotely updated to "${newStatus.toUpperCase()}" by Technical Support.`,
+        type: newStatus === 'active' ? 'success' : 'warning',
+        link: '/profile'
+      });
+    } catch (e) {}
+
     return res.json({ success: true, newStatus, message: `Account status remotely set to ${newStatus}.` });
   }
 
@@ -1127,10 +1143,14 @@ router.post('/remote/quick-action', verifyAuth, requireSupportLevel(4), (req, re
     const title = payload.title || 'Technical Support Notice';
     const message = payload.message || 'Support Team is reviewing your account.';
     try {
-      db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type)
-        VALUES (?, ?, ?, ?, 'system')
-      `).run(user_id, targetUser.company_id, title, message);
+      createNotification({
+        userId: user_id,
+        companyId: targetUser.company_id,
+        title,
+        message,
+        type: 'warning',
+        link: '/support'
+      });
     } catch (e) {}
 
     return res.json({ success: true, message: 'Priority alert notification sent to user portal.' });

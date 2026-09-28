@@ -13,6 +13,7 @@ const {
   syncCompanySettings,
   syncCompanyModules
 } = require('../services/firebase');
+const { notifyUsers } = require('../services/notificationService');
 
 // List Geofences, Employee Assignments & Company Policy
 router.get('/', verifyAuth, (req, res) => {
@@ -223,6 +224,23 @@ router.post('/bulk-assign', verifyAuth, requireRole(['company_admin', 'super_adm
       } else {
         deleteGeofenceAssignment(geofence_id, empId);
       }
+    }
+  } catch (e) {}
+
+  // Push real-time notification to assigned employees
+  try {
+    const userRows = db.prepare(`SELECT user_id FROM employees WHERE id IN (${employee_ids.map(() => '?').join(',')})`).all(...employee_ids);
+    const userIds = userRows.map(u => u.user_id).filter(Boolean);
+    if (userIds.length > 0) {
+      notifyUsers(userIds, {
+        companyId,
+        title: isAnywhere ? 'Attendance Location Mode: Anywhere' : `Geofence Assigned: ${targetGeofence.location_name}`,
+        message: isAnywhere
+          ? 'Your attendance policy has been updated: You can now mark attendance from anywhere.'
+          : `Your attendance policy has been assigned to location: "${targetGeofence.location_name}" (Radius: ${targetGeofence.radius}m).`,
+        type: 'system',
+        link: '/attendance'
+      });
     }
   } catch (e) {}
 

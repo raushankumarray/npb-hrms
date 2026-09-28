@@ -1073,6 +1073,27 @@ router.put('/:id/manager-punch', verifyAuth, (req, res) => {
     syncCompanyModules(companyId, mObj).catch(() => {});
   } catch (e) {}
 
+  // Dispatch real-time notification to company managers
+  try {
+    const { notifyUsers } = require('../services/notificationService');
+    const mgrUsers = db.prepare(`
+      SELECT u.id FROM users u
+      JOIN roles r ON u.role_id = r.id
+      WHERE u.company_id = ? AND r.name = 'manager' AND u.is_deleted = 0 AND u.status = 'active'
+    `).all(companyId);
+    if (mgrUsers.length > 0) {
+      notifyUsers(mgrUsers.map(m => m.id), {
+        companyId,
+        title: isEnabled ? 'Manager Attendance Punch Enabled' : 'Manager Attendance Punch Disabled',
+        message: isEnabled
+          ? 'Self-attendance punch capability for managers has been ENABLED by admin.'
+          : 'Self-attendance punch capability for managers has been DISABLED by admin.',
+        type: 'system',
+        link: '/attendance'
+      });
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     enabled: isEnabled === 1,

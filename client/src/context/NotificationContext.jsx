@@ -113,11 +113,13 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
     if (seenIdsRef.current.has(notif.id)) return;
     seenIdsRef.current.add(notif.id);
 
-    // Only trigger native browser/phone notification, vibration & sound if allowed
-    if (isBrowserNotificationAllowed()) {
-      playNotificationChime();
-      triggerDeviceVibration();
+    // 1. In-app Android notification card & pleasant chime always triggered
+    playNotificationChime();
+    addFloatingNotification(notif);
 
+    // 2. Dispatch native OS / Phone system tray notification & vibration if allowed
+    if (isBrowserNotificationAllowed()) {
+      triggerDeviceVibration();
       dispatchNativeNotification({
         id: notif.id,
         title: notif.title,
@@ -125,8 +127,6 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
         link: notif.link,
         tab: resolveTabForNotification(notif, currentUser?.role)
       });
-
-      addFloatingNotification(notif);
     }
   };
 
@@ -220,6 +220,10 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
         }
       }
     };
+
+    if (onSelectTab) {
+      window.__hrmsSelectTab = onSelectTab;
+    }
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);

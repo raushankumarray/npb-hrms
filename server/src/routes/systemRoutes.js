@@ -6,6 +6,7 @@ const { verifyAuth, generateToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase, fetchAllFromFirebaseAndRestoreToDb, resetFirebaseConfig, wipeAllCompanyDataFromDb } = require('../services/firebase');
+const { createNotification } = require('../services/notificationService');
 
 // Helper to get or insert an application setting
 function getSetting(key, defaultValue = '') {
@@ -95,15 +96,15 @@ router.put('/settings', verifyAuth, requireRole(['super_admin']), (req, res) => 
       reason: 'Super Admin updated platform branding, logo, or favicon'
     });
 
-    // Notify Super Admin
+    // Notify Super Admin via real-time push
     try {
-      db.prepare(`
-        INSERT INTO notifications (user_id, title, message, type)
-        VALUES (?, 'System Branding Updated', ?, 'system')
-      `).run(
-        req.user.id,
-        `Platform settings updated: Name="${platform_name || oldValues.platform_name}", logo & favicon synchronized.`
-      );
+      createNotification({
+        userId: req.user.id,
+        title: 'System Branding Updated',
+        message: `Platform settings updated: Name="${platform_name || oldValues.platform_name}", logo & favicon synchronized.`,
+        type: 'system',
+        link: '/system-settings'
+      });
     } catch (e) {}
 
     res.json({
@@ -186,11 +187,16 @@ router.put('/superadmin/account', verifyAuth, requireRole(['super_admin']), (req
         reason: 'Super Admin modified username, password, or display name'
       });
 
-      // Insert notification
-      db.prepare(`
-        INSERT INTO notifications (user_id, title, message, type)
-        VALUES (?, 'Account Credentials Updated', 'Your Super Admin credentials have been successfully updated.', 'system')
-      `).run(req.user.id);
+      // Real-time notification
+      try {
+        createNotification({
+          userId: req.user.id,
+          title: 'Account Credentials Updated',
+          message: 'Your Super Admin credentials have been successfully updated.',
+          type: 'success',
+          link: '/system-settings'
+        });
+      } catch (e) {}
     });
 
     transaction();

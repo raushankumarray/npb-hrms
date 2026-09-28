@@ -14,6 +14,7 @@ const {
 } = require('../services/excelService');
 const { logAudit } = require('../services/audit');
 const { syncEmployee, syncUser, deleteFromFirebase, syncEmployeeMapping, deleteEmployeeMapping, syncLeaveBalance } = require('../services/firebase');
+const { createNotification, notifyUsers } = require('../services/notificationService');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -1064,6 +1065,36 @@ router.post('/bulk-mapping', verifyAuth, requireRole(['company_admin', 'manager'
     console.warn('Firebase bulk-mapping sync notice:', e.message);
   }
 
+  // Real-time notification for bulk mappings
+  try {
+    if (parsedManagerId && parsedManagerId !== 'unchanged' && parsedManagerId !== 'remove') {
+      const mgrEmp = db.prepare('SELECT user_id, full_name FROM employees WHERE id = ?').get(parsedManagerId);
+      if (mgrEmp?.user_id) {
+        createNotification({
+          userId: mgrEmp.user_id,
+          companyId: companyId || req.user.company_id,
+          title: 'Team Members Assigned',
+          message: `${employee_ids.length} staff member(s) have been assigned to your supervision.`,
+          type: 'info',
+          link: '/my-team'
+        });
+      }
+      for (const rawId of employee_ids) {
+        const emp = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(rawId);
+        if (emp?.user_id && mgrEmp) {
+          createNotification({
+            userId: emp.user_id,
+            companyId: companyId || req.user.company_id,
+            title: 'Manager Assigned',
+            message: `${mgrEmp.full_name} has been assigned as your reporting manager.`,
+            type: 'info',
+            link: '/profile'
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
   res.json({
     success: true,
     message: `Successfully updated reporting mappings for ${employee_ids.length} staff members.`
@@ -1121,6 +1152,34 @@ router.post('/mapping', verifyAuth, requireRole(['company_admin', 'manager', 'su
   } catch (e) {
     console.warn('Firebase syncEmployeeMapping notice:', e.message);
   }
+
+  // Real-time notifications for assigned supervisor and employees
+  try {
+    const mgrEmp = db.prepare('SELECT user_id, full_name FROM employees WHERE id = ?').get(targetSupervisorId);
+    if (mgrEmp?.user_id) {
+      createNotification({
+        userId: mgrEmp.user_id,
+        companyId,
+        title: 'Team Members Assigned',
+        message: `${employee_ids.length} staff member(s) have been mapped under your supervision as ${role_type}.`,
+        type: 'info',
+        link: '/my-team'
+      });
+    }
+    for (const eId of employee_ids) {
+      const emp = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(eId);
+      if (emp?.user_id && mgrEmp) {
+        createNotification({
+          userId: emp.user_id,
+          companyId,
+          title: 'Supervisor Assigned',
+          message: `${mgrEmp.full_name} has been assigned as your ${role_type}.`,
+          type: 'info',
+          link: '/profile'
+        });
+      }
+    }
+  } catch (e) {}
 
   res.json({ success: true, message: `${employee_ids.length} employees mapped successfully.` });
 });

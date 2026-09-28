@@ -12,6 +12,7 @@ const {
   syncEmployee,
   deleteFromFirebase
 } = require('../services/firebase');
+const { createNotification, notifyUsers } = require('../services/notificationService');
 
 // List Shifts, Employee Assignments & Weekly Offs for Company
 router.get('/', verifyAuth, (req, res) => {
@@ -228,11 +229,6 @@ router.post('/assign', verifyAuth, requireRole(['company_admin', 'super_admin'])
       VALUES (?, ?, ?, 1)
     `);
 
-    const insertNotification = db.prepare(`
-      INSERT INTO notifications (user_id, company_id, title, message, type, is_read)
-      VALUES (?, ?, ?, ?, 'system', 0)
-    `);
-
     let affectedCount = 0;
 
     for (const empId of employee_ids) {
@@ -257,12 +253,16 @@ router.post('/assign', verifyAuth, requireRole(['company_admin', 'super_admin'])
           } catch(e) {}
         } else {
           // Unassigned notification
-          insertNotification.run(
-            emp.user_id,
-            companyId,
-            'Shift Assignment Updated: Default',
-            `Your assigned shift has been reset to Company Default. Effective Date: ${effectiveDate}.`
-          );
+          try {
+            createNotification({
+              userId: emp.user_id,
+              companyId,
+              title: 'Shift Assignment Updated: Default',
+              message: `Your assigned shift has been reset to Company Default. Effective Date: ${effectiveDate}.`,
+              type: 'system',
+              link: '/calendar'
+            });
+          } catch (e) {}
         }
 
         affectedCount++;
@@ -354,15 +354,17 @@ router.post('/employee-weekly-off', verifyAuth, requireRole(['company_admin', 's
         `).run(weeklyOffId, companyId);
       }
 
-      // Notify all company employees
+      // Notify all company employees via real-time push
       const allUsers = db.prepare('SELECT user_id FROM employees WHERE company_id = ? AND is_deleted = 0').all(companyId);
-      const notifStmt = db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, is_read)
-        VALUES (?, ?, 'Master Weekly Off Updated', ?, 'system', 0)
-      `);
-      allUsers.forEach(u => {
-        notifStmt.run(u.user_id, companyId, `Company Master weekly off days have been updated to: ${off_days.join(', ')}.`);
-      });
+      try {
+        notifyUsers(allUsers.map(u => u.user_id), {
+          companyId,
+          title: 'Master Weekly Off Updated',
+          message: `Company Master weekly off days have been updated to: ${off_days.join(', ')}.`,
+          type: 'system',
+          link: '/calendar'
+        });
+      } catch (e) {}
 
       logAudit({
         companyId,
@@ -397,21 +399,22 @@ router.post('/employee-weekly-off', verifyAuth, requireRole(['company_admin', 's
       }
 
       const updateEmp = db.prepare('UPDATE employees SET weekly_off_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND company_id = ?');
-      const insertNotif = db.prepare(`
-        INSERT INTO notifications (user_id, company_id, title, message, type, is_read)
-        VALUES (?, ?, 'Weekly Off Schedule Updated', ?, 'system', 0)
-      `);
 
       let updatedCount = 0;
       for (const empId of targetEmpIds) {
         const emp = db.prepare('SELECT id, user_id FROM employees WHERE id = ? AND company_id = ?').get(empId, companyId);
         if (emp) {
           updateEmp.run(weeklyOffId, emp.id, companyId);
-          insertNotif.run(
-            emp.user_id,
-            companyId,
-            `Your weekly off days have been customized to: ${off_days.join(', ')} (Effective immediately).`
-          );
+          try {
+            createNotification({
+              userId: emp.user_id,
+              companyId,
+              title: 'Weekly Off Schedule Updated',
+              message: `Your weekly off days have been customized to: ${off_days.join(', ')} (Effective immediately).`,
+              type: 'system',
+              link: '/calendar'
+            });
+          } catch (e) {}
           updatedCount++;
         }
       }

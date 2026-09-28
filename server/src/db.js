@@ -184,7 +184,6 @@ try {
       { key: 'payroll', name: 'Payroll Module', desc: 'Salary slip generation, payroll calculation, and compensation data', category: 'Finance', is_core: 1 },
       { key: 'ai_assistant', name: 'Pihu AI Assistant', desc: 'Universal AI Assistant for Employee, Manager, and Company Admin panels', category: 'AI Tools', is_core: 1 },
       { key: 'device_binding', name: '1-Device MAC Address Lock', desc: 'Enforce single device policy per employee with hardware MAC address binding and de-registration tickets', category: 'Security', is_core: 1 },
-      { key: 'browser_notifications', name: 'Browser & Mobile Push Notifications', desc: 'Native browser & mobile phone push notifications on phone for all employees and managers. When disabled, notifications show only inside the in-app Bell icon after login.', category: 'Communication & Alerts', is_core: 1 },
     ];
 
     const insertMod = db.prepare(`
@@ -194,21 +193,6 @@ try {
 
     for (const m of DEFAULT_MODULES) {
       insertMod.run(m.key, m.name, m.desc, m.category, m.is_core);
-    }
-  } else {
-    // Migration: Ensure browser_notifications exists in system_modules
-    const hasBrowserNotif = db.prepare('SELECT id FROM system_modules WHERE module_key = ?').get('browser_notifications');
-    if (!hasBrowserNotif) {
-      db.prepare(`
-        INSERT INTO system_modules (module_key, name, description, category, is_core, is_active)
-        VALUES (?, ?, ?, ?, ?, 1)
-      `).run(
-        'browser_notifications',
-        'Browser & Mobile Push Notifications',
-        'Native browser & mobile phone push notifications on phone for all employees and managers. When disabled, notifications show only inside the in-app Bell icon after login.',
-        'Communication & Alerts',
-        1
-      );
     }
   }
 } catch (e) {

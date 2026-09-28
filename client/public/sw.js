@@ -43,8 +43,8 @@ self.addEventListener('push', (event) => {
     const title = data.title || 'NPB HRMS Portal';
     const options = {
       body: data.message || '',
-      icon: '/favicon.svg',
-      badge: '/favicon.svg',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
       vibrate: [200, 100, 200],
       tag: data.tag || `hrms-push-${Date.now()}`,
       renotify: true,

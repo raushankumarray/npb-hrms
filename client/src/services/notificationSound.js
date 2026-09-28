@@ -64,9 +64,9 @@ export async function dispatchNativeNotification({ title, message, link, tab, id
 
   const notifOptions = {
     body: message || '',
-    icon: '/favicon.svg',
-    badge: '/favicon.svg',
-    vibrate: [200, 100, 200],
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    vibrate: [200, 100, 200, 100, 200],
     tag: `hrms-${id || Date.now()}`,
     renotify: true,
     data: {
@@ -78,13 +78,16 @@ export async function dispatchNativeNotification({ title, message, link, tab, id
   // Primary: Use Service Worker registration on mobile Android Chrome
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.ready;
+      let reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) {
+        reg = await navigator.serviceWorker.ready;
+      }
       if (reg && reg.showNotification) {
         await reg.showNotification(title || 'NPB HRMS Notification', notifOptions);
         return;
       }
     } catch (err) {
-      console.warn('SW showNotification error:', err);
+      console.warn('SW showNotification fallback:', err);
     }
   }
 

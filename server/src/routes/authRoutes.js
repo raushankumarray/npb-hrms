@@ -441,12 +441,17 @@ router.put('/profile', verifyAuth, (req, res) => {
         reason: 'User self profile details update'
       });
 
-      // Insert instant notification
+      // Insert instant notification with real-time SSE push
       try {
-        db.prepare(`
-          INSERT INTO notifications (user_id, company_id, title, message, type)
-          VALUES (?, ?, 'Profile Updated', 'Your profile details and credentials were saved successfully.', 'system')
-        `).run(userId, req.user.company_id || null);
+        const { createNotification } = require('../services/notificationService');
+        createNotification({
+          userId,
+          companyId: req.user.company_id || null,
+          title: 'Profile Updated',
+          message: 'Your profile details and credentials were saved successfully.',
+          type: 'system',
+          link: '/profile'
+        });
       } catch (e) {}
     });
 
