@@ -74,15 +74,18 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
   // New Support User Form State
   const [newSupport, setNewSupport] = useState({
-    full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true
+    full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true,
+    assign_scope: 'all', assigned_companies: []
   });
 
   // Support Account Management States
   const [showEditSupport, setShowEditSupport] = useState(false);
   const [editingSupportId, setEditingSupportId] = useState(null);
   const [editSupportForm, setEditSupportForm] = useState({
-    username: '', full_name: '', email: '', permission_level: 1, status: 'active', password: '', enable_ai_assistant: false
+    username: '', full_name: '', email: '', permission_level: 1, status: 'active', password: '', enable_ai_assistant: false,
+    assign_scope: 'all', assigned_companies: []
   });
+  const [supportCompanySearch, setSupportCompanySearch] = useState('');
 
   const [showSupportPasswordModal, setShowSupportPasswordModal] = useState(false);
   const [supportPasswordTarget, setSupportPasswordTarget] = useState(null); // { userId, username, fullName }
@@ -809,17 +812,23 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const handleCreateSupport = async (e) => {
     e.preventDefault();
     setError('');
+    const assigned = newSupport.assign_scope === 'all' ? 'all' : (newSupport.assigned_companies || []);
+    if (newSupport.assign_scope === 'custom' && (!assigned || assigned.length === 0)) {
+      setError('Please select at least one company to assign, or choose "All Companies".');
+      return;
+    }
     try {
       await apiRequest('/support/users', {
         method: 'POST',
         body: {
           ...newSupport,
+          assigned_companies: assigned,
           enable_ai_assistant: newSupport.enable_ai_assistant === true
         }
       });
       setSuccess(`Support account "${newSupport.username}" created successfully.`);
       setShowCreateSupport(false);
-      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true });
+      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true, assign_scope: 'all', assigned_companies: [] });
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -829,6 +838,20 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const openEditSupport = (s) => {
     setError('');
     setEditingSupportId(s.user_id);
+    let parsedAssigned = [];
+    let scope = 'all';
+    if (s.assigned_companies && s.assigned_companies !== 'all' && s.assigned_companies !== '*') {
+      try {
+        const p = typeof s.assigned_companies === 'string' ? JSON.parse(s.assigned_companies) : s.assigned_companies;
+        if (Array.isArray(p)) {
+          parsedAssigned = p.map(Number).filter(n => !isNaN(n));
+          scope = 'custom';
+        }
+      } catch (e) {
+        parsedAssigned = String(s.assigned_companies).split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+        scope = parsedAssigned.length > 0 ? 'custom' : 'all';
+      }
+    }
     setEditSupportForm({
       username: s.username || '',
       full_name: s.full_name || '',
@@ -836,14 +859,22 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       permission_level: s.permission_level || 1,
       status: s.status || 'active',
       password: '',
-      enable_ai_assistant: s.enable_ai_assistant === 1 || s.enable_ai_assistant === true
+      enable_ai_assistant: s.enable_ai_assistant === 1 || s.enable_ai_assistant === true,
+      assign_scope: scope,
+      assigned_companies: parsedAssigned
     });
+    setSupportCompanySearch('');
     setShowEditSupport(true);
   };
 
   const handleSaveEditSupport = async (e) => {
     e.preventDefault();
     setError('');
+    const assigned = editSupportForm.assign_scope === 'all' ? 'all' : (editSupportForm.assigned_companies || []);
+    if (editSupportForm.assign_scope === 'custom' && (!assigned || assigned.length === 0)) {
+      setError('Please select at least one company to assign, or choose "All Companies".');
+      return;
+    }
     try {
       await apiRequest(`/support/users/${editingSupportId}`, {
         method: 'PUT',
@@ -854,7 +885,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           permission_level: parseInt(editSupportForm.permission_level, 10),
           status: editSupportForm.status,
           password: editSupportForm.password ? editSupportForm.password.trim() : undefined,
-          enable_ai_assistant: editSupportForm.enable_ai_assistant === true
+          enable_ai_assistant: editSupportForm.enable_ai_assistant === true,
+          assigned_companies: assigned
         }
       });
       setSuccess(`Support account "${editSupportForm.username}" updated successfully.`);
@@ -2455,6 +2487,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                   <th className="p-3">Username</th>
                   <th className="p-3">Permission Level</th>
                   <th className="p-3">Assigned Authority</th>
+                  <th className="p-3">Assigned Companies</th>
                   <th className="p-3">AI Access</th>
                   <th className="p-3">Status</th>
                   <th className="p-3">Created</th>
@@ -2479,6 +2512,51 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       {s.permission_level === 2 && 'Level 2 – Edit Employee & Attendance'}
                       {s.permission_level === 3 && 'Level 3 – Advanced (Device Unlock & Attendance Correction)'}
                       {s.permission_level === 4 && 'Level 4 – Full Support Authority'}
+                    </td>
+                    <td className="p-3">
+                      {(() => {
+                        const raw = s.assigned_companies;
+                        if (!raw || raw === 'all' || raw === '*') {
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <Globe className="w-3 h-3 text-emerald-600" />
+                              <span>All Companies</span>
+                            </span>
+                          );
+                        }
+                        let ids = [];
+                        try {
+                          ids = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                        } catch (e) {
+                          ids = String(raw).split(',').map(Number);
+                        }
+                        if (!Array.isArray(ids) || ids.length === 0) {
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <Globe className="w-3 h-3 text-emerald-600" />
+                              <span>All Companies</span>
+                            </span>
+                          );
+                        }
+                        const matched = companies.filter(c => ids.includes(c.id));
+                        if (matched.length === 1) {
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200" title={matched[0].name}>
+                              <Building2 className="w-3 h-3 text-purple-600" />
+                              <span className="max-w-[120px] truncate">{matched[0].name}</span>
+                            </span>
+                          );
+                        }
+                        return (
+                          <span 
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 cursor-help"
+                            title={matched.map(c => c.name).join(', ')}
+                          >
+                            <Building2 className="w-3 h-3 text-purple-600" />
+                            <span>{ids.length} Companies</span>
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="p-3">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 w-fit ${
@@ -4032,13 +4110,13 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: CREATE SUPPORT USER */}
       {showCreateSupport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
                   Provision Support Account
                 </h3>
-                <p className="text-xs text-slate-500">Create new support personnel credentials & authority</p>
+                <p className="text-xs text-slate-500">Create new support personnel credentials, scoping & authority</p>
               </div>
               <button
                 type="button"
@@ -4110,6 +4188,147 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <option value={3}>Level 3 – Advanced (Device Unlock & Attendance Correction)</option>
                     <option value={4}>Level 4 – Full Support Authority</option>
                   </select>
+                </div>
+
+                {/* Assign Company Scope Selection */}
+                <div className="p-3.5 rounded-xl border border-purple-100 bg-purple-50/40 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Assign Company Access *
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Choose whether this support member accesses all companies or only selected companies
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setNewSupport({ ...newSupport, assign_scope: 'all', assigned_companies: [] })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newSupport.assign_scope === 'all'
+                          ? 'bg-purple-600 text-white border-purple-700 shadow-md ring-2 ring-purple-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                      }`}
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      <span>All Companies</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const init = newSupport.assigned_companies && newSupport.assigned_companies.length > 0
+                          ? newSupport.assigned_companies
+                          : (companies.length > 0 ? [companies[0].id] : []);
+                        setNewSupport({ ...newSupport, assign_scope: 'custom', assigned_companies: init });
+                      }}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newSupport.assign_scope === 'custom'
+                          ? 'bg-purple-600 text-white border-purple-700 shadow-md ring-2 ring-purple-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                      }`}
+                    >
+                      <Building2 className="w-3.5 h-3.5" />
+                      <span>Specific Companies</span>
+                    </button>
+                  </div>
+
+                  {newSupport.assign_scope === 'custom' && (
+                    <div className="mt-2 space-y-2 bg-white rounded-xl p-3 border border-purple-200 shadow-xs">
+                      <div className="flex items-center justify-between gap-2 pb-1 border-b border-slate-100">
+                        <div className="relative flex-1">
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Filter by company name or code..."
+                            value={supportCompanySearch}
+                            onChange={(e) => setSupportCompanySearch(e.target.value)}
+                            className="w-full pl-8 pr-2.5 py-1 text-[11px] border border-slate-200 rounded-lg focus:outline-none focus:border-purple-400"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setNewSupport({ ...newSupport, assigned_companies: companies.map(c => c.id) })}
+                            className="text-[10px] px-2 py-0.5 font-semibold text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded"
+                          >
+                            Select All
+                          </button>
+                          <span className="text-slate-300 text-xs">|</span>
+                          <button
+                            type="button"
+                            onClick={() => setNewSupport({ ...newSupport, assigned_companies: [] })}
+                            className="text-[10px] px-2 py-0.5 font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] font-semibold text-purple-700 flex items-center justify-between px-0.5">
+                        <span>Assigned: {newSupport.assigned_companies?.length || 0} company(ies) selected</span>
+                        {(!newSupport.assigned_companies || newSupport.assigned_companies.length === 0) && (
+                          <span className="text-rose-500 font-normal">Select at least one company</span>
+                        )}
+                      </div>
+
+                      <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+                        {companies
+                          .filter(c => {
+                            if (!supportCompanySearch.trim()) return true;
+                            const term = supportCompanySearch.toLowerCase();
+                            return (c.name || '').toLowerCase().includes(term) || (c.code || '').toLowerCase().includes(term);
+                          })
+                          .map(c => {
+                            const isSelected = newSupport.assigned_companies?.includes(c.id);
+                            return (
+                              <div
+                                key={c.id}
+                                onClick={() => {
+                                  const current = newSupport.assigned_companies || [];
+                                  const updated = isSelected ? current.filter(id => id !== c.id) : [...current, c.id];
+                                  setNewSupport({ ...newSupport, assigned_companies: updated });
+                                }}
+                                className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-all ${
+                                  isSelected
+                                    ? 'bg-purple-50 border-purple-400 text-purple-900 font-semibold'
+                                    : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => {}}
+                                    className="rounded text-purple-600 focus:ring-purple-400 pointer-events-none"
+                                  />
+                                  <div className="truncate">
+                                    <span>{c.name}</span>
+                                    <span className="text-[10px] text-slate-400 ml-1.5 font-mono">({c.code})</span>
+                                  </div>
+                                </div>
+                                {c.total_employees !== undefined && (
+                                  <span className="text-[10px] text-slate-400 shrink-0 font-mono">
+                                    {c.total_employees} emp
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        {companies.length === 0 && (
+                          <div className="text-center py-4 text-slate-400 text-xs">
+                            No companies available in system yet.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* AI Feature Question & Selection for Support Account */}
@@ -4535,7 +4754,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       {/* MODAL: EDIT SUPPORT USER */}
       {showEditSupport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white">
               <div>
                 <h3 className="text-base font-bold text-slate-900">
@@ -4612,6 +4831,147 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       <option value="disabled">Disabled / Suspended</option>
                     </select>
                   </div>
+                </div>
+
+                {/* Assign Company Scope Selection */}
+                <div className="p-3.5 rounded-xl border border-purple-100 bg-purple-50/40 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Assign Company Access *
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Choose whether this support member accesses all companies or only selected companies
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditSupportForm({ ...editSupportForm, assign_scope: 'all', assigned_companies: [] })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        editSupportForm.assign_scope === 'all'
+                          ? 'bg-purple-600 text-white border-purple-700 shadow-md ring-2 ring-purple-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                      }`}
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      <span>All Companies</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const init = editSupportForm.assigned_companies && editSupportForm.assigned_companies.length > 0
+                          ? editSupportForm.assigned_companies
+                          : (companies.length > 0 ? [companies[0].id] : []);
+                        setEditSupportForm({ ...editSupportForm, assign_scope: 'custom', assigned_companies: init });
+                      }}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        editSupportForm.assign_scope === 'custom'
+                          ? 'bg-purple-600 text-white border-purple-700 shadow-md ring-2 ring-purple-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-purple-300 hover:bg-purple-50/40'
+                      }`}
+                    >
+                      <Building2 className="w-3.5 h-3.5" />
+                      <span>Specific Companies</span>
+                    </button>
+                  </div>
+
+                  {editSupportForm.assign_scope === 'custom' && (
+                    <div className="mt-2 space-y-2 bg-white rounded-xl p-3 border border-purple-200 shadow-xs">
+                      <div className="flex items-center justify-between gap-2 pb-1 border-b border-slate-100">
+                        <div className="relative flex-1">
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Filter by company name or code..."
+                            value={supportCompanySearch}
+                            onChange={(e) => setSupportCompanySearch(e.target.value)}
+                            className="w-full pl-8 pr-2.5 py-1 text-[11px] border border-slate-200 rounded-lg focus:outline-none focus:border-purple-400"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setEditSupportForm({ ...editSupportForm, assigned_companies: companies.map(c => c.id) })}
+                            className="text-[10px] px-2 py-0.5 font-semibold text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded"
+                          >
+                            Select All
+                          </button>
+                          <span className="text-slate-300 text-xs">|</span>
+                          <button
+                            type="button"
+                            onClick={() => setEditSupportForm({ ...editSupportForm, assigned_companies: [] })}
+                            className="text-[10px] px-2 py-0.5 font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] font-semibold text-purple-700 flex items-center justify-between px-0.5">
+                        <span>Assigned: {editSupportForm.assigned_companies?.length || 0} company(ies) selected</span>
+                        {(!editSupportForm.assigned_companies || editSupportForm.assigned_companies.length === 0) && (
+                          <span className="text-rose-500 font-normal">Select at least one company</span>
+                        )}
+                      </div>
+
+                      <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+                        {companies
+                          .filter(c => {
+                            if (!supportCompanySearch.trim()) return true;
+                            const term = supportCompanySearch.toLowerCase();
+                            return (c.name || '').toLowerCase().includes(term) || (c.code || '').toLowerCase().includes(term);
+                          })
+                          .map(c => {
+                            const isSelected = editSupportForm.assigned_companies?.includes(c.id);
+                            return (
+                              <div
+                                key={c.id}
+                                onClick={() => {
+                                  const current = editSupportForm.assigned_companies || [];
+                                  const updated = isSelected ? current.filter(id => id !== c.id) : [...current, c.id];
+                                  setEditSupportForm({ ...editSupportForm, assigned_companies: updated });
+                                }}
+                                className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition-all ${
+                                  isSelected
+                                    ? 'bg-purple-50 border-purple-400 text-purple-900 font-semibold'
+                                    : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => {}}
+                                    className="rounded text-purple-600 focus:ring-purple-400 pointer-events-none"
+                                  />
+                                  <div className="truncate">
+                                    <span>{c.name}</span>
+                                    <span className="text-[10px] text-slate-400 ml-1.5 font-mono">({c.code})</span>
+                                  </div>
+                                </div>
+                                {c.total_employees !== undefined && (
+                                  <span className="text-[10px] text-slate-400 shrink-0 font-mono">
+                                    {c.total_employees} emp
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        {companies.length === 0 && (
+                          <div className="text-center py-4 text-slate-400 text-xs">
+                            No companies available in system yet.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* AI Feature Assignment for Edit Support */}

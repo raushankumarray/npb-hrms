@@ -242,6 +242,11 @@ router.get('/service-requests', verifyAuth, (req, res) => {
     query += ' AND (e.user_id = ? OR sr.employee_id = ?)';
     params.push(req.user.id, req.user.employee_id || 0);
   } else if (req.user.role_name === 'support') {
+    const { parseSupportAssignedCompanies } = require('../middleware/rbac');
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all' && !companyId) {
+      query += ` AND sr.company_id IN (${authComp.join(',')})`;
+    }
     if (req.query.scope === 'support') {
       query += " AND (sr.assigned_role = 'support' OR sr.assigned_role IS NULL)";
     }

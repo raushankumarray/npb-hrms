@@ -37,6 +37,7 @@ function verifyAuth(req, res, next) {
       SELECT u.id, u.username, u.email, u.role_id, u.company_id, u.status, u.is_deleted,
              r.name as role_name,
              s.permission_level as support_level,
+             s.assigned_companies,
              e.id as employee_id, e.employee_id as employee_code,
              COALESCE(e.full_name, sa.full_name, s.full_name, u.username) as full_name,
              COALESCE(e.mobile, u.mobile, '') as mobile,
@@ -77,13 +78,19 @@ function verifyAuth(req, res, next) {
 
     if (user && user.role_name === 'support') {
       try {
-        const sRow = db.prepare("SELECT enable_ai_assistant FROM support_users WHERE user_id = ?").get(user.id);
+        const sRow = db.prepare("SELECT enable_ai_assistant, assigned_companies FROM support_users WHERE user_id = ?").get(user.id);
         user.enable_ai_assistant = sRow ? (sRow.enable_ai_assistant === 1) : false;
+        user.assigned_companies = sRow ? (sRow.assigned_companies || 'all') : (user.assigned_companies || 'all');
+        user.assignedCompanies = user.assigned_companies;
       } catch (e) {
         user.enable_ai_assistant = false;
+        user.assigned_companies = user.assigned_companies || 'all';
+        user.assignedCompanies = user.assigned_companies;
       }
     } else if (user) {
       user.enable_ai_assistant = undefined;
+      user.assigned_companies = user.assigned_companies || 'all';
+      user.assignedCompanies = user.assigned_companies;
     }
     req.user = user;
     next();

@@ -3,10 +3,11 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
-const { requireRole, requireSupportLevel } = require('../middleware/rbac');
+const { requireRole, requireSupportLevel, parseSupportAssignedCompanies, isCompanyAuthorized } = require('../middleware/rbac');
 const { unbindUserDevice } = require('../services/deviceBinding');
 const { logAudit } = require('../services/audit');
 const { createNotification } = require('../services/notificationService');
+const { syncSupportUser, syncUser, deleteFromFirebase } = require('../services/firebase');
 
 // List Support Accounts (Super Admin only)
 router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
@@ -25,7 +26,8 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const aiSelect = hasAiCol ? 'COALESCE(s.enable_ai_assistant, 0)' : '0';
   const users = db.prepare(`
     SELECT u.id as user_id, u.username, u.email, u.status, u.created_at, u.last_login_at,
-           s.id as support_id, s.full_name, s.permission_level, s.device_status, ${aiSelect} as enable_ai_assistant
+           s.id as support_id, s.full_name, s.permission_level, s.device_status, ${aiSelect} as enable_ai_assistant,
+           COALESCE(s.assigned_companies, 'all') as assigned_companies
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.is_deleted = 0
@@ -40,7 +42,7 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
 
 // Create Support Account (Super Admin only)
 router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
-  const { full_name, username, password, email, permission_level, enable_ai_assistant } = req.body;
+  const { full_name, username, password, email, permission_level, enable_ai_assistant, assigned_companies } = req.body;
 
   if (!full_name || !username || !password) {
     return res.status(400).json({ error: 'Full Name, Username, and Password are required.' });
@@ -56,17 +58,41 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const pLevel = Math.min(Math.max(parseInt(permission_level || 1, 10), 1), 4);
   const aiEnabled = enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0;
 
+  let assignedCompVal = 'all';
+  if (assigned_companies && assigned_companies !== 'all') {
+    if (Array.isArray(assigned_companies)) {
+      const cleanIds = assigned_companies.map(Number).filter(n => !isNaN(n) && n > 0);
+      assignedCompVal = cleanIds.length > 0 ? JSON.stringify(cleanIds) : 'all';
+    } else if (typeof assigned_companies === 'string') {
+      try {
+        const p = JSON.parse(assigned_companies);
+        if (Array.isArray(p)) {
+          const cleanIds = p.map(Number).filter(n => !isNaN(n) && n > 0);
+          assignedCompVal = cleanIds.length > 0 ? JSON.stringify(cleanIds) : 'all';
+        } else {
+          assignedCompVal = assigned_companies;
+        }
+      } catch (e) {
+        const cleanIds = assigned_companies.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+        assignedCompVal = cleanIds.length > 0 ? JSON.stringify(cleanIds) : 'all';
+      }
+    }
+  }
+
   let createdSupportId = null;
+  let createdUserId = null;
   const transaction = db.transaction(() => {
     const userRes = db.prepare(`
       INSERT INTO users (username, password_hash, email, role_id, company_id, status)
       VALUES (?, ?, ?, ?, NULL, 'active')
     `).run(username.trim(), passHash, email, roleSupport.id);
 
+    createdUserId = userRes.lastInsertRowid;
+
     const supportRes = db.prepare(`
-      INSERT INTO support_users (user_id, full_name, permission_level, device_status, enable_ai_assistant)
-      VALUES (?, ?, ?, 'active', ?)
-    `).run(userRes.lastInsertRowid, full_name.trim(), pLevel, aiEnabled);
+      INSERT INTO support_users (user_id, full_name, permission_level, device_status, enable_ai_assistant, assigned_companies)
+      VALUES (?, ?, ?, 'active', ?, ?)
+    `).run(createdUserId, full_name.trim(), pLevel, aiEnabled, assignedCompVal);
 
     createdSupportId = supportRes.lastInsertRowid;
 
@@ -78,22 +104,49 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
       action: 'SUPPORT_USER_CREATED',
       targetEntity: 'support_users',
       targetId: supportRes.lastInsertRowid,
-      newValues: { username, full_name, permission_level: pLevel },
+      newValues: { username, full_name, permission_level: pLevel, assigned_companies: assignedCompVal },
       reason: 'Created new support team member'
     });
   });
 
   transaction();
-  res.status(201).json({ success: true, supportId: createdSupportId, message: 'Support account created successfully.' });
+
+  // Real-time sync to Firebase (Firestore & RTDB)
+  try {
+    syncUser({
+      id: createdUserId,
+      username: username.trim(),
+      email,
+      role_id: roleSupport.id,
+      role_name: 'support',
+      status: 'active',
+      assigned_companies: assignedCompVal
+    }).catch(() => {});
+
+    syncSupportUser({
+      id: createdSupportId,
+      user_id: createdUserId,
+      full_name: full_name.trim(),
+      username: username.trim(),
+      email,
+      permission_level: pLevel,
+      device_status: 'active',
+      enable_ai_assistant: aiEnabled,
+      assigned_companies: assignedCompVal,
+      status: 'active'
+    }).catch(() => {});
+  } catch (e) {}
+
+  res.status(201).json({ success: true, supportId: createdSupportId, userId: createdUserId, message: 'Support account created successfully.' });
 });
 
 // Update Support Account & Permission Level (Super Admin only)
 router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const userId = parseInt(req.params.id, 10);
-  const { username, full_name, email, permission_level, status, password, enable_ai_assistant } = req.body;
+  const { username, full_name, email, permission_level, status, password, enable_ai_assistant, assigned_companies } = req.body;
 
   const currentSupport = db.prepare(`
-    SELECT u.*, s.permission_level, s.full_name, s.enable_ai_assistant
+    SELECT u.*, s.id as support_id, s.permission_level, s.full_name, s.enable_ai_assistant, s.assigned_companies
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.id = ?
@@ -111,12 +164,40 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
     }
   }
 
+  let updatedUsername = (username && username.trim()) ? username.trim() : currentSupport.username;
+  let updatedEmail = email !== undefined ? (email ? email.trim() : null) : currentSupport.email;
+  let updatedStatus = status || currentSupport.status;
+  let updatedName = (full_name && full_name.trim()) ? full_name.trim() : currentSupport.full_name;
+  let pLevel = permission_level ? Math.min(Math.max(parseInt(permission_level, 10), 1), 4) : currentSupport.permission_level;
+  let aiEnabled = enable_ai_assistant !== undefined
+    ? (enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0)
+    : (currentSupport.enable_ai_assistant || 0);
+
+  let updatedAssignedComp = currentSupport.assigned_companies || 'all';
+  if (assigned_companies !== undefined) {
+    if (!assigned_companies || assigned_companies === 'all') {
+      updatedAssignedComp = 'all';
+    } else if (Array.isArray(assigned_companies)) {
+      const cleanIds = assigned_companies.map(Number).filter(n => !isNaN(n) && n > 0);
+      updatedAssignedComp = cleanIds.length > 0 ? JSON.stringify(cleanIds) : 'all';
+    } else if (typeof assigned_companies === 'string') {
+      try {
+        const p = JSON.parse(assigned_companies);
+        if (Array.isArray(p)) {
+          const cleanIds = p.map(Number).filter(n => !isNaN(n) && n > 0);
+          updatedAssignedComp = cleanIds.length > 0 ? JSON.stringify(cleanIds) : 'all';
+        } else {
+          updatedAssignedComp = assigned_companies;
+        }
+      } catch (e) {
+        const cleanIds = assigned_companies.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+        updatedAssignedComp = cleanIds.length > 0 ? JSON.stringify(cleanIds) : 'all';
+      }
+    }
+  }
+
   const transaction = db.transaction(() => {
     // Update users table
-    const updatedUsername = (username && username.trim()) ? username.trim() : currentSupport.username;
-    const updatedEmail = email !== undefined ? (email ? email.trim() : null) : currentSupport.email;
-    const updatedStatus = status || currentSupport.status;
-
     db.prepare(`
       UPDATE users SET
         username = ?,
@@ -132,19 +213,14 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
     }
 
     // Update support_users table
-    const updatedName = (full_name && full_name.trim()) ? full_name.trim() : currentSupport.full_name;
-    const pLevel = permission_level ? Math.min(Math.max(parseInt(permission_level, 10), 1), 4) : currentSupport.permission_level;
-    const aiEnabled = enable_ai_assistant !== undefined
-      ? (enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0)
-      : (currentSupport.enable_ai_assistant || 0);
-
     db.prepare(`
       UPDATE support_users SET
         full_name = ?,
         permission_level = ?,
-        enable_ai_assistant = ?
+        enable_ai_assistant = ?,
+        assigned_companies = ?
       WHERE user_id = ?
-    `).run(updatedName, pLevel, aiEnabled, userId);
+    `).run(updatedName, pLevel, aiEnabled, updatedAssignedComp, userId);
 
     logAudit({
       userId: req.user.id,
@@ -154,13 +230,38 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
       action: 'SUPPORT_USER_UPDATED',
       targetEntity: 'support_users',
       targetId: userId,
-      oldValues: { username: currentSupport.username, full_name: currentSupport.full_name, permission_level: currentSupport.permission_level, status: currentSupport.status },
-      newValues: { username: updatedUsername, full_name: updatedName, permission_level: pLevel, status: updatedStatus },
+      oldValues: { username: currentSupport.username, full_name: currentSupport.full_name, permission_level: currentSupport.permission_level, status: currentSupport.status, assigned_companies: currentSupport.assigned_companies },
+      newValues: { username: updatedUsername, full_name: updatedName, permission_level: pLevel, status: updatedStatus, assigned_companies: updatedAssignedComp },
       reason: 'Support user master attributes updated'
     });
   });
 
   transaction();
+
+  // Realtime sync to Firebase (Firestore & RTDB)
+  try {
+    syncUser({
+      id: userId,
+      username: updatedUsername,
+      email: updatedEmail,
+      role_name: 'support',
+      status: updatedStatus,
+      assigned_companies: updatedAssignedComp
+    }).catch(() => {});
+
+    syncSupportUser({
+      id: currentSupport.support_id || userId,
+      user_id: userId,
+      full_name: updatedName,
+      username: updatedUsername,
+      email: updatedEmail,
+      permission_level: pLevel,
+      enable_ai_assistant: aiEnabled,
+      assigned_companies: updatedAssignedComp,
+      status: updatedStatus
+    }).catch(() => {});
+  } catch (e) {}
+
   res.json({ success: true, message: 'Support user updated successfully.' });
 });
 
@@ -376,15 +477,34 @@ router.get('/devices', verifyAuth, requireSupportLevel(1), (req, res) => {
     SELECT d.*, u.username, u.company_id, e.employee_id as employee_code, e.full_name, c.name as company_name
     FROM employee_devices d
     JOIN users u ON d.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
     LEFT JOIN employees e ON u.id = e.user_id
     LEFT JOIN companies c ON u.company_id = c.id
-    WHERE 1=1
+    WHERE 1=1 AND r.name NOT IN ('super_admin') AND u.role_id != 1
   `;
   const params = [];
 
-  if (company_id) {
+  if (req.user.role_name === 'support') {
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      if (company_id && company_id !== 'all') {
+        const cId = parseInt(company_id, 10);
+        if (authComp.includes(cId)) {
+          query += ' AND u.company_id = ?';
+          params.push(cId);
+        } else {
+          return res.json({ devices: [] });
+        }
+      } else {
+        query += ` AND u.company_id IN (${authComp.join(',')})`;
+      }
+    } else if (company_id && company_id !== 'all') {
+      query += ' AND u.company_id = ?';
+      params.push(parseInt(company_id, 10));
+    }
+  } else if (company_id && company_id !== 'all') {
     query += ' AND u.company_id = ?';
-    params.push(company_id);
+    params.push(parseInt(company_id, 10));
   }
 
   if (search) {
@@ -431,9 +551,28 @@ const handleGetAuditLogs = (req, res) => {
     params.push(month);
   }
 
-  if (company_id) {
+  if (req.user.role_name === 'support') {
+    query += " AND (a.role != 'super_admin' AND (a.panel IS NULL OR a.panel NOT LIKE '%Super Admin%'))";
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      if (company_id && company_id !== 'all') {
+        const cId = parseInt(company_id, 10);
+        if (authComp.includes(cId)) {
+          query += ' AND a.company_id = ?';
+          params.push(cId);
+        } else {
+          return res.json({ logs: [], total: 0, totalCount: 0, todayCount: 0, archivedCount: 0 });
+        }
+      } else {
+        query += ` AND a.company_id IN (${authComp.join(',')})`;
+      }
+    } else if (company_id && company_id !== 'all') {
+      query += ' AND a.company_id = ?';
+      params.push(parseInt(company_id, 10));
+    }
+  } else if (company_id && company_id !== 'all') {
     query += ' AND a.company_id = ?';
-    params.push(company_id);
+    params.push(parseInt(company_id, 10));
   }
 
   if (action) {
@@ -611,6 +750,9 @@ router.get('/search-user', verifyAuth, requireSupportLevel(1), (req, res) => {
     LEFT JOIN employees e ON u.id = e.user_id
     LEFT JOIN companies c ON u.company_id = c.id
     WHERE u.is_deleted = 0
+      AND r.name NOT IN ('super_admin')
+      AND u.role_id != 1
+      AND u.company_id IS NOT NULL
       AND (
         u.username LIKE ? OR
         u.email LIKE ? OR
@@ -623,9 +765,27 @@ router.get('/search-user', verifyAuth, requireSupportLevel(1), (req, res) => {
   `;
   const params = [term, term, term, term, term, term, term];
 
-  if (company_id && company_id !== 'all') {
+  if (req.user.role_name === 'support') {
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      if (company_id && company_id !== 'all') {
+        const cId = parseInt(company_id, 10);
+        if (authComp.includes(cId)) {
+          query += ' AND u.company_id = ?';
+          params.push(cId);
+        } else {
+          return res.json({ results: [] });
+        }
+      } else {
+        query += ` AND u.company_id IN (${authComp.join(',')})`;
+      }
+    } else if (company_id && company_id !== 'all') {
+      query += ' AND u.company_id = ?';
+      params.push(parseInt(company_id, 10));
+    }
+  } else if (company_id && company_id !== 'all') {
     query += ' AND u.company_id = ?';
-    params.push(company_id);
+    params.push(parseInt(company_id, 10));
   }
 
   query += ' ORDER BY u.last_login_at DESC, u.id DESC LIMIT 15';
@@ -701,8 +861,12 @@ router.put('/update-user-profile/:id', verifyAuth, requireSupportLevel(1), (req,
   }
 
   // Prevent modifying super_admin accounts via support
-  if (targetUser.role_name === 'super_admin') {
+  if (targetUser.role_name === 'super_admin' || targetUser.role_id === 1) {
     return res.status(403).json({ error: 'Super Admin accounts cannot be modified by Support.' });
+  }
+
+  if (req.user.role_name === 'support' && !isCompanyAuthorized(req.user, targetUser.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Target user belongs to a company outside your assigned scope.' });
   }
 
   const transaction = db.transaction(() => {
@@ -788,6 +952,14 @@ router.get('/remote/targets', verifyAuth, requireSupportLevel(4), (req, res) => 
     compQuery += ' AND c.id = ?';
     compParams.push(company_id);
   }
+
+  if (req.user.role_name === 'support') {
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      compQuery += ` AND c.id IN (${authComp.join(',')})`;
+    }
+  }
+
   compQuery += ' ORDER BY c.name ASC';
   const companies = db.prepare(compQuery).all(...compParams);
 
@@ -810,6 +982,13 @@ router.get('/remote/targets', verifyAuth, requireSupportLevel(4), (req, res) => 
   if (company_id && company_id !== 'all') {
     userQuery += ' AND u.company_id = ?';
     userParams.push(company_id);
+  }
+
+  if (req.user.role_name === 'support') {
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      userQuery += ` AND u.company_id IN (${authComp.join(',')})`;
+    }
   }
 
   if (search && search.trim()) {
@@ -841,11 +1020,15 @@ router.get('/remote/diagnostics/:userId', verifyAuth, requireSupportLevel(4), (r
     JOIN roles r ON u.role_id = r.id
     LEFT JOIN employees e ON u.id = e.user_id
     LEFT JOIN companies c ON u.company_id = c.id
-    WHERE u.id = ? AND u.is_deleted = 0
+    WHERE u.id = ? AND u.is_deleted = 0 AND r.name NOT IN ('super_admin') AND u.role_id != 1
   `).get(userId);
 
   if (!user) {
-    return res.status(404).json({ error: 'Target user not found.' });
+    return res.status(404).json({ error: 'Target user not found or access restricted.' });
+  }
+
+  if (req.user.role_name === 'support' && !isCompanyAuthorized(req.user, user.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Target user belongs to a company outside your assigned scope.' });
   }
 
   // Bound Device info
@@ -1175,7 +1358,7 @@ router.get('/suspended-accounts', verifyAuth, requireRole(['support', 'super_adm
     FROM employees e
     JOIN users u ON e.user_id = u.id
     LEFT JOIN companies c ON e.company_id = c.id
-    WHERE e.is_deleted = 0 AND u.is_deleted = 0
+    WHERE e.is_deleted = 0 AND u.is_deleted = 0 AND u.role_id != 1
       AND (
         e.status IN ('suspended', 'disabled', 'inactive') OR
         u.status IN ('suspended', 'disabled', 'inactive')
@@ -1183,9 +1366,27 @@ router.get('/suspended-accounts', verifyAuth, requireRole(['support', 'super_adm
   `;
   const params = [];
 
-  if (company_id && company_id !== 'all') {
+  if (req.user.role_name === 'support') {
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      if (company_id && company_id !== 'all') {
+        const cId = parseInt(company_id, 10);
+        if (authComp.includes(cId)) {
+          query += ' AND e.company_id = ?';
+          params.push(cId);
+        } else {
+          return res.json({ accounts: [] });
+        }
+      } else {
+        query += ` AND e.company_id IN (${authComp.join(',')})`;
+      }
+    } else if (company_id && company_id !== 'all') {
+      query += ' AND e.company_id = ?';
+      params.push(parseInt(company_id, 10));
+    }
+  } else if (company_id && company_id !== 'all') {
     query += ' AND e.company_id = ?';
-    params.push(company_id);
+    params.push(parseInt(company_id, 10));
   }
 
   if (search && search.trim()) {
@@ -1231,6 +1432,16 @@ router.post('/enable-account/:id', verifyAuth, requireRole(['support', 'super_ad
 
   if (!emp) {
     return res.status(404).json({ error: 'Account not found.' });
+  }
+
+  // Prevent modifying super_admin accounts
+  const userRole = db.prepare('SELECT r.name FROM roles r JOIN users u ON u.role_id = r.id WHERE u.id = ?').get(emp.user_id);
+  if (userRole && userRole.name === 'super_admin') {
+    return res.status(403).json({ error: 'Super Admin accounts cannot be modified.' });
+  }
+
+  if (req.user.role_name === 'support' && !isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Target account belongs to a company outside your assigned scope.' });
   }
 
   const transaction = db.transaction(() => {

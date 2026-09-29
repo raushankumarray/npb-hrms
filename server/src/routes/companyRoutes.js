@@ -6,7 +6,7 @@ const fs = require('fs');
 const multer = require('multer');
 const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
-const { requireRole } = require('../middleware/rbac');
+const { requireRole, parseSupportAssignedCompanies } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { syncCompany, syncUser, deleteFromFirebase, syncCompanySettings, syncCompanyModules, syncShift, syncWeeklyOff, syncLeaveType } = require('../services/firebase');
 
@@ -61,7 +61,25 @@ router.get('/', verifyAuth, requireRole(['super_admin', 'support']), (req, res) 
   `;
   const params = [];
 
-  if (company_id && company_id !== 'all') {
+  if (req.user.role_name === 'support') {
+    const authComp = parseSupportAssignedCompanies(req.user);
+    if (authComp !== 'all') {
+      if (company_id && company_id !== 'all') {
+        const cId = parseInt(company_id, 10);
+        if (authComp.includes(cId)) {
+          query += ' AND c.id = ?';
+          params.push(cId);
+        } else {
+          return res.json({ companies: [] });
+        }
+      } else {
+        query += ` AND c.id IN (${authComp.join(',')})`;
+      }
+    } else if (company_id && company_id !== 'all') {
+      query += ' AND c.id = ?';
+      params.push(parseInt(company_id, 10));
+    }
+  } else if (company_id && company_id !== 'all') {
     query += ' AND c.id = ?';
     params.push(parseInt(company_id, 10));
   }

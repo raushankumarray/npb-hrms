@@ -28,6 +28,10 @@ try {
 } catch (e) {}
 
 try {
+  db.prepare("ALTER TABLE support_users ADD COLUMN assigned_companies TEXT DEFAULT 'all'").run();
+} catch (e) {}
+
+try {
   db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_role TEXT DEFAULT 'manager'").run();
 } catch (e) {}
 

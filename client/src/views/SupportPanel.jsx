@@ -223,7 +223,11 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       // Load companies list for multi-tenant company switcher
       try {
         const compRes = await apiRequest('/companies');
-        setCompanies(compRes.companies || []);
+        const compList = compRes.companies || [];
+        setCompanies(compList);
+        if (compList.length === 1 && selectedCompanyId === 'all') {
+          setSelectedCompanyId(String(compList[0].id));
+        }
       } catch (e) {}
 
       const compParam = selectedCompanyId && selectedCompanyId !== 'all' ? `company_id=${selectedCompanyId}` : '';
@@ -751,7 +755,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
               onChange={(e) => setSelectedCompanyId(e.target.value)}
               className="text-xs font-semibold text-slate-800 bg-transparent border-none focus:outline-none cursor-pointer"
             >
-              <option value="all">All Companies</option>
+              {companies.length !== 1 && <option value="all">All Companies</option>}
               {companies.map(c => (
                 <option key={c.id} value={c.id}>{c.legal_name || c.name || c.company_code}</option>
               ))}

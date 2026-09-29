@@ -608,6 +608,8 @@ async function syncUser(user) {
       company_id: user.company_id || null,
       companyName: companyName,
       status: user.status || 'active',
+      assignedCompanies: user.assigned_companies || user.assignedCompanies || 'all',
+      assigned_companies: user.assigned_companies || user.assignedCompanies || 'all',
       lastLoginAt: user.last_login_at || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -627,6 +629,47 @@ async function syncUser(user) {
     return true;
   } catch (err) {
     console.warn('Firebase syncUser notice:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Real-time sync: Support User Account & Assigned Companies
+ */
+async function syncSupportUser(supportUser) {
+  if (!firebaseStatus.connected || !supportUser) return null;
+  try {
+    const userId = supportUser.user_id || supportUser.id;
+    const assigned = supportUser.assigned_companies || supportUser.assignedCompanies || 'all';
+    const payload = {
+      id: supportUser.id || userId,
+      userId: userId,
+      user_id: userId,
+      fullName: supportUser.full_name || supportUser.fullName || '',
+      full_name: supportUser.full_name || supportUser.fullName || '',
+      username: supportUser.username || '',
+      email: supportUser.email || '',
+      permissionLevel: supportUser.permission_level || 1,
+      permission_level: supportUser.permission_level || 1,
+      deviceStatus: supportUser.device_status || 'active',
+      device_status: supportUser.device_status || 'active',
+      enableAiAssistant: supportUser.enable_ai_assistant === 1 || supportUser.enable_ai_assistant === true,
+      enable_ai_assistant: supportUser.enable_ai_assistant === 1 || supportUser.enable_ai_assistant === true,
+      assignedCompanies: assigned,
+      assigned_companies: assigned,
+      status: supportUser.status || 'active',
+      updatedAt: new Date().toISOString()
+    };
+
+    if (firestoreDb) {
+      await firestoreDb.collection('support_users').doc(String(userId)).set(payload, { merge: true });
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`support_users/${userId}`).set(payload);
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncSupportUser notice:', err.message);
     return false;
   }
 }
@@ -1970,11 +2013,19 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
       }
       if (realtimeDb) {
         await realtimeDb.ref(`users/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`support_users/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`devices/${strId}`).remove().catch(() => {});
         await realtimeDb.ref(`employee_devices/${strId}`).remove().catch(() => {});
         if (extra.companyId) {
           await realtimeDb.ref(`companies/${extra.companyId}/users/${strId}`).remove().catch(() => {});
         }
+      }
+    } else if (entityType === 'support_users') {
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('support_users', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`support_users/${strId}`).remove().catch(() => {});
       }
     } else if (entityType === 'notifications') {
       if (firestoreDb) {
@@ -2040,6 +2091,14 @@ async function syncAllDatabaseToFirebase() {
       await syncUser(u);
       usersCount++;
     }
+
+    // 2b. Sync all support users
+    try {
+      const supportUsers = db.prepare('SELECT s.*, u.username, u.email, u.status FROM support_users s JOIN users u ON s.user_id = u.id WHERE u.is_deleted = 0').all();
+      for (const su of supportUsers) {
+        await syncSupportUser(su);
+      }
+    } catch (e) {}
 
     // 3. Sync all shifts, rotational shifts, weekly offs, holidays, and geofences
     let shiftsCount = 0;
@@ -2594,6 +2653,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     let serviceRequestsMap = new Map();
     let serviceRequestMessagesMap = new Map();
     let auditLogsMap = new Map();
+    let supportUsersMap = new Map();
 
     // 1. Fetch from Firestore if available
     if (firestoreDb) {
@@ -2630,6 +2690,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchFsCollection('service_requests', serviceRequestsMap);
       await fetchFsCollection('service_request_messages', serviceRequestMessagesMap);
       await fetchFsCollection('audit_logs', auditLogsMap);
+      await fetchFsCollection('support_users', supportUsersMap);
 
       try {
         const snap = await firestoreDb.collection('attendance_punches').limit(1000).get();
@@ -2717,6 +2778,7 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       await fetchRtDbCollection('service_requests', serviceRequestsMap);
       await fetchRtDbCollection('service_request_messages', serviceRequestMessagesMap);
       await fetchRtDbCollection('audit_logs', auditLogsMap);
+      await fetchRtDbCollection('support_users', supportUsersMap);
 
       // Realtime Database attendance punches fetch
       try {
@@ -3189,14 +3251,22 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
             `).run(targetUserId);
           }
         } else if (roleName === 'support') {
+          const suDoc = supportUsersMap.get(String(targetUserId)) || supportUsersMap.get(String(u.id)) || {};
+          const pLevel = suDoc.permission_level || suDoc.permissionLevel || 3;
+          const assigned = suDoc.assigned_companies || suDoc.assignedCompanies || u.assigned_companies || u.assignedCompanies || 'all';
+          const assignedStr = typeof assigned === 'object' ? JSON.stringify(assigned) : String(assigned);
+          const aiEnabled = (suDoc.enable_ai_assistant === true || suDoc.enable_ai_assistant === 1 || suDoc.enableAiAssistant === true) ? 1 : 0;
+          const fName = suDoc.full_name || suDoc.fullName || u.full_name || u.fullName || 'Technical Support Specialist';
+
           const existingSupport = db.prepare('SELECT id FROM support_users WHERE user_id = ?').get(targetUserId);
           if (existingSupport) {
-            db.prepare('UPDATE support_users SET permission_level = 4 WHERE id = ?').run(existingSupport.id);
+            db.prepare('UPDATE support_users SET permission_level = ?, full_name = ?, assigned_companies = ?, enable_ai_assistant = ? WHERE id = ?')
+              .run(pLevel, fName, assignedStr, aiEnabled, existingSupport.id);
           } else {
             db.prepare(`
-              INSERT INTO support_users (user_id, full_name, permission_level)
-              VALUES (?, 'Technical Support Specialist', 4)
-            `).run(targetUserId);
+              INSERT INTO support_users (user_id, full_name, permission_level, assigned_companies, enable_ai_assistant)
+              VALUES (?, ?, ?, ?, ?)
+            `).run(targetUserId, fName, pLevel, assignedStr, aiEnabled);
           }
         }
 
@@ -4234,6 +4304,7 @@ module.exports = {
   syncCompany,
   syncEmployee,
   syncUser,
+  syncSupportUser,
   deleteFromFirebase,
   syncCompanyReports,
   syncAllDatabaseToFirebase,
