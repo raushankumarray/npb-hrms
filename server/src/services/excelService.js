@@ -9,7 +9,7 @@ const { logAudit } = require('./audit');
 /**
  * Generates an Employee/Personnel Import template workbook buffer.
  * Mandatory fields (4): Full Name *, Username *, Password *, Role *
- * Optional fields: Employee ID, Department, Designation, Mobile, Email, City, Shift, Reports To, Account Status
+ * Optional fields: Employee ID, Department, Designation, Mobile, Email, City, Shift, Reports To, Employment Start Date, Employment End Date, Account Status
  */
 function generateEmployeeTemplate() {
   const sampleData = [
@@ -26,6 +26,8 @@ function generateEmployeeTemplate() {
       'City': 'Mumbai',
       'Shift': 'General Morning Shift',
       'Reports To': 'Admin',
+      'Employment Start Date': '2026-01-15',
+      'Employment End Date': '',
       'Account Status': 'active'
     },
     {
@@ -41,6 +43,8 @@ function generateEmployeeTemplate() {
       'City': 'Delhi',
       'Shift': 'General Morning Shift',
       'Reports To': 'Admin',
+      'Employment Start Date': '2026-02-01',
+      'Employment End Date': '',
       'Account Status': 'active'
     }
   ];
@@ -62,10 +66,91 @@ function generateEmployeeTemplate() {
     { wch: 16 }, // City (Optional)
     { wch: 22 }, // Shift (Optional)
     { wch: 18 }, // Reports To (Optional)
+    { wch: 22 }, // Employment Start Date (Optional)
+    { wch: 22 }, // Employment End Date (Optional)
     { wch: 15 }  // Account Status (Optional)
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, 'Personnel Template');
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+/**
+ * Generates an Excel file pre-filled with all current staff in the company for differential update.
+ * Allows HR/Admin to download current staff data, update fields in Excel, and upload for diff-update.
+ */
+function generateEmployeeUpdateTemplate(companyId) {
+  const staff = db.prepare(`
+    SELECT e.id, e.employee_id, e.full_name, e.department, e.designation,
+           e.mobile, e.email, e.city, e.employment_start_date, e.employment_end_date,
+           e.status, e.reports_to_admin,
+           u.username, r.name as role_name,
+           s.name as shift_name,
+           m.full_name as manager_name, m.employee_id as manager_code
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    LEFT JOIN roles r ON u.role_id = r.id
+    LEFT JOIN shifts s ON e.shift_id = s.id
+    LEFT JOIN employees m ON e.manager_id = m.id
+    WHERE e.company_id = ? AND e.is_deleted = 0
+    ORDER BY r.name = 'manager' DESC, e.full_name ASC
+  `).all(companyId);
+
+  const rows = staff.map(e => ({
+    'Employee ID': e.employee_id || '',
+    'Full Name': e.full_name || '',
+    'Username': e.username || '',
+    'Role': e.role_name === 'manager' ? 'Manager' : 'Employee',
+    'Department': e.department || '',
+    'Designation': e.designation || '',
+    'Mobile': e.mobile || '',
+    'Email': e.email || '',
+    'City': e.city || '',
+    'Shift': e.shift_name || '',
+    'Reports To': e.manager_name ? `${e.manager_name} (${e.manager_code || ''})` : (e.reports_to_admin ? 'Admin' : ''),
+    'Employment Start Date': e.employment_start_date || '',
+    'Employment End Date': e.employment_end_date || '',
+    'Account Status': e.status || 'active'
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [
+    {
+      'Employee ID': 'EMP001',
+      'Full Name': 'Sample Staff',
+      'Username': 'sample_staff',
+      'Role': 'Employee',
+      'Department': 'Operations',
+      'Designation': 'Associate',
+      'Mobile': '9876543210',
+      'Email': 'staff@company.com',
+      'City': 'Delhi',
+      'Shift': 'General Shift',
+      'Reports To': 'Admin',
+      'Employment Start Date': '2026-01-15',
+      'Employment End Date': '',
+      'Account Status': 'active'
+    }
+  ]);
+
+  ws['!cols'] = [
+    { wch: 15 }, // Employee ID
+    { wch: 22 }, // Full Name
+    { wch: 18 }, // Username
+    { wch: 14 }, // Role
+    { wch: 18 }, // Department
+    { wch: 22 }, // Designation
+    { wch: 15 }, // Mobile
+    { wch: 25 }, // Email
+    { wch: 16 }, // City
+    { wch: 22 }, // Shift
+    { wch: 22 }, // Reports To
+    { wch: 22 }, // Employment Start Date
+    { wch: 22 }, // Employment End Date
+    { wch: 15 }  // Account Status
+  ];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Staff Directory Update');
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
@@ -153,6 +238,8 @@ function validateEmployeeImport(buffer, companyId, user = null) {
     const city = String(row['City'] || row['Location'] || '').trim();
     const shiftName = String(row['Shift'] || '').trim().toLowerCase();
     const reportsToRaw = String(row['Reports To'] || row['Reporting Manager'] || '').trim().toLowerCase();
+    const empStartDateRaw = String(row['Employment Start Date'] || row['Start Date'] || row['Joining Date'] || row['employment_start_date'] || '').trim();
+    const empEndDateRaw = String(row['Employment End Date'] || row['End Date'] || row['Exit Date'] || row['Relieving Date'] || row['employment_end_date'] || '').trim();
     const statusRaw = String(row['Account Status'] || row['Status'] || 'active').trim().toLowerCase();
     const status = (statusRaw === 'disabled' || statusRaw === 'suspended' || statusRaw === 'inactive') ? 'disabled' : 'active';
 
@@ -240,6 +327,8 @@ function validateEmployeeImport(buffer, companyId, user = null) {
         weeklyOffId,
         reportsToAdmin,
         managerId: targetManagerId,
+        employmentStartDate: empStartDateRaw || null,
+        employmentEndDate: empEndDateRaw || null,
         status,
         isExisting,
         existingId: isExisting ? existingRecord.id : null,
@@ -275,8 +364,8 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
   const insertEmp = db.prepare(`
     INSERT INTO employees (
       company_id, user_id, employee_id, full_name, mobile, email, department, designation,
-      city, shift_id, weekly_off_id, manager_id, reports_to_admin, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      city, shift_id, weekly_off_id, manager_id, reports_to_admin, employment_start_date, employment_end_date, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const updateEmp = db.prepare(`
@@ -284,6 +373,8 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
       full_name = ?, mobile = ?, email = ?, department = ?, designation = ?,
       city = COALESCE(?, city), shift_id = COALESCE(?, shift_id), status = ?,
       manager_id = COALESCE(?, manager_id), reports_to_admin = COALESCE(?, reports_to_admin),
+      employment_start_date = COALESCE(?, employment_start_date),
+      employment_end_date = COALESCE(?, employment_end_date),
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `);
@@ -313,6 +404,7 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
             r.fullName, r.mobile, r.email, r.department, r.designation,
             r.city || null, r.shiftId, r.status,
             r.managerId || null, r.reportsToAdmin,
+            r.employmentStartDate || null, r.employmentEndDate || null,
             r.existingId
           );
           if (r.existingUserId) {
@@ -334,7 +426,7 @@ function commitEmployeeImport(validRecords, companyId, adminUser) {
         const empRes = insertEmp.run(
           companyId, userRes.lastInsertRowid, finalEmpCode, r.fullName, r.mobile, r.email,
           r.department, r.designation, r.city || '', r.shiftId, r.weeklyOffId,
-          finalManagerId, finalReportsToAdmin, r.status
+          finalManagerId, finalReportsToAdmin, r.employmentStartDate || null, r.employmentEndDate || null, r.status
         );
 
         const empDbId = empRes.lastInsertRowid;
@@ -433,6 +525,8 @@ function diffEmployeeUpdate(buffer, companyId) {
       { key: 'Mobile', aliases: ['Mobile', 'Phone'], current: existing.mobile, field: 'mobile' },
       { key: 'Email', aliases: ['Email'], current: existing.email, field: 'email' },
       { key: 'City', aliases: ['City', 'Location'], current: existing.city, field: 'city' },
+      { key: 'Employment Start Date', aliases: ['Employment Start Date', 'Start Date', 'Joining Date', 'employment_start_date'], current: existing.employment_start_date, field: 'employment_start_date' },
+      { key: 'Employment End Date', aliases: ['Employment End Date', 'End Date', 'Exit Date', 'Relieving Date', 'employment_end_date'], current: existing.employment_end_date, field: 'employment_end_date' },
       { key: 'Account Status', aliases: ['Account Status', 'Status'], current: existing.status, field: 'status' }
     ];
 
@@ -489,6 +583,8 @@ function commitEmployeeDiffUpdate(diffs, companyId, adminUser) {
       email = COALESCE(?, email),
       city = COALESCE(?, city),
       status = COALESCE(?, status),
+      employment_start_date = COALESCE(?, employment_start_date),
+      employment_end_date = COALESCE(?, employment_end_date),
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND company_id = ?
   `);
@@ -509,6 +605,8 @@ function commitEmployeeDiffUpdate(diffs, companyId, adminUser) {
         changeMap.email || null,
         changeMap.city || null,
         changeMap.status || null,
+        changeMap.employment_start_date || null,
+        changeMap.employment_end_date || null,
         d.id,
         companyId
       );
@@ -533,6 +631,22 @@ function commitEmployeeDiffUpdate(diffs, companyId, adminUser) {
   });
 
   transaction();
+
+  // Real-time Firebase Sync for all diff-updated employees
+  try {
+    const { syncEmployee, syncUser } = require('./firebase');
+    diffs.forEach(d => {
+      const empRecord = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(d.id);
+      if (empRecord) {
+        syncEmployee(empRecord).catch(() => {});
+        const userRecord = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(empRecord.user_id);
+        if (userRecord) syncUser(userRecord).catch(() => {});
+      }
+    });
+  } catch (e) {
+    console.warn('Firebase diff-commit sync notice:', e.message);
+  }
+
   return { success: true, updated };
 }
 
@@ -709,6 +823,7 @@ function commitAttendanceImport(validRows, companyId, adminUser) {
 
 module.exports = {
   generateEmployeeTemplate,
+  generateEmployeeUpdateTemplate,
   validateEmployeeImport,
   commitEmployeeImport,
   diffEmployeeUpdate,

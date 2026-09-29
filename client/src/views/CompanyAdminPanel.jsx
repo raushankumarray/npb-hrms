@@ -50,6 +50,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [searchQuery, setSearchQuery] = useState('');
   const [totalEmployees, setTotalEmployees] = useState(0);
   const [availableCities, setAvailableCities] = useState([]);
+  const [companyManagers, setCompanyManagers] = useState([]);
   const [showExcelModal, setShowExcelModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [selectedEmployeeForPassword, setSelectedEmployeeForPassword] = useState(null);
@@ -294,6 +295,12 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
           e.role_name !== 'company_admin' && e.role_name !== 'super_admin'
         );
         setEmployees(personnel);
+        if (empRes.managers && empRes.managers.length > 0) {
+          setCompanyManagers(empRes.managers);
+        } else {
+          const mgrs = personnel.filter(e => e.role_name === 'manager');
+          if (mgrs.length > 0) setCompanyManagers(mgrs);
+        }
         if (activeTab === 'employees') {
           setTotalEmployees(empRes.total !== undefined ? empRes.total : personnel.length);
           if (empRes.cities) setAvailableCities(empRes.cities);
@@ -1257,30 +1264,10 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* EMPLOYEES / PERSONNEL & STAFF TAB */}
       {activeTab === 'employees' && (
         <div className="space-y-4">
-          {/* Top Action Section: Import Excel, Add Personnel, Search Bar directly beside */}
+          {/* Top Action Section: Manager Punch Quick Control & Search Bar */}
           <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              {/* Action Buttons: Import Excel & Add Staff */}
               <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setShowExcelModal(true)}
-                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-xs font-bold flex items-center gap-2 border border-emerald-700 shadow-xs transition-all"
-                  title="Bulk upload multiple employees and managers via Excel"
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Import Excel / Template</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openAddStaffModal('employee')}
-                  className="px-4 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-2 border border-sky-700 shadow-xs transition-all"
-                  title="Add new employee or manager with custom credentials"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add Personnel / Staff</span>
-                </button>
-
                 {/* Manager Punch Quick Control */}
                 <div className="flex items-center gap-2 bg-slate-50 border border-slate-300 px-3 py-1.5">
                   <span className="text-[11px] font-bold text-slate-700">Manager Punch:</span>
@@ -3051,7 +3038,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
                   >
                     <option value="admin">Company Admin (Admin)</option>
-                    {employees.filter(e => e.role_name === 'manager').map(m => (
+                    {(companyManagers && companyManagers.length > 0 ? companyManagers : employees.filter(e => e.role_name === 'manager')).map(m => (
                       <option key={m.id} value={m.id}>
                         {m.full_name} ({m.employee_id || m.username}) - Manager
                       </option>
@@ -3427,8 +3414,10 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                             required={editStaffForm.reports_to_manager}
                           >
                             <option value="">-- Select Reporting Manager * --</option>
-                            {employees.filter(e => e.role_name === 'manager' && e.id !== editingStaffId).map(m => (
-                              <option key={m.id} value={m.id}>{m.full_name} ({m.employee_id}) - {m.designation || 'Manager'}</option>
+                            {(companyManagers && companyManagers.length > 0 ? companyManagers : employees.filter(e => e.role_name === 'manager'))
+                              .filter(m => m.id !== editingStaffId)
+                              .map(m => (
+                                <option key={m.id} value={m.id}>{m.full_name} ({m.employee_id || m.username}) - {m.designation || 'Manager'}</option>
                             ))}
                           </select>
                         </div>

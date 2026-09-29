@@ -14,14 +14,16 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
 
   if (!isOpen) return null;
 
-  const downloadTemplate = async () => {
+  const downloadTemplate = async (type = 'blank') => {
     try {
-      const res = await apiRequest('/employees/excel/template');
+      const isUpdate = type === 'update';
+      const endpoint = isUpdate ? '/employees/excel/template?type=update' : '/employees/excel/template?type=blank';
+      const res = await apiRequest(endpoint);
       if (res.isBlob) {
         const url = window.URL.createObjectURL(res.blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'NPB_Employee_Master_Template.xlsx';
+        a.download = isUpdate ? 'Staff_Directory_Update_Format.xlsx' : 'New_Employee_Add_Format.xlsx';
         document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(url);
@@ -153,7 +155,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
                 activeTab === 'import' ? 'bg-white text-slate-900 shadow-xs border border-slate-300' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
-              Import / Create Employees
+              Import / Add New Employees
             </button>
             <button
               type="button"
@@ -162,7 +164,7 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
                 activeTab === 'diff-update' ? 'bg-white text-slate-900 shadow-xs border border-slate-300' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
-              Diff Update Existing (Match ID)
+              Diff Update Existing Data (Match ID)
             </button>
           </div>
         )}
@@ -187,11 +189,11 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
               <span className="text-[10px] text-slate-500">Role accepts "Employee" or "Manager".</span>
             </div>
             <div className="bg-white p-2 border border-sky-100 rounded-none">
-              <span className="font-bold text-slate-700 block mb-0.5">Optional Columns:</span>
-              <p className="font-mono text-slate-600">
-                Employee ID, Department, Designation, Mobile, Email, City, Shift, Reports To, Status
+              <span className="font-bold text-slate-700 block mb-0.5">Optional Columns (Not Mandatory):</span>
+              <p className="font-mono text-slate-600 text-[10px]">
+                Employee ID, Department, Designation, Mobile, Email, City, Shift, Reports To, Employment Start Date, Employment End Date, Account Status
               </p>
-              <span className="text-[10px] text-slate-500">Leave Employee ID blank to assign later.</span>
+              <span className="text-[10px] text-slate-500">Employment Start & End Dates are optional. Leave ID blank to auto-assign.</span>
             </div>
           </div>
         </div>
@@ -203,18 +205,32 @@ export default function ExcelImportModal({ isOpen, onClose, onSuccess, mode = 'i
           </div>
         )}
 
-        {/* File Upload Box */}
+        {/* File Upload Box & Template Downloads */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">1. Select Excel File</span>
-            <button
-              type="button"
-              onClick={downloadTemplate}
-              className="text-xs text-sky-700 hover:text-sky-800 font-bold flex items-center gap-1 bg-sky-50 px-2.5 py-1 border border-sky-200 rounded-none transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Download Template (.xlsx)
-            </button>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">1. Select or Download Template</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => downloadTemplate('blank')}
+                className="text-xs text-sky-700 hover:text-sky-800 font-bold flex items-center gap-1.5 bg-sky-50 px-2.5 py-1.5 border border-sky-200 rounded-none transition-colors"
+                title="Download blank template for registering new personnel"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>New Employee Add Format (.xlsx)</span>
+              </button>
+              {allowDiff && (
+                <button
+                  type="button"
+                  onClick={() => downloadTemplate('update')}
+                  className="text-xs text-emerald-800 hover:text-emerald-900 font-bold flex items-center gap-1.5 bg-emerald-50 px-2.5 py-1.5 border border-emerald-300 rounded-none transition-colors"
+                  title="Download all currently shown staff details to update in Excel"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Update Format (Current Staff Pre-filled)</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="border-2 border-dashed border-slate-300 hover:border-sky-500 rounded-none p-6 text-center transition-colors bg-slate-50/50">

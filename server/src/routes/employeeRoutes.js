@@ -7,6 +7,7 @@ const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const {
   generateEmployeeTemplate,
+  generateEmployeeUpdateTemplate,
   validateEmployeeImport,
   commitEmployeeImport,
   diffEmployeeUpdate,
@@ -1225,11 +1226,31 @@ router.delete('/mapping/:id', verifyAuth, requireRole(['company_admin', 'super_a
   res.json({ success: true, message: 'Employee mapping removed successfully.' });
 });
 
-// Download Employee Import Template
+// Download Employee Import Template or Pre-filled Update Format
 router.get('/excel/template', verifyAuth, (req, res) => {
+  const { type, mode } = req.query;
+  const isUpdate = type === 'update' || mode === 'update';
+  const companyId = getTenantCompanyId(req);
+
+  if (isUpdate && companyId) {
+    const buffer = generateEmployeeUpdateTemplate(companyId);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="Staff_Directory_Update_Template.xlsx"');
+    return res.send(buffer);
+  }
+
   const buffer = generateEmployeeTemplate();
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="Employee_Import_Template.xlsx"');
+  res.send(buffer);
+});
+
+// Dedicated endpoint to download pre-filled update template
+router.get('/excel/update-template', verifyAuth, (req, res) => {
+  const companyId = getTenantCompanyId(req);
+  const buffer = generateEmployeeUpdateTemplate(companyId);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="Staff_Directory_Update_Template.xlsx"');
   res.send(buffer);
 });
 

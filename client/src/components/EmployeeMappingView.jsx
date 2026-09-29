@@ -32,6 +32,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
 
   // Selection state for bulk operations
   const [selectedIds, setSelectedIds] = useState([]);
+  const [selectedStaffMap, setSelectedStaffMap] = useState({});
 
   // Bulk Mapping Modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -87,9 +88,10 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
     setter(value);
     setPage(1);
     setSelectedIds([]);
+    setSelectedStaffMap({});
   };
 
-  // Page limit changer handlers
+  // Page limit changer handlers (Rows per page is strictly view-purpose only)
   const handleLimitChange = (newLimit) => {
     const parsed = parseInt(newLimit, 10);
     if (!isNaN(parsed) && parsed > 0) {
@@ -111,28 +113,50 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
     }
   };
 
-  // Selection handlers
+  // Selection handlers: maintain IDs and objects across pages and row limits
   const isAllOnPageSelected = employees.length > 0 && employees.every(e => selectedIds.includes(e.id));
 
   const toggleSelectAllOnPage = () => {
     if (isAllOnPageSelected) {
-      setSelectedIds(prev => prev.filter(id => !employees.some(e => e.id === id)));
+      const pageIds = new Set(employees.map(e => e.id));
+      setSelectedIds(prev => prev.filter(id => !pageIds.has(id)));
+      setSelectedStaffMap(prev => {
+        const next = { ...prev };
+        pageIds.forEach(id => delete next[id]);
+        return next;
+      });
     } else {
       const newIds = employees.map(e => e.id);
       setSelectedIds(prev => Array.from(new Set([...prev, ...newIds])));
+      setSelectedStaffMap(prev => {
+        const next = { ...prev };
+        employees.forEach(e => { next[e.id] = e; });
+        return next;
+      });
     }
   };
 
-  const toggleSelectOne = (id) => {
+  const toggleSelectOne = (target) => {
+    const id = typeof target === 'object' ? target.id : target;
+    const empObj = typeof target === 'object' ? target : employees.find(e => e.id === id);
     setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
     );
+    setSelectedStaffMap(prev => {
+      const next = { ...prev };
+      if (next[id]) {
+        delete next[id];
+      } else if (empObj) {
+        next[id] = empObj;
+      }
+      return next;
+    });
   };
 
-  // Open Bulk Mapping Modal for selected
+  // Open Bulk Mapping Modal for all selected staff across pages/limits
   const handleOpenBulkModal = () => {
     if (selectedIds.length === 0) return;
-    const targets = employees.filter(e => selectedIds.includes(e.id));
+    const targets = selectedIds.map(id => selectedStaffMap[id] || employees.find(e => e.id === id) || { id, full_name: 'Employee #' + id, employee_id: String(id) });
     setModalTargetStaff(targets);
     setModalManagerId('unchanged');
     setModalAdminReport('unchanged');
@@ -155,12 +179,15 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
     setSuccess('');
 
     try {
-      const empIds = modalTargetStaff.map(e => e.id);
+      const empIds = modalTargetStaff && modalTargetStaff.length > 0
+        ? modalTargetStaff.map(e => e.id)
+        : selectedIds;
+
       await apiRequest('/employees/bulk-mapping', {
         method: 'POST',
         body: {
           employee_ids: empIds,
-          manager_id: modalManagerId === 'none' ? null : modalManagerId,
+          manager_id: modalManagerId === 'none' ? null : (modalManagerId === 'unchanged' ? 'unchanged' : parseInt(modalManagerId, 10)),
           hr_id: null,
           reports_to_admin: modalAdminReport === 'unchanged' ? 'unchanged' : (modalAdminReport === '1' ? 1 : 0)
         }
@@ -169,6 +196,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
       setSuccess(`Reporting hierarchy updated successfully for ${empIds.length} staff member(s).`);
       setModalOpen(false);
       setSelectedIds([]);
+      setSelectedStaffMap({});
       fetchEmployees();
       setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
@@ -546,7 +574,7 @@ export default function EmployeeMappingView({ role = 'company_admin' }) {
                         <input
                           type="checkbox"
                           checked={isSelected}
-                          onChange={() => toggleSelectOne(emp.id)}
+                          onChange={() => toggleSelectOne(emp)}
                           className="rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
                         />
                       </td>

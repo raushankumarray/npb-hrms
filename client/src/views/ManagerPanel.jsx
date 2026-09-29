@@ -544,18 +544,18 @@ export default function ManagerPanel({ user, company, activeTab }) {
             <>
               <button
                 onClick={() => { setExcelModalMode('import'); setShowExcelModal(true); }}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
-                title="Batch add new employees using Excel template"
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition-all"
+                title="Import Excel or download template"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Add Staff via Excel</span>
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Import Excel / Template</span>
               </button>
               <button
                 onClick={() => setShowAddModal(true)}
-                className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
+                className="px-4 py-2 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-md shadow-sky-500/20 transition-all"
               >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Add Team Member</span>
+                <UserPlus className="w-4 h-4" />
+                <span>Add Personnel / Staff</span>
               </button>
             </>
           )}
@@ -834,24 +834,6 @@ export default function ManagerPanel({ user, company, activeTab }) {
           <div className="bg-white p-4 border border-slate-200 shadow-sm rounded-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => { setExcelModalMode('import'); setShowExcelModal(true); }}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-xs border border-emerald-700 transition-all"
-                  title="Import Excel or download template"
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Import Excel / Template</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAddModal(true)}
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-xs border border-sky-700 transition-all"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Add Personnel / Staff</span>
-                </button>
-
                 {/* Search Bar / Button directly beside */}
                 <div className="flex items-center">
                   <div className="relative">
