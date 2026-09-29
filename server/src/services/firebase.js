@@ -655,6 +655,8 @@ async function syncSupportUser(supportUser) {
       device_status: supportUser.device_status || 'active',
       enableAiAssistant: supportUser.enable_ai_assistant === 1 || supportUser.enable_ai_assistant === true,
       enable_ai_assistant: supportUser.enable_ai_assistant === 1 || supportUser.enable_ai_assistant === true,
+      enableAuditLogs: supportUser.enable_audit_logs !== 0 && supportUser.enable_audit_logs !== false,
+      enable_audit_logs: (supportUser.enable_audit_logs !== 0 && supportUser.enable_audit_logs !== false) ? 1 : 0,
       assignedCompanies: assigned,
       assigned_companies: assigned,
       status: supportUser.status || 'active',

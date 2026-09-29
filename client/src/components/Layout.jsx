@@ -158,17 +158,21 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
           { id: 'settings', label: 'Platform Settings', icon: Settings }
         ];
 
-      case 'support':
-        return [
+      case 'support': {
+        const supportNav = [
           { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
           { id: 'account-enable', label: 'Account Enable', icon: UserCheck },
           { id: 'attendance-support', label: 'Attendance Support', icon: Clock },
           { id: 'device-support', label: 'Device Binding & Unlock', icon: Laptop },
           { id: 'calendar', label: 'Operations Calendar', icon: Calendar },
-          { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket },
-          { id: 'audit-reports', label: 'Audit Reports & Logs', icon: FileSpreadsheet, badge: 'Level 4' },
-          { id: 'remote-access', label: 'Remote Access', icon: Radio, badge: 'Level 4' }
+          { id: 'tickets', label: 'Helpdesk & Tickets', icon: Ticket }
         ];
+        if (user?.enable_audit_logs !== false && user?.enable_audit_logs !== 0) {
+          supportNav.push({ id: 'audit-reports', label: 'Audit Reports & Logs', icon: FileSpreadsheet, badge: 'Level 4' });
+        }
+        supportNav.push({ id: 'remote-access', label: 'Remote Access', icon: Radio, badge: 'Level 4' });
+        return supportNav;
+      }
 
       case 'company_admin':
         rawItems = [

@@ -78,19 +78,22 @@ function verifyAuth(req, res, next) {
 
     if (user && user.role_name === 'support') {
       try {
-        const sRow = db.prepare("SELECT enable_ai_assistant, assigned_companies FROM support_users WHERE user_id = ?").get(user.id);
+        const sRow = db.prepare("SELECT enable_ai_assistant, assigned_companies, enable_audit_logs FROM support_users WHERE user_id = ?").get(user.id);
         user.enable_ai_assistant = sRow ? (sRow.enable_ai_assistant === 1) : false;
         user.assigned_companies = sRow ? (sRow.assigned_companies || 'all') : (user.assigned_companies || 'all');
         user.assignedCompanies = user.assigned_companies;
+        user.enable_audit_logs = sRow && sRow.enable_audit_logs !== undefined ? (sRow.enable_audit_logs === 1) : true;
       } catch (e) {
         user.enable_ai_assistant = false;
         user.assigned_companies = user.assigned_companies || 'all';
         user.assignedCompanies = user.assigned_companies;
+        user.enable_audit_logs = true;
       }
     } else if (user) {
       user.enable_ai_assistant = undefined;
       user.assigned_companies = user.assigned_companies || 'all';
       user.assignedCompanies = user.assigned_companies;
+      user.enable_audit_logs = true;
     }
     req.user = user;
     next();

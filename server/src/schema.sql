@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS support_users (
   device_status TEXT DEFAULT 'active',
   enable_ai_assistant INTEGER DEFAULT 0,
   assigned_companies TEXT DEFAULT 'all',
+  enable_audit_logs INTEGER DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

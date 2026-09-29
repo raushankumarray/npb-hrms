@@ -75,6 +75,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   // New Support User Form State
   const [newSupport, setNewSupport] = useState({
     full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true,
+    enable_audit_logs: true,
     assign_scope: 'all', assigned_companies: []
   });
 
@@ -83,6 +84,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [editingSupportId, setEditingSupportId] = useState(null);
   const [editSupportForm, setEditSupportForm] = useState({
     username: '', full_name: '', email: '', permission_level: 1, status: 'active', password: '', enable_ai_assistant: false,
+    enable_audit_logs: true,
     assign_scope: 'all', assigned_companies: []
   });
   const [supportCompanySearch, setSupportCompanySearch] = useState('');
@@ -93,6 +95,13 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
   const [showDeleteSupportModal, setShowDeleteSupportModal] = useState(false);
   const [supportToDelete, setSupportToDelete] = useState(null); // { userId, username, fullName }
+
+  // Support Accounts Pagination State
+  const [supportPage, setSupportPage] = useState(1);
+  const [supportPageSize, setSupportPageSize] = useState(10);
+  const [supportCustomPageSize, setSupportCustomPageSize] = useState('');
+  const [supportIsCustomPageSize, setSupportIsCustomPageSize] = useState(false);
+  const [supportSearchQuery, setSupportSearchQuery] = useState('');
 
   // System Settings State
   const [settingsForm, setSettingsForm] = useState({
@@ -823,12 +832,13 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         body: {
           ...newSupport,
           assigned_companies: assigned,
-          enable_ai_assistant: newSupport.enable_ai_assistant === true
+          enable_ai_assistant: newSupport.enable_ai_assistant === true,
+          enable_audit_logs: newSupport.enable_audit_logs === true
         }
       });
       setSuccess(`Support account "${newSupport.username}" created successfully.`);
       setShowCreateSupport(false);
-      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true, assign_scope: 'all', assigned_companies: [] });
+      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true, enable_audit_logs: true, assign_scope: 'all', assigned_companies: [] });
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -860,6 +870,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       status: s.status || 'active',
       password: '',
       enable_ai_assistant: s.enable_ai_assistant === 1 || s.enable_ai_assistant === true,
+      enable_audit_logs: s.enable_audit_logs !== 0 && s.enable_audit_logs !== false,
       assign_scope: scope,
       assigned_companies: parsedAssigned
     });
@@ -886,6 +897,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           status: editSupportForm.status,
           password: editSupportForm.password ? editSupportForm.password.trim() : undefined,
           enable_ai_assistant: editSupportForm.enable_ai_assistant === true,
+          enable_audit_logs: editSupportForm.enable_audit_logs === true,
           assigned_companies: assigned
         }
       });
@@ -1400,6 +1412,25 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const paginatedCompanies = companies.slice(
     (companyPage - 1) * companyEffectivePageSize,
     companyPage * companyEffectivePageSize
+  );
+
+  // Support Accounts pagination & slicing calculations
+  const filteredSupportUsers = supportUsers.filter(s => {
+    if (!supportSearchQuery.trim()) return true;
+    const q = supportSearchQuery.toLowerCase();
+    return (
+      (s.full_name && s.full_name.toLowerCase().includes(q)) ||
+      (s.username && s.username.toLowerCase().includes(q)) ||
+      (s.email && s.email.toLowerCase().includes(q))
+    );
+  });
+  const supportEffectivePageSize = supportIsCustomPageSize && Number(supportCustomPageSize) > 0
+    ? Number(supportCustomPageSize)
+    : (supportPageSize || 10);
+  const totalSupportPages = Math.max(1, Math.ceil(filteredSupportUsers.length / supportEffectivePageSize));
+  const paginatedSupportUsers = filteredSupportUsers.slice(
+    (supportPage - 1) * supportEffectivePageSize,
+    supportPage * supportEffectivePageSize
   );
 
   return (
@@ -2473,160 +2504,290 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
       {/* VIEW: SUPPORT ACCOUNTS */}
       {activeTab === 'support-accounts' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900">Support Staff Accounts</h3>
-            <span className="text-xs text-purple-600 font-semibold">Strict Permission Levels 1-4</span>
+        <div className="space-y-4">
+          {/* Display & Filter Controls Bar */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <div className="relative w-64 sm:w-80">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={supportSearchQuery}
+                  onChange={(e) => {
+                    setSupportSearchQuery(e.target.value);
+                    setSupportPage(1);
+                  }}
+                  placeholder="Search name, username, or email..."
+                  className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                />
+                {supportSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSupportSearchQuery('');
+                      setSupportPage(1);
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 font-bold"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-slate-600 whitespace-nowrap">Display Rows:</label>
+              <select
+                value={supportIsCustomPageSize ? 'custom' : supportPageSize}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'custom') {
+                    setSupportIsCustomPageSize(true);
+                  } else {
+                    setSupportIsCustomPageSize(false);
+                    setSupportPageSize(Number(val));
+                  }
+                  setSupportPage(1);
+                }}
+                className="py-1.5 px-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
+              >
+                <option value={10}>10 Rows (Default)</option>
+                <option value={25}>25 Rows</option>
+                <option value={50}>50 Rows</option>
+                <option value="custom">Custom...</option>
+              </select>
+              {supportIsCustomPageSize && (
+                <input
+                  type="number"
+                  min="1"
+                  max="500"
+                  value={supportCustomPageSize}
+                  onChange={(e) => {
+                    setSupportCustomPageSize(e.target.value);
+                    setSupportPage(1);
+                  }}
+                  placeholder="e.g. 15"
+                  className="w-16 py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500 text-center"
+                />
+              )}
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Full Name & Email</th>
-                  <th className="p-3">Username</th>
-                  <th className="p-3">Permission Level</th>
-                  <th className="p-3">Assigned Authority</th>
-                  <th className="p-3">Assigned Companies</th>
-                  <th className="p-3">AI Access</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3">Created</th>
-                  <th className="p-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {supportUsers.map(s => (
-                  <tr key={s.user_id} className="hover:bg-slate-50/50">
-                    <td className="p-3">
-                      <p className="font-semibold text-slate-900">{s.full_name}</p>
-                      <p className="text-[11px] text-slate-400">{s.email || 'No email specified'}</p>
-                    </td>
-                    <td className="p-3 font-mono text-purple-600">{s.username}</td>
-                    <td className="p-3">
-                      <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 font-bold">
-                        Level {s.permission_level}
-                      </span>
-                    </td>
-                    <td className="p-3 text-slate-600">
-                      {s.permission_level === 1 && 'Level 1 – View Only'}
-                      {s.permission_level === 2 && 'Level 2 – Edit Employee & Attendance'}
-                      {s.permission_level === 3 && 'Level 3 – Advanced (Device Unlock & Attendance Correction)'}
-                      {s.permission_level === 4 && 'Level 4 – Full Support Authority'}
-                    </td>
-                    <td className="p-3">
-                      {(() => {
-                        const raw = s.assigned_companies;
-                        if (!raw || raw === 'all' || raw === '*') {
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Support Staff Accounts</h3>
+                <span className="text-[11px] text-slate-400">Total: {filteredSupportUsers.length} staff members</span>
+              </div>
+              <span className="text-xs text-purple-600 font-semibold">Strict Permission Levels 1-4</span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                  <tr>
+                    <th className="p-3">Full Name & Email</th>
+                    <th className="p-3">Username</th>
+                    <th className="p-3">Permission Level</th>
+                    <th className="p-3">Assigned Authority</th>
+                    <th className="p-3">Assigned Companies</th>
+                    <th className="p-3">AI Access</th>
+                    <th className="p-3">Audit Logs</th>
+                    <th className="p-3">Status</th>
+                    <th className="p-3">Created</th>
+                    <th className="p-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {paginatedSupportUsers.map(s => (
+                    <tr key={s.user_id} className="hover:bg-slate-50/50">
+                      <td className="p-3">
+                        <p className="font-semibold text-slate-900">{s.full_name}</p>
+                        <p className="text-[11px] text-slate-400">{s.email || 'No email specified'}</p>
+                      </td>
+                      <td className="p-3 font-mono text-purple-600">{s.username}</td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 font-bold">
+                          Level {s.permission_level}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-600">
+                        {s.permission_level === 1 && 'Level 1 – View Only'}
+                        {s.permission_level === 2 && 'Level 2 – Edit Employee & Attendance'}
+                        {s.permission_level === 3 && 'Level 3 – Advanced (Device Unlock & Attendance Correction)'}
+                        {s.permission_level === 4 && 'Level 4 – Full Support Authority'}
+                      </td>
+                      <td className="p-3">
+                        {(() => {
+                          const raw = s.assigned_companies;
+                          if (!raw || raw === 'all' || raw === '*') {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <Globe className="w-3 h-3 text-emerald-600" />
+                                <span>All Companies</span>
+                              </span>
+                            );
+                          }
+                          let ids = [];
+                          try {
+                            ids = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                          } catch (e) {
+                            ids = String(raw).split(',').map(Number);
+                          }
+                          if (!Array.isArray(ids) || ids.length === 0) {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <Globe className="w-3 h-3 text-emerald-600" />
+                                <span>All Companies</span>
+                              </span>
+                            );
+                          }
+                          const matched = companies.filter(c => ids.includes(c.id));
+                          if (matched.length === 1) {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200" title={matched[0].name}>
+                                <Building2 className="w-3 h-3 text-purple-600" />
+                                <span className="max-w-[120px] truncate">{matched[0].name}</span>
+                              </span>
+                            );
+                          }
                           return (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              <Globe className="w-3 h-3 text-emerald-600" />
-                              <span>All Companies</span>
-                            </span>
-                          );
-                        }
-                        let ids = [];
-                        try {
-                          ids = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                        } catch (e) {
-                          ids = String(raw).split(',').map(Number);
-                        }
-                        if (!Array.isArray(ids) || ids.length === 0) {
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              <Globe className="w-3 h-3 text-emerald-600" />
-                              <span>All Companies</span>
-                            </span>
-                          );
-                        }
-                        const matched = companies.filter(c => ids.includes(c.id));
-                        if (matched.length === 1) {
-                          return (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200" title={matched[0].name}>
+                            <span 
+                              className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 cursor-help"
+                              title={matched.map(c => c.name).join(', ')}
+                            >
                               <Building2 className="w-3 h-3 text-purple-600" />
-                              <span className="max-w-[120px] truncate">{matched[0].name}</span>
+                              <span>{ids.length} Companies</span>
                             </span>
                           );
-                        }
-                        return (
-                          <span 
-                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 cursor-help"
-                            title={matched.map(c => c.name).join(', ')}
-                          >
-                            <Building2 className="w-3 h-3 text-purple-600" />
-                            <span>{ids.length} Companies</span>
-                          </span>
-                        );
-                      })()}
-                    </td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 w-fit ${
-                        s.enable_ai_assistant
-                          ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                          : 'bg-slate-100 text-slate-500 border border-slate-200'
-                      }`}>
-                        {s.enable_ai_assistant ? (
-                          <>
-                            <Sparkles className="w-3 h-3 text-indigo-600" />
-                            <span>AI Enabled</span>
-                          </>
-                        ) : (
-                          <span>AI Disabled</span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="p-3">
-                      <button
-                        onClick={() => handleToggleSupportStatus(s)}
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-transform active:scale-95 cursor-pointer ${
-                          s.status === 'active' ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-rose-100 text-rose-700 hover:bg-rose-200'
-                        }`}
-                        title="Click to toggle Active / Suspended"
-                      >
-                        {s.status === 'active' ? 'ACTIVE' : 'SUSPENDED'}
-                      </button>
-                    </td>
-                    <td className="p-3 text-slate-400">
-                      {new Date(s.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => openEditSupport(s)}
-                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors"
-                          title="Edit Support Account"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span>Edit</span>
-                        </button>
-                        <button
-                          onClick={() => openSupportPasswordModal(s)}
-                          className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-xs font-semibold transition-colors"
-                          title="Change Password"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                        </button>
+                        })()}
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 w-fit ${
+                          s.enable_ai_assistant
+                            ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                            : 'bg-slate-100 text-slate-500 border border-slate-200'
+                        }`}>
+                          {s.enable_ai_assistant ? (
+                            <>
+                              <Sparkles className="w-3 h-3 text-indigo-600" />
+                              <span>AI Enabled</span>
+                            </>
+                          ) : (
+                            <span>AI Disabled</span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 w-fit ${
+                          s.enable_audit_logs !== 0 && s.enable_audit_logs !== false
+                            ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                            : 'bg-rose-50 text-rose-600 border border-rose-200'
+                        }`}>
+                          {s.enable_audit_logs !== 0 && s.enable_audit_logs !== false ? (
+                            <>
+                              <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+                              <span>Logs Enabled</span>
+                            </>
+                          ) : (
+                            <>
+                              <X className="w-3 h-3 text-rose-500" />
+                              <span>Logs Disabled</span>
+                            </>
+                          )}
+                        </span>
+                      </td>
+                      <td className="p-3">
                         <button
                           onClick={() => handleToggleSupportStatus(s)}
-                          className={`p-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                            s.status === 'active' ? 'bg-amber-50 hover:bg-amber-100 text-amber-700' : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700'
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-transform active:scale-95 cursor-pointer ${
+                            s.status === 'active' ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-rose-100 text-rose-700 hover:bg-rose-200'
                           }`}
-                          title={s.status === 'active' ? 'Suspend Account' : 'Enable Account'}
+                          title="Click to toggle Active / Suspended"
                         >
-                          {s.status === 'active' ? <Ban className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                          {s.status === 'active' ? 'ACTIVE' : 'SUSPENDED'}
                         </button>
-                        <button
-                          onClick={() => openDeleteSupportModal(s)}
-                          className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg text-xs font-semibold transition-colors"
-                          title="Permanently Delete Support Account"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      </td>
+                      <td className="p-3 text-slate-400">
+                        {new Date(s.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="p-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => openEditSupport(s)}
+                            className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors"
+                            title="Edit Support Account"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Edit</span>
+                          </button>
+                          <button
+                            onClick={() => openSupportPasswordModal(s)}
+                            className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-xs font-semibold transition-colors"
+                            title="Change Password"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleToggleSupportStatus(s)}
+                            className={`p-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                              s.status === 'active' ? 'bg-amber-50 hover:bg-amber-100 text-amber-700' : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700'
+                            }`}
+                            title={s.status === 'active' ? 'Suspend Account' : 'Enable Account'}
+                          >
+                            {s.status === 'active' ? <Ban className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => openDeleteSupportModal(s)}
+                            className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg text-xs font-semibold transition-colors"
+                            title="Permanently Delete Support Account"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredSupportUsers.length === 0 && (
+                    <tr>
+                      <td colSpan="10" className="p-8 text-center text-slate-400">
+                        No support staff accounts found matching query.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            <div className="p-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50/50 text-xs">
+              <div className="text-slate-500">
+                Showing <strong>{filteredSupportUsers.length === 0 ? 0 : (supportPage - 1) * supportEffectivePageSize + 1}</strong> to <strong>{Math.min(supportPage * supportEffectivePageSize, filteredSupportUsers.length)}</strong> of <strong>{filteredSupportUsers.length}</strong> support members
+              </div>
+              {totalSupportPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={supportPage === 1}
+                    onClick={() => setSupportPage(p => Math.max(1, p - 1))}
+                    className="px-2.5 py-1 text-xs border rounded-md disabled:opacity-40 hover:bg-slate-100 bg-white font-medium text-slate-700"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-bold text-slate-700 px-2">
+                    Page {supportPage} of {totalSupportPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={supportPage === totalSupportPages}
+                    onClick={() => setSupportPage(p => Math.min(totalSupportPages, p + 1))}
+                    className="px-2.5 py-1 text-xs border rounded-md disabled:opacity-40 hover:bg-slate-100 bg-white font-medium text-slate-700"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -4375,6 +4536,51 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     </button>
                   </div>
                 </div>
+
+                {/* Audit Log Access Permission for Support Account */}
+                <div className="p-3.5 rounded-xl border border-emerald-150 bg-gradient-to-br from-emerald-50/80 via-teal-50/40 to-slate-50/60 space-y-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Audit Log Access Permission
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        If enabled, this support staff can view and manage the Audit Action Logs page in Support Panel. If disabled, the page is completely hidden from their Support Panel.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setNewSupport({ ...newSupport, enable_audit_logs: true })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newSupport.enable_audit_logs === true
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-md ring-2 ring-emerald-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/40'
+                      }`}
+                    >
+                      <CheckCircle className={`w-3.5 h-3.5 ${newSupport.enable_audit_logs === true ? 'text-emerald-100' : 'text-emerald-500'}`} />
+                      <span>Enable Audit Logs</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setNewSupport({ ...newSupport, enable_audit_logs: false })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        newSupport.enable_audit_logs === false
+                          ? 'bg-slate-800 text-white border-slate-900 shadow-md ring-2 ring-slate-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                      }`}
+                    >
+                      <X className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Disable (Hide Page)</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="p-4 border-t border-slate-100 flex justify-end gap-2 shrink-0 bg-slate-50">
@@ -5015,6 +5221,51 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     >
                       <X className="w-3.5 h-3.5 text-slate-400" />
                       <span>Disabled</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Audit Log Access Permission for Support Account */}
+                <div className="p-3.5 rounded-xl border border-emerald-150 bg-gradient-to-br from-emerald-50/80 via-teal-50/40 to-slate-50/60 space-y-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-600 text-white flex items-center justify-center font-bold text-xs shadow-sm shrink-0">
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-100" />
+                    </div>
+                    <div>
+                      <div className="font-bold text-slate-900 text-xs">
+                        Audit Log Access Permission
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Enable or disable the Audit Action Logs & Reports page in Support Panel for this user
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditSupportForm({ ...editSupportForm, enable_audit_logs: true })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        editSupportForm.enable_audit_logs === true
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-md ring-2 ring-emerald-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/40'
+                      }`}
+                    >
+                      <CheckCircle className={`w-3.5 h-3.5 ${editSupportForm.enable_audit_logs === true ? 'text-emerald-100' : 'text-emerald-500'}`} />
+                      <span>Enabled</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditSupportForm({ ...editSupportForm, enable_audit_logs: false })}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        editSupportForm.enable_audit_logs === false
+                          ? 'bg-slate-800 text-white border-slate-900 shadow-md ring-2 ring-slate-400/30'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                      }`}
+                    >
+                      <X className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Disabled (Hidden)</span>
                     </button>
                   </div>
                 </div>

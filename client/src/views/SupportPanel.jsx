@@ -3,11 +3,135 @@ import {
   Shield, Laptop, Ticket, Clock, CheckCircle, AlertTriangle,
   RefreshCw, Unlock, Edit3, Search, MessageSquare, CheckCheck, X, Building2, Copy, Lock,
   Radio, Globe, Phone, Mail, User, Key, Send, Eye, MapPin, Check, Plus, AlertCircle, Play, ExternalLink, Power, UserX, UserCheck,
-  Trash2, Archive, Calendar, Filter, FileSpreadsheet, Layers
+  Trash2, Archive, Calendar, Filter, FileSpreadsheet, Layers, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { apiRequest } from '../api';
 import UnifiedCalendar from '../components/UnifiedCalendar';
 import TicketChatModal from '../components/TicketChatModal';
+
+function PaginationBar({ currentPage, totalItems, pageSize, onPageChange, onPageSizeChange }) {
+  if (totalItems <= 0) return null;
+  const totalPages = Math.ceil(totalItems / pageSize) || 1;
+  const startItem = (currentPage - 1) * pageSize + 1;
+  const endItem = Math.min(currentPage * pageSize, totalItems);
+
+  const pages = [];
+  const maxButtons = 5;
+  let startPage = Math.max(1, currentPage - 2);
+  let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+  if (endPage - startPage < maxButtons - 1) {
+    startPage = Math.max(1, endPage - maxButtons + 1);
+  }
+  for (let i = startPage; i <= endPage; i++) {
+    pages.push(i);
+  }
+
+  return (
+    <div className="p-3 bg-slate-50/80 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div className="flex items-center gap-3">
+        <span className="text-slate-500 font-medium">
+          Showing <span className="font-bold text-slate-800">{startItem}</span> to{' '}
+          <span className="font-bold text-slate-800">{endItem}</span> of{' '}
+          <span className="font-bold text-slate-800">{totalItems}</span> entries
+        </span>
+        <div className="flex items-center gap-1.5 text-slate-500">
+          <span>Rows per page:</span>
+          <select
+            value={[10, 25, 50, 100].includes(pageSize) ? pageSize : 'custom'}
+            onChange={(e) => {
+              if (e.target.value === 'custom') {
+                const val = prompt('Enter custom rows per page:', String(pageSize));
+                const num = parseInt(val, 10);
+                if (!isNaN(num) && num > 0) {
+                  onPageSizeChange(num);
+                  onPageChange(1);
+                }
+              } else {
+                onPageSizeChange(Number(e.target.value));
+                onPageChange(1);
+              }
+            }}
+            className="bg-white border border-slate-200 rounded-lg px-2 py-1 font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+            {![10, 25, 50, 100].includes(pageSize) && (
+              <option value="custom">Custom ({pageSize})</option>
+            )}
+            {[10, 25, 50, 100].includes(pageSize) && (
+              <option value="custom">Custom...</option>
+            )}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          disabled={currentPage <= 1}
+          onClick={() => onPageChange(currentPage - 1)}
+          className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-600 font-medium transition-colors"
+          title="Previous page"
+        >
+          <ChevronLeft className="w-3.5 h-3.5" />
+        </button>
+
+        {startPage > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={() => onPageChange(1)}
+              className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-medium"
+            >
+              1
+            </button>
+            {startPage > 2 && <span className="px-1 text-slate-400">...</span>}
+          </>
+        )}
+
+        {pages.map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onPageChange(p)}
+            className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+              p === currentPage
+                ? 'bg-purple-600 text-white shadow-xs'
+                : 'border border-slate-200 bg-white hover:bg-slate-100 text-slate-700'
+            }`}
+          >
+            {p}
+          </button>
+        ))}
+
+        {endPage < totalPages && (
+          <>
+            {endPage < totalPages - 1 && <span className="px-1 text-slate-400">...</span>}
+            <button
+              type="button"
+              onClick={() => onPageChange(totalPages)}
+              className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-medium"
+            >
+              {totalPages}
+            </button>
+          </>
+        )}
+
+        <button
+          type="button"
+          disabled={currentPage >= totalPages}
+          onClick={() => onPageChange(currentPage + 1)}
+          className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-600 font-medium transition-colors"
+          title="Next page"
+        >
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [devices, setDevices] = useState([]);
@@ -85,6 +209,36 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
     remarks: ''
   });
 
+  // On-Demand Attendance Filter States (no auto load on mount)
+  const [attHasFiltered, setAttHasFiltered] = useState(false);
+  const [attFilterLoading, setAttFilterLoading] = useState(false);
+  const [attFilterDate, setAttFilterDate] = useState(new Date().toISOString().slice(0, 10));
+  const [attFilterCompany, setAttFilterCompany] = useState('all');
+  const [attFilterScope, setAttFilterScope] = useState('all'); // 'all' | 'single' | 'multiple'
+  const [attFilterEmpId, setAttFilterEmpId] = useState('');
+  const [attFilterEmpIds, setAttFilterEmpIds] = useState([]);
+  const [attFilterStatus, setAttFilterStatus] = useState('all');
+  const [attEmpSearchQuery, setAttEmpSearchQuery] = useState('');
+
+  // Universal Section Pagination States (Default 10 rows per page)
+  const [attPage, setAttPage] = useState(1);
+  const [attPageSize, setAttPageSize] = useState(10);
+
+  const [crPage, setCrPage] = useState(1);
+  const [crPageSize, setCrPageSize] = useState(10);
+
+  const [susPage, setSusPage] = useState(1);
+  const [susPageSize, setSusPageSize] = useState(10);
+
+  const [devPage, setDevPage] = useState(1);
+  const [devPageSize, setDevPageSize] = useState(10);
+
+  const [tktPage, setTktPage] = useState(1);
+  const [tktPageSize, setTktPageSize] = useState(10);
+
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(10);
+
   // --- UNIVERSAL SEARCH ON ALL PAGES ---
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -127,8 +281,10 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [remoteSimulatePortal, setRemoteSimulatePortal] = useState(false);
 
   const pLevel = user.role === 'super_admin' ? 4 : Number(user.supportLevel ?? user.support_level ?? 1);
+  const canAccessAuditLogs = user?.role === 'super_admin' || (user?.enable_audit_logs !== false && user?.enable_audit_logs !== 0);
 
   const fetchAuditReports = async () => {
+    if (!canAccessAuditLogs) return;
     setAuditLoading(true);
     try {
       const q = [];
@@ -138,7 +294,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       if (auditActionFilter) q.push(`action=${encodeURIComponent(auditActionFilter)}`);
       if (selectedCompanyId && selectedCompanyId !== 'all') q.push(`company_id=${selectedCompanyId}`);
       if (auditSearch.trim()) q.push(`search=${encodeURIComponent(auditSearch.trim())}`);
-      q.push('limit=100');
+      q.push('limit=200');
 
       const res = await apiRequest(`/support/audit-reports?${q.join('&')}`);
       setAuditLogs(res.logs || []);
@@ -153,10 +309,48 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   };
 
   useEffect(() => {
-    if (activeTab === 'audit-reports' || activeTab === 'audit-logs') {
+    if ((activeTab === 'audit-reports' || activeTab === 'audit-logs') && canAccessAuditLogs) {
       fetchAuditReports();
     }
-  }, [activeTab, auditView, auditDayFilter, auditMonthFilter, auditActionFilter, selectedCompanyId]);
+  }, [activeTab, auditView, auditDayFilter, auditMonthFilter, auditActionFilter, selectedCompanyId, canAccessAuditLogs]);
+
+  const handleApplyAttendanceFilter = async () => {
+    if (!attFilterDate) {
+      setError('Target date is mandatory for attendance query.');
+      return;
+    }
+    setAttFilterLoading(true);
+    setError('');
+    try {
+      const q = [`date=${attFilterDate}`];
+      if (attFilterCompany && attFilterCompany !== 'all') {
+        q.push(`company_id=${attFilterCompany}`);
+      } else if (selectedCompanyId && selectedCompanyId !== 'all') {
+        q.push(`company_id=${selectedCompanyId}`);
+      }
+      if (attFilterScope === 'single' && attFilterEmpId) {
+        q.push(`employee_id=${attFilterEmpId}`);
+      } else if (attFilterScope === 'multiple' && attFilterEmpIds.length > 0) {
+        q.push(`employee_ids=${attFilterEmpIds.join(',')}`);
+      }
+      if (attFilterStatus && attFilterStatus !== 'all') {
+        q.push(`status=${attFilterStatus}`);
+      }
+      if (attSearch.trim()) {
+        q.push(`search=${encodeURIComponent(attSearch.trim())}`);
+      }
+      q.push('limit=500');
+
+      const res = await apiRequest(`/attendance/list?${q.join('&')}`);
+      setAttendanceRecords(res.records || []);
+      setAttHasFiltered(true);
+      setAttPage(1);
+    } catch (err) {
+      setError(err.message || 'Failed to fetch attendance records.');
+    } finally {
+      setAttFilterLoading(false);
+    }
+  };
 
   const triggerDeleteAudit = (mode, date = '', month = '', title = '', count = 0) => {
     setDeleteAuditConfig({ mode, date, month, title, count });
@@ -253,25 +447,20 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       if (activeTab === 'account-enable') {
         fetchSuspendedAccounts();
       }
-      if (activeTab === 'attendance-support' || activeTab === 'dashboard') {
-        const queryParams = [];
-        if (attDateFilter) queryParams.push(`date=${attDateFilter}`);
-        queryParams.push('limit=100');
-        const res = await apiRequest(buildUrl('/attendance/list', queryParams.join('&')));
-        setAttendanceRecords(res.records || []);
-
-        if (activeTab === 'attendance-support') {
-          try {
-            const crRes = await apiRequest('/attendance/correction-requests');
-            setAttCorrectionRequests(crRes.requests || []);
-          } catch (e) {}
-          try {
-            const empRes = await apiRequest(buildUrl('/employees', 'limit=200'));
-            setEmployeesList(empRes.employees || []);
-          } catch (e) {}
+      if (activeTab === 'attendance-support') {
+        try {
+          const crRes = await apiRequest('/attendance/correction-requests');
+          setAttCorrectionRequests(crRes.requests || []);
+        } catch (e) {}
+        try {
+          const empRes = await apiRequest(buildUrl('/employees', 'limit=500'));
+          setEmployeesList(empRes.employees || []);
+        } catch (e) {}
+        if (attHasFiltered) {
+          handleApplyAttendanceFilter();
         }
       }
-      if (activeTab === 'audit-reports' || activeTab === 'audit-logs' || activeTab === 'dashboard') {
+      if ((activeTab === 'audit-reports' || activeTab === 'audit-logs' || activeTab === 'dashboard') && canAccessAuditLogs) {
         fetchAuditReports();
       }
       if (activeTab === 'remote-access' && pLevel >= 4) {
@@ -645,6 +834,9 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       setSuccess('Attendance record corrected and audit log recorded.');
       setEditAttendanceModal(false);
       fetchData();
+      if (attHasFiltered) {
+        handleApplyAttendanceFilter();
+      }
       if (selectedUserDiag) {
         handlePerformSearch(selectedUserDiag.username);
       }
@@ -703,6 +895,9 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         remarks: ''
       });
       fetchData();
+      if (attHasFiltered) {
+        handleApplyAttendanceFilter();
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -912,7 +1107,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* ========================================================================= */}
       {activeTab === 'dashboard' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 ${canAccessAuditLogs ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4`}>
             <div
               onClick={() => onSelectTab && onSelectTab('device-support')}
               className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:border-purple-300 hover:shadow-md transition-all cursor-pointer group"
@@ -945,20 +1140,22 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
               <p className="text-[11px] text-slate-400 mt-1">Pending user service requests</p>
             </div>
 
-            <div
-              onClick={() => onSelectTab && onSelectTab('audit-reports')}
-              className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:border-emerald-300 hover:shadow-md transition-all cursor-pointer group"
-              title="Click to view audited operations"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Support Action Logs</span>
-                <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 group-hover:bg-emerald-100 transition-colors">
-                  <Clock className="w-5 h-5" />
+            {canAccessAuditLogs && (
+              <div
+                onClick={() => onSelectTab && onSelectTab('audit-reports')}
+                className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:border-emerald-300 hover:shadow-md transition-all cursor-pointer group"
+                title="Click to view audited operations"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Support Action Logs</span>
+                  <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 group-hover:bg-emerald-100 transition-colors">
+                    <Clock className="w-5 h-5" />
+                  </div>
                 </div>
+                <p className="text-3xl font-black text-slate-900 mt-2">{auditLogs.length}</p>
+                <p className="text-[11px] text-slate-400 mt-1">Audited operations</p>
               </div>
-              <p className="text-3xl font-black text-slate-900 mt-2">{auditLogs.length}</p>
-              <p className="text-[11px] text-slate-400 mt-1">Audited operations</p>
-            </div>
+            )}
 
             <div
               onClick={() => onSelectTab && onSelectTab('remote-access')}
@@ -1010,7 +1207,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {devices.map(d => (
+                {devices.slice((devPage - 1) * devPageSize, devPage * devPageSize).map(d => (
                   <tr key={d.id} className="hover:bg-slate-50/50">
                     <td className="p-3 font-semibold text-slate-900">{d.full_name || d.username} {d.employee_code ? `(${d.employee_code})` : ''}</td>
                     <td className="p-3 text-slate-600">{d.company_name || 'N/A'}</td>
@@ -1047,9 +1244,23 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                     </td>
                   </tr>
                 ))}
+                {devices.length === 0 && (
+                  <tr>
+                    <td colSpan="8" className="p-8 text-center text-slate-400 text-xs">
+                      No bound devices found.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            currentPage={devPage}
+            totalItems={devices.length}
+            pageSize={devPageSize}
+            onPageChange={setDevPage}
+            onPageSizeChange={setDevPageSize}
+          />
         </div>
       )}
 
@@ -1060,6 +1271,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         const pendingTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'resolved' && !t.is_archived);
         const archivedTickets = tickets.filter(t => t.status === 'closed' || t.status === 'resolved' || t.is_archived === 1);
         const displayTickets = ticketSection === 'pending' ? pendingTickets : archivedTickets;
+        const paginatedTickets = displayTickets.slice((tktPage - 1) * tktPageSize, tktPage * tktPageSize);
 
         return (
           <div className="space-y-4">
@@ -1077,7 +1289,10 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setTicketSection('pending')}
+                    onClick={() => {
+                      setTicketSection('pending');
+                      setTktPage(1);
+                    }}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
                       ticketSection === 'pending'
                         ? 'bg-slate-900 text-white shadow-sm'
@@ -1089,7 +1304,10 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setTicketSection('archived')}
+                    onClick={() => {
+                      setTicketSection('archived');
+                      setTktPage(1);
+                    }}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
                       ticketSection === 'archived'
                         ? 'bg-slate-900 text-white shadow-sm'
@@ -1116,7 +1334,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {displayTickets.map(t => (
+                    {paginatedTickets.map(t => (
                       <tr key={t.id} className="hover:bg-slate-50/50">
                         <td className="p-3">
                           <span className="font-bold text-slate-900">#{t.id}</span>
@@ -1209,6 +1427,13 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   </tbody>
                 </table>
               </div>
+              <PaginationBar
+                currentPage={tktPage}
+                totalItems={displayTickets.length}
+                pageSize={tktPageSize}
+                onPageChange={setTktPage}
+                onPageSizeChange={setTktPageSize}
+              />
             </div>
           </div>
         );
@@ -1292,7 +1517,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {suspendedAccounts.map(acc => (
+                  {suspendedAccounts.slice((susPage - 1) * susPageSize, susPage * susPageSize).map(acc => (
                     <tr key={acc.employee_id || acc.user_id} className="hover:bg-slate-50/60 transition-colors">
                       <td className="p-3">
                         <div className="font-bold text-slate-900">{acc.full_name || acc.username}</div>
@@ -1369,6 +1594,13 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 </tbody>
               </table>
             </div>
+            <PaginationBar
+              currentPage={susPage}
+              totalItems={suspendedAccounts.length}
+              pageSize={susPageSize}
+              onPageChange={setSusPage}
+              onPageSizeChange={setSusPageSize}
+            />
           </div>
         )
       }
@@ -1377,6 +1609,10 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* ATTENDANCE SUPPORT & CORRECTION DESK */}
       {/* ========================================================================= */}
       {activeTab === 'attendance-support' && (() => {
+        const availableEmployees = employeesList.filter(emp =>
+          !attFilterCompany || attFilterCompany === 'all' || String(emp.company_id) === String(attFilterCompany)
+        );
+
         const filteredAttendance = attendanceRecords.filter(a => {
           if (!attSearch.trim()) return true;
           const s = attSearch.toLowerCase();
@@ -1388,10 +1624,18 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         });
 
         const pendingRequests = attCorrectionRequests.filter(r => r.status === 'pending');
+        const paginatedAttendance = filteredAttendance.slice((attPage - 1) * attPageSize, attPage * attPageSize);
+        const paginatedRequests = pendingRequests.slice((crPage - 1) * crPageSize, crPage * crPageSize);
+
+        // Compute metrics for filtered records
+        const presentCount = attendanceRecords.filter(r => r.status === 'Present').length;
+        const halfDayCount = attendanceRecords.filter(r => r.status === 'Half Day').length;
+        const absentCount = attendanceRecords.filter(r => r.status === 'Absent').length;
+        const missingCount = attendanceRecords.filter(r => (r.punch_in_time && !r.punch_out_time) || (!r.punch_in_time && r.punch_out_time) || r.status === 'Missing Punch Out').length;
 
         return (
           <div className="space-y-4">
-            {/* Top Toolbar */}
+            {/* Header & Quick Action */}
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl border border-amber-200 shadow-xs">
@@ -1399,13 +1643,13 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    Attendance Correction Desk
+                    Attendance Support & Correction Desk
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-50 text-purple-700 border border-purple-200">
                       Level {pLevel} Clearance
                     </span>
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Manually update punch in, punch out, or both times, or record adjustments
+                    On-demand attendance inspection and supervisor punch adjustments for assigned companies
                   </p>
                 </div>
               </div>
@@ -1420,7 +1664,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                     }
                     setManualPunchForm({
                       employee_id: '',
-                      date: attDateFilter || new Date().toISOString().slice(0, 10),
+                      date: attFilterDate || new Date().toISOString().slice(0, 10),
                       correction_type: 'both',
                       punch_in_time: '09:00:00',
                       punch_out_time: '18:00:00',
@@ -1437,15 +1681,273 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   <span>Manual Punch / Entry</span>
                 </button>
 
+                {attHasFiltered && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAttHasFiltered(false);
+                      setAttendanceRecords([]);
+                      setAttSearch('');
+                    }}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs"
+                    title="Clear active filter and return to search mode"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Clear Filter</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* ON-DEMAND FILTER CONTROL CARD */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-purple-600" />
+                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">Attendance Query & Scope Filter</span>
+                </div>
+                <span className="text-[11px] text-slate-400">Strict single-date on-demand records</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {/* 1. Target Date (Strict Single Date) */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Target Date <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <input
+                      type="date"
+                      value={attFilterDate}
+                      onChange={(e) => setAttFilterDate(e.target.value)}
+                      className="bg-transparent text-xs text-slate-800 font-bold focus:outline-none w-full cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => setAttFilterDate(new Date().toISOString().slice(0, 10))}
+                      className="text-[10px] text-purple-600 font-bold hover:underline"
+                    >
+                      Today
+                    </button>
+                    <span className="text-slate-300">•</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const yest = new Date();
+                        yest.setDate(yest.getDate() - 1);
+                        setAttFilterDate(yest.toISOString().slice(0, 10));
+                      }}
+                      className="text-[10px] text-slate-500 hover:text-slate-800 hover:underline"
+                    >
+                      Yesterday
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Company Selector */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Company</label>
+                  <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <select
+                      value={attFilterCompany}
+                      onChange={(e) => {
+                        setAttFilterCompany(e.target.value);
+                        setAttFilterEmpId('');
+                        setAttFilterEmpIds([]);
+                      }}
+                      className="bg-transparent text-xs text-slate-800 font-semibold focus:outline-none w-full cursor-pointer"
+                    >
+                      <option value="all">All Assigned Companies</option>
+                      {companies.map(c => (
+                        <option key={c.id} value={c.id}>{c.legal_name || c.name || c.company_code}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* 3. Employee Scope Selector */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Employee Scope</label>
+                  <select
+                    value={attFilterScope}
+                    onChange={(e) => {
+                      setAttFilterScope(e.target.value);
+                      setAttFilterEmpId('');
+                      setAttFilterEmpIds([]);
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
+                  >
+                    <option value="all">All Employees in Scope</option>
+                    <option value="single">Single Employee</option>
+                    <option value="multiple">Multiple Specific Employees</option>
+                  </select>
+                </div>
+
+                {/* 4. Status Filter */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Status Filter</label>
+                  <select
+                    value={attFilterStatus}
+                    onChange={(e) => setAttFilterStatus(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="Present">Present</option>
+                    <option value="Half Day">Half Day</option>
+                    <option value="Absent">Absent</option>
+                    <option value="Leave">Leave</option>
+                    <option value="Holiday">Holiday</option>
+                    <option value="Weekly Off">Weekly Off</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* SCOPE: SINGLE EMPLOYEE PICKER */}
+              {attFilterScope === 'single' && (
+                <div className="p-3 bg-purple-50/60 rounded-xl border border-purple-100 space-y-2 animate-fade-in">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
+                      <User className="w-3.5 h-3.5 text-purple-600" />
+                      Select Single Employee
+                    </label>
+                    <span className="text-[10px] text-purple-700 font-medium">
+                      {availableEmployees.length} active employees available
+                    </span>
+                  </div>
+                  <select
+                    value={attFilterEmpId}
+                    onChange={(e) => setAttFilterEmpId(e.target.value)}
+                    className="w-full bg-white border border-purple-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">-- Choose Employee to inspect --</option>
+                    {availableEmployees.map(emp => (
+                      <option key={emp.id} value={emp.id}>
+                        {emp.full_name} ({emp.employee_id || `ID:${emp.id}`}) • {emp.department || 'General'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* SCOPE: MULTIPLE EMPLOYEES PICKER */}
+              {attFilterScope === 'multiple' && (
+                <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 space-y-2 animate-fade-in">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-indigo-600" />
+                      Pick Multiple Employees ({attFilterEmpIds.length} selected)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allIds = availableEmployees.map(e => e.id);
+                          setAttFilterEmpIds(allIds);
+                        }}
+                        className="text-[11px] font-bold text-indigo-600 hover:underline"
+                      >
+                        Select All
+                      </button>
+                      <span className="text-indigo-200">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setAttFilterEmpIds([])}
+                        className="text-[11px] font-bold text-slate-500 hover:text-slate-800 hover:underline"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={attEmpSearchQuery}
+                      onChange={(e) => setAttEmpSearchQuery(e.target.value)}
+                      placeholder="Filter employee list by name or ID..."
+                      className="w-full pl-8 pr-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div className="max-h-40 overflow-y-auto divide-y divide-indigo-100/80 bg-white rounded-xl border border-indigo-200 p-1">
+                    {availableEmployees
+                      .filter(emp => {
+                        if (!attEmpSearchQuery.trim()) return true;
+                        const q = attEmpSearchQuery.toLowerCase();
+                        return (
+                          (emp.full_name && emp.full_name.toLowerCase().includes(q)) ||
+                          (emp.employee_id && emp.employee_id.toLowerCase().includes(q)) ||
+                          (emp.department && emp.department.toLowerCase().includes(q))
+                        );
+                      })
+                      .map(emp => {
+                        const isChecked = attFilterEmpIds.includes(emp.id);
+                        return (
+                          <label
+                            key={emp.id}
+                            className={`flex items-center gap-2.5 p-2 rounded-lg cursor-pointer text-xs transition-colors ${
+                              isChecked ? 'bg-indigo-50/70 font-bold text-indigo-900' : 'hover:bg-slate-50 text-slate-700'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setAttFilterEmpIds(prev => [...prev, emp.id]);
+                                } else {
+                                  setAttFilterEmpIds(prev => prev.filter(id => id !== emp.id));
+                                }
+                              }}
+                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <div className="flex-1 truncate">
+                              <span>{emp.full_name}</span>
+                              <span className="text-[10px] text-slate-400 ml-1.5 font-mono">({emp.employee_id || `ID:${emp.id}`})</span>
+                            </div>
+                            <span className="text-[10px] text-slate-400 shrink-0">{emp.department || 'General'}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {/* SEARCH & APPLY ACTION ROW */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <div className="relative w-full sm:w-80">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={attSearch}
+                    onChange={(e) => setAttSearch(e.target.value)}
+                    placeholder="Search loaded records by name / code..."
+                    className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:bg-white transition-all"
+                  />
+                  {attSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setAttSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
                 <button
                   type="button"
-                  onClick={() => fetchData()}
-                  disabled={loading}
-                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs"
-                  title="Refresh Attendance Records"
+                  onClick={handleApplyAttendanceFilter}
+                  disabled={attFilterLoading}
+                  className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-sm hover:shadow flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shrink-0"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                  <span>Refresh</span>
+                  <RefreshCw className={`w-3.5 h-3.5 ${attFilterLoading ? 'animate-spin' : ''}`} />
+                  <span>{attFilterLoading ? 'Loading Attendance...' : 'Apply Filter & View Records'}</span>
                 </button>
               </div>
             </div>
@@ -1463,7 +1965,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   }`}
                 >
                   <Clock className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Attendance Records ({filteredAttendance.length})</span>
+                  <span>Attendance Records ({attHasFiltered ? filteredAttendance.length : 0})</span>
                 </button>
 
                 <button
@@ -1480,153 +1982,178 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Date Filter */}
-                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-xs">
-                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                  <span className="text-[11px] text-slate-500 font-medium">Date:</span>
-                  <input
-                    type="date"
-                    value={attDateFilter}
-                    onChange={(e) => setAttDateFilter(e.target.value)}
-                    className="bg-transparent text-xs text-slate-800 font-semibold focus:outline-none cursor-pointer"
-                  />
-                  {attDateFilter && (
-                    <button
-                      type="button"
-                      onClick={() => setAttDateFilter('')}
-                      className="p-0.5 text-slate-400 hover:text-slate-600 rounded-full"
-                      title="Clear date filter to view recent logs"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
+              {attHasFiltered && (
+                <div className="text-xs text-slate-500 font-medium flex items-center gap-2">
+                  <span className="font-semibold text-slate-800">Date:</span>
+                  <span className="font-mono bg-purple-50 text-purple-700 px-2 py-0.5 rounded font-bold border border-purple-200">
+                    {attFilterDate}
+                  </span>
                 </div>
-
-                {/* Search Filter */}
-                <div className="relative w-48 sm:w-60">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={attSearch}
-                    onChange={(e) => setAttSearch(e.target.value)}
-                    placeholder="Search employee..."
-                    className="w-full pl-8 pr-7 py-1 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"
-                  />
-                  {attSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setAttSearch('')}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-              </div>
+              )}
             </div>
 
             {/* TAB CONTENT: ATTENDANCE RECORDS */}
             {attSectionTab === 'records' && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left">
-                    <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
-                      <tr>
-                        <th className="p-3">Employee</th>
-                        <th className="p-3">Company</th>
-                        <th className="p-3">Date</th>
-                        <th className="p-3">Punch In</th>
-                        <th className="p-3">Punch Out</th>
-                        <th className="p-3">Hours</th>
-                        <th className="p-3">Status</th>
-                        <th className="p-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {filteredAttendance.map(a => (
-                        <tr key={a.id || `${a.employee_id}_${a.date}`} className="hover:bg-slate-50/60 transition-colors">
-                          <td className="p-3">
-                            <div className="font-bold text-slate-900">{a.employee_name || 'Staff Member'}</div>
-                            <div className="text-[10px] font-mono text-slate-400">{a.employee_code || `EMP #${a.employee_id}`}</div>
-                          </td>
-                          <td className="p-3 font-medium text-slate-600">{a.company_name || 'N/A'}</td>
-                          <td className="p-3 font-semibold text-slate-700">{a.date}</td>
-                          <td className="p-3 font-mono">
-                            {a.punch_in_time ? (
-                              <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-bold border border-emerald-200">
-                                {a.punch_in_time}
-                              </span>
-                            ) : (
-                              <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded text-[11px] font-medium border border-rose-200">
-                                Missing In
-                              </span>
+              <>
+                {!attHasFiltered ? (
+                  <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-sm space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center mx-auto shadow-inner">
+                      <Filter className="w-6 h-6" />
+                    </div>
+                    <h4 className="text-sm font-bold text-slate-800">No Attendance Records Loaded</h4>
+                    <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+                      To protect system privacy and optimize performance, employee attendance data is not loaded automatically on page open.
+                      Select your target date, company, and employee scope in the filter above, then click <strong className="text-purple-700">"Apply Filter & View Records"</strong>.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttFilterDate(new Date().toISOString().slice(0, 10));
+                        handleApplyAttendanceFilter();
+                      }}
+                      className="px-4 py-2 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded-xl text-xs font-bold transition-all shadow-xs inline-flex items-center gap-1.5 mt-2"
+                    >
+                      <Calendar className="w-3.5 h-3.5" />
+                      <span>Load Today's Attendance ({new Date().toISOString().slice(0, 10)})</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {/* METRIC PILLS SUMMARY FOR LOADED DATE */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+                      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase">Total Loaded</span>
+                        <p className="text-xl font-black text-slate-900 mt-0.5">{attendanceRecords.length}</p>
+                      </div>
+                      <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-200/80 shadow-xs">
+                        <span className="text-[10px] font-bold text-emerald-800 uppercase">Present</span>
+                        <p className="text-xl font-black text-emerald-950 mt-0.5">{presentCount}</p>
+                      </div>
+                      <div className="bg-amber-50/70 p-3 rounded-2xl border border-amber-200/80 shadow-xs">
+                        <span className="text-[10px] font-bold text-amber-800 uppercase">Half Day</span>
+                        <p className="text-xl font-black text-amber-950 mt-0.5">{halfDayCount}</p>
+                      </div>
+                      <div className="bg-rose-50/70 p-3 rounded-2xl border border-rose-200/80 shadow-xs">
+                        <span className="text-[10px] font-bold text-rose-800 uppercase">Absent</span>
+                        <p className="text-xl font-black text-rose-950 mt-0.5">{absentCount}</p>
+                      </div>
+                      <div className="bg-purple-50/70 p-3 rounded-2xl border border-purple-200/80 shadow-xs">
+                        <span className="text-[10px] font-bold text-purple-800 uppercase">Missing Punch</span>
+                        <p className="text-xl font-black text-purple-950 mt-0.5">{missingCount}</p>
+                      </div>
+                    </div>
+
+                    {/* RECORDS TABLE */}
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
+                            <tr>
+                              <th className="p-3">Employee</th>
+                              <th className="p-3">Company</th>
+                              <th className="p-3">Date</th>
+                              <th className="p-3">Punch In</th>
+                              <th className="p-3">Punch Out</th>
+                              <th className="p-3">Hours</th>
+                              <th className="p-3">Status</th>
+                              <th className="p-3 text-right">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {paginatedAttendance.map(a => (
+                              <tr key={a.id || `${a.employee_id}_${a.date}`} className="hover:bg-slate-50/60 transition-colors">
+                                <td className="p-3">
+                                  <div className="font-bold text-slate-900">{a.employee_name || 'Staff Member'}</div>
+                                  <div className="text-[10px] font-mono text-slate-400">{a.employee_code || `EMP #${a.employee_id}`}</div>
+                                </td>
+                                <td className="p-3 font-medium text-slate-600">{a.company_name || 'N/A'}</td>
+                                <td className="p-3 font-semibold text-slate-700">{a.date}</td>
+                                <td className="p-3 font-mono">
+                                  {a.punch_in_time ? (
+                                    <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-bold border border-emerald-200">
+                                      {a.punch_in_time}
+                                    </span>
+                                  ) : (
+                                    <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded text-[11px] font-medium border border-rose-200">
+                                      Missing In
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-3 font-mono">
+                                  {a.punch_out_time ? (
+                                    <span className="text-sky-700 bg-sky-50 px-2 py-0.5 rounded font-bold border border-sky-200">
+                                      {a.punch_out_time}
+                                    </span>
+                                  ) : (
+                                    <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded text-[11px] font-medium border border-amber-200">
+                                      Missing Out
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-3 font-medium text-slate-700">
+                                  {a.total_hours !== undefined ? `${a.total_hours} hrs` : '-'}
+                                </td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    a.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
+                                    a.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
+                                    a.status === 'Leave' ? 'bg-purple-100 text-purple-700' :
+                                    a.status === 'Holiday' ? 'bg-sky-100 text-sky-700' :
+                                    a.status === 'Weekly Off' || a.status === 'WO' ? 'bg-slate-100 text-slate-700' : 'bg-rose-100 text-rose-700'
+                                  }`}>
+                                    {a.status || 'Absent'}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (pLevel < 2) {
+                                        setError('Support Level 2 or higher required to correct attendance.');
+                                        return;
+                                      }
+                                      setSelectedAtt(a);
+                                      const initialMode = (a.punch_in_time && !a.punch_out_time) ? 'out' : (!a.punch_in_time && a.punch_out_time) ? 'in' : 'both';
+                                      setAttEditForm({
+                                        correction_type: initialMode,
+                                        punch_in_time: a.punch_in_time || '09:00:00',
+                                        punch_out_time: a.punch_out_time || '18:00:00',
+                                        status: a.status || 'Present',
+                                        reason: '',
+                                        remarks: ''
+                                      });
+                                      setEditAttendanceModal(true);
+                                    }}
+                                    className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition-all hover:scale-105 active:scale-95"
+                                    title="Correct single punch (in or out) or both punches"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                    <span>Correct Punch</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                            {filteredAttendance.length === 0 && (
+                              <tr>
+                                <td colSpan="8" className="p-10 text-center text-slate-400 text-xs">
+                                  No attendance records found matching filters for target date {attFilterDate}.
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                          <td className="p-3 font-mono">
-                            {a.punch_out_time ? (
-                              <span className="text-sky-700 bg-sky-50 px-2 py-0.5 rounded font-bold border border-sky-200">
-                                {a.punch_out_time}
-                              </span>
-                            ) : (
-                              <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded text-[11px] font-medium border border-amber-200">
-                                Missing Out
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-3 font-medium text-slate-700">
-                            {a.total_hours !== undefined ? `${a.total_hours} hrs` : '-'}
-                          </td>
-                          <td className="p-3">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              a.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
-                              a.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
-                              a.status === 'Leave' ? 'bg-purple-100 text-purple-700' :
-                              a.status === 'Holiday' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'
-                            }`}>
-                              {a.status || 'Absent'}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (pLevel < 2) {
-                                  setError('Support Level 2 or higher required to correct attendance.');
-                                  return;
-                                }
-                                setSelectedAtt(a);
-                                const initialMode = (a.punch_in_time && !a.punch_out_time) ? 'out' : (!a.punch_in_time && a.punch_out_time) ? 'in' : 'both';
-                                setAttEditForm({
-                                  correction_type: initialMode,
-                                  punch_in_time: a.punch_in_time || '09:00:00',
-                                  punch_out_time: a.punch_out_time || '18:00:00',
-                                  status: a.status || 'Present',
-                                  reason: '',
-                                  remarks: ''
-                                });
-                                setEditAttendanceModal(true);
-                              }}
-                              className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition-all hover:scale-105 active:scale-95"
-                              title="Correct single punch (in or out) or both punches"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                              <span>Correct Punch</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                      {filteredAttendance.length === 0 && (
-                        <tr>
-                          <td colSpan="8" className="p-10 text-center text-slate-400 text-xs">
-                            No attendance records found matching filters. Try changing date or search criteria.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                          </tbody>
+                        </table>
+                      </div>
+                      <PaginationBar
+                        currentPage={attPage}
+                        totalItems={filteredAttendance.length}
+                        pageSize={attPageSize}
+                        onPageChange={setAttPage}
+                        onPageSizeChange={setAttPageSize}
+                      />
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {/* TAB CONTENT: PENDING CORRECTION REQUESTS */}
@@ -1658,7 +2185,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {attCorrectionRequests.map(r => (
+                      {paginatedRequests.map(r => (
                         <tr key={r.id} className="hover:bg-slate-50/60">
                           <td className="p-3 font-mono font-bold text-slate-900">#{r.id}</td>
                           <td className="p-3">
@@ -1708,7 +2235,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                           </td>
                         </tr>
                       ))}
-                      {attCorrectionRequests.length === 0 && (
+                      {pendingRequests.length === 0 && (
                         <tr>
                           <td colSpan="9" className="p-8 text-center text-slate-400 text-xs">
                             No attendance correction requests submitted.
@@ -1718,6 +2245,13 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                     </tbody>
                   </table>
                 </div>
+                <PaginationBar
+                  currentPage={crPage}
+                  totalItems={pendingRequests.length}
+                  pageSize={crPageSize}
+                  onPageChange={setCrPage}
+                  onPageSizeChange={setCrPageSize}
+                />
               </div>
             )}
           </div>
@@ -1736,7 +2270,20 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* ========================================================================= */}
       {(activeTab === 'audit-reports' || activeTab === 'audit-logs') && (
         <div>
-          {pLevel < 4 ? (
+          {!canAccessAuditLogs ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-xl mx-auto space-y-4 shadow-sm">
+              <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto shadow-inner">
+                <Lock className="w-7 h-7" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900">Audit Log Access Disabled</h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Access to Audit Reports and System Activity Logs has been disabled for your support account by the Super Administrator.
+              </p>
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-800 font-medium">
+                To access platform security audit reports and logs, request your Super Administrator to enable "Audit Log Access" in your support account settings.
+              </div>
+            </div>
+          ) : pLevel < 4 ? (
             <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-xl mx-auto space-y-4 shadow-sm">
               <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto shadow-inner">
                 <Lock className="w-7 h-7" />
@@ -2062,7 +2609,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {auditLogs.map(log => {
+                      {auditLogs.slice((auditPage - 1) * auditPageSize, auditPage * auditPageSize).map(log => {
                         const isDeletedAction = log.action?.includes('DELETE') || log.action?.includes('UNBOUND');
                         const isSuccessAction = log.action?.includes('RESOLVED') || log.action?.includes('ENABLE') || log.action?.includes('CORRECT');
 
@@ -2133,6 +2680,13 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                     </tbody>
                   </table>
                 </div>
+                <PaginationBar
+                  currentPage={auditPage}
+                  totalItems={auditLogs.length}
+                  pageSize={auditPageSize}
+                  onPageChange={setAuditPage}
+                  onPageSizeChange={setAuditPageSize}
+                />
               </div>
             </div>
           )}

@@ -23,6 +23,7 @@ router.post('/login', async (req, res) => {
              r.name as role_name,
              s.permission_level as support_level,
              s.enable_ai_assistant as support_ai_enabled,
+             COALESCE(s.enable_audit_logs, 1) as support_audit_logs_enabled,
              s.assigned_companies,
              e.id as employee_id, e.employee_id as employee_code, e.full_name, e.manager_id,
              e.employment_start_date, e.employment_end_date
@@ -42,10 +43,14 @@ router.post('/login', async (req, res) => {
 
     if (u && u.role_name === 'support') {
       try {
-        const sRow = db.prepare("SELECT enable_ai_assistant FROM support_users WHERE user_id = ?").get(u.id);
+        const sRow = db.prepare("SELECT enable_ai_assistant, enable_audit_logs, assigned_companies FROM support_users WHERE user_id = ?").get(u.id);
         u.support_ai_enabled = sRow ? (sRow.enable_ai_assistant === 1 ? 1 : 0) : 0;
+        u.support_audit_logs_enabled = sRow && sRow.enable_audit_logs !== undefined ? (sRow.enable_audit_logs === 1 ? 1 : 0) : 1;
+        u.assigned_companies = sRow ? (sRow.assigned_companies || 'all') : (u.assigned_companies || 'all');
       } catch (e) {
         u.support_ai_enabled = 0;
+        u.support_audit_logs_enabled = 1;
+        u.assigned_companies = u.assigned_companies || 'all';
       }
     }
     return u;
@@ -223,6 +228,7 @@ router.post('/login', async (req, res) => {
       role: user.role_name,
       supportLevel: user.support_level,
       enable_ai_assistant: user.role_name === "support" ? (user.support_ai_enabled === 1) : undefined,
+      enable_audit_logs: user.role_name === "support" ? (user.support_audit_logs_enabled !== 0) : true,
       assignedCompanies: user.role_name === "support" ? (user.assigned_companies || 'all') : 'all',
       assigned_companies: user.role_name === "support" ? (user.assigned_companies || 'all') : 'all',
       companyId: user.company_id,
@@ -303,6 +309,7 @@ router.get('/me', verifyAuth, (req, res) => {
       role: req.user.role_name,
       supportLevel: req.user.support_level,
       enable_ai_assistant: req.user.role_name === "support" ? !!req.user.enable_ai_assistant : undefined,
+      enable_audit_logs: req.user.role_name === "support" ? (req.user.enable_audit_logs !== 0 && req.user.enable_audit_logs !== false) : true,
       assignedCompanies: req.user.role_name === "support" ? (req.user.assigned_companies || 'all') : 'all',
       assigned_companies: req.user.role_name === "support" ? (req.user.assigned_companies || 'all') : 'all',
       companyId: req.user.company_id,

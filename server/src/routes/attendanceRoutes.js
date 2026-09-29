@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
-const { requireRole, requireSupportLevel, getTenantCompanyId } = require('../middleware/rbac');
+const { requireRole, requireSupportLevel, getTenantCompanyId, parseSupportAssignedCompanies } = require('../middleware/rbac');
 const { validateGeofence } = require('../services/geofence');
 const {
   generateAttendanceTemplate,
@@ -780,6 +780,15 @@ router.get('/list', verifyAuth, (req, res) => {
     if (companyId) {
       singleBaseQuery += ' AND e.company_id = ?';
       singleParams.push(companyId);
+    } else if (req.user.role_name === 'support') {
+      const authComp = parseSupportAssignedCompanies(req.user);
+      if (authComp !== 'all') {
+        if (Array.isArray(authComp) && authComp.length > 0) {
+          singleBaseQuery += ` AND e.company_id IN (${authComp.join(',')})`;
+        } else {
+          return res.json({ records: [], total: 0, summary: { total: 0, present: 0, absent: 0, half_day: 0, leave: 0 } });
+        }
+      }
     }
 
     if (req.user.role_name === 'manager') {
@@ -1495,6 +1504,14 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
   });
 
   transaction();
+
+  try {
+    const updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(recordId);
+    if (updatedAtt) {
+      syncAttendancePunch(updatedAtt.company_id, updatedAtt.employee_id, updatedAtt).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: 'Attendance record corrected and audit log recorded.' });
 });
 
@@ -1624,6 +1641,14 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
   });
 
   transaction();
+
+  try {
+    const updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?').get(companyId, emp.id, date);
+    if (updatedAtt) {
+      syncAttendancePunch(companyId, emp.id, updatedAtt).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: `Attendance for ${emp.full_name} (${date}) recorded successfully.` });
 });
 
