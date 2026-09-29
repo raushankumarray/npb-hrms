@@ -160,7 +160,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
 
       case 'support':
         return [
-          { id: 'dashboard', label: 'Support Desk', icon: Shield },
+          { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
           { id: 'account-enable', label: 'Account Enable', icon: UserCheck },
           { id: 'attendance-support', label: 'Attendance Support', icon: Clock },
           { id: 'device-support', label: 'Device Binding & Unlock', icon: Laptop },
