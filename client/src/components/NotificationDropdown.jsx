@@ -1,14 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, CheckCheck, Clock, ShieldAlert, Calendar, Ticket, Smartphone, Check, Send, AlertTriangle } from 'lucide-react';
+import { Bell, CheckCheck, Clock, ShieldAlert, Calendar, Ticket, Smartphone } from 'lucide-react';
 import { useNotifications } from '../context/NotificationContext';
 
 export default function NotificationDropdown() {
   const {
     notifications,
     unreadCount,
-    permission,
-    requestPermission,
-    sendTestNotification,
     markSingleRead,
     markAllRead,
     handleOpenNotification
@@ -49,7 +46,7 @@ export default function NotificationDropdown() {
       <button
         onClick={() => setOpen(!open)}
         className="relative p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors focus:outline-none cursor-pointer"
-        title="Notifications & Device Alerts"
+        title="Notifications"
       >
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
@@ -84,40 +81,6 @@ export default function NotificationDropdown() {
                 </button>
               )}
             </div>
-          </div>
-
-          {/* Browser / Phone Push Permission Control Bar */}
-          <div className="px-3.5 py-2 bg-slate-100/70 border-b border-slate-200/80 flex items-center justify-between text-xs">
-            {permission === 'granted' ? (
-              <span className="flex items-center gap-1.5 text-emerald-700 font-semibold">
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Phone & Browser Alerts Active</span>
-              </span>
-            ) : permission === 'denied' ? (
-              <span className="flex items-center gap-1.5 text-amber-700 font-medium">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                <span>Alerts Blocked in Browser</span>
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={requestPermission}
-                className="flex items-center gap-1.5 text-sky-700 hover:text-sky-800 font-bold hover:underline cursor-pointer"
-              >
-                <Smartphone className="w-3.5 h-3.5 text-sky-600" />
-                <span>Allow Phone & Browser Alerts</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={sendTestNotification}
-              className="text-[11px] text-slate-600 hover:text-sky-600 font-medium flex items-center gap-1 bg-white px-2 py-0.5 rounded-md border border-slate-200 shadow-2xs hover:border-sky-300 transition-colors cursor-pointer"
-              title="Test notification alert sound and popup"
-            >
-              <Send className="w-2.5 h-2.5" />
-              <span>Test Alert</span>
-            </button>
           </div>
 
           {/* Mode Switcher Tabs */}

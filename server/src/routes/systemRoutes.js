@@ -36,7 +36,6 @@ router.get('/settings', (req, res) => {
     const browserFavicon = getSetting('browser_favicon', null);
     const showBrandingMode = getSetting('show_branding_mode', 'both');
     const enableSuperAdminAi = getSetting('enable_super_admin_ai', 'false') === 'true';
-    const supportBrowserNotifications = getSetting('support_browser_notifications', 'true') === 'true';
 
     res.json({
       settings: {
@@ -44,8 +43,7 @@ router.get('/settings', (req, res) => {
         platform_logo: platformLogo,
         browser_favicon: browserFavicon,
         show_branding_mode: showBrandingMode,
-        enable_super_admin_ai: enableSuperAdminAi,
-        support_browser_notifications: supportBrowserNotifications
+        enable_super_admin_ai: enableSuperAdminAi
       }
     });
   } catch (err) {
@@ -55,7 +53,7 @@ router.get('/settings', (req, res) => {
 
 // 2. PUT /api/system/settings - Update Platform Branding, Logo & Favicon (Super Admin only)
 router.put('/settings', verifyAuth, requireRole(['super_admin']), (req, res) => {
-  const { platform_name, platform_logo, browser_favicon, show_branding_mode, enable_super_admin_ai, support_browser_notifications } = req.body;
+  const { platform_name, platform_logo, browser_favicon, show_branding_mode, enable_super_admin_ai } = req.body;
 
   try {
     const oldValues = {
@@ -78,9 +76,6 @@ router.put('/settings', verifyAuth, requireRole(['super_admin']), (req, res) => 
     }
     if (enable_super_admin_ai !== undefined) {
       setSetting('enable_super_admin_ai', enable_super_admin_ai ? 'true' : 'false', 'Enable AI Assistant in Super Admin panel');
-    }
-    if (support_browser_notifications !== undefined) {
-      setSetting('support_browser_notifications', support_browser_notifications ? 'true' : 'false', 'Allow browser push notifications for Support team');
     }
 
     // Dispatch audit log

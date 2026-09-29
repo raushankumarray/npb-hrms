@@ -195,20 +195,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [moduleToDelete, setModuleToDelete] = useState(null);
   const [deletingModule, setDeletingModule] = useState(false);
 
-  // Browser & Mobile Notification Master Control State
-  const [supportBrowserNotifs, setSupportBrowserNotifs] = useState(true);
-  const [togglingSupportNotifs, setTogglingSupportNotifs] = useState(false);
-  const [batchTogglingCompanyNotifs, setBatchTogglingCompanyNotifs] = useState(false);
-
-  const fetchBrowserNotifStatus = async () => {
-    try {
-      const res = await apiRequest('/modules/browser_notifications/status');
-      if (res && res.support_browser_notifications !== undefined) {
-        setSupportBrowserNotifs(res.support_browser_notifications);
-      }
-    } catch (e) {}
-  };
-
   const fetchSystemModules = async () => {
     try {
       setLoadingModules(true);
@@ -216,7 +202,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       if (res && res.modules) {
         setSystemModules(res.modules);
       }
-      fetchBrowserNotifStatus();
     } catch (err) {
       console.error('Failed to load system modules:', err);
     } finally {
@@ -1037,8 +1022,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
     { key: 'reports', label: 'Custom Reports & Export', desc: 'Dynamic Excel, PDF matrix export, and historical attendance reports' },
     { key: 'payroll', label: 'Payroll Module', desc: 'Salary slip generation, payroll calculation, and compensation data' },
     { key: 'ai_assistant', label: 'Pihu AI Assistant', desc: 'Universal AI Assistant for Employee, Manager, and Company Admin panels' },
-    { key: 'device_binding', label: '1-Device MAC Address Lock', desc: 'Enforce single device policy per employee with hardware MAC address binding and de-registration tickets' },
-    { key: 'browser_notifications', label: 'Browser & Mobile Push Notifications', desc: 'Native browser & mobile phone push notifications on phone for all employees and managers. When disabled, notifications show only inside the in-app Bell icon after login.' },
+    { key: 'device_binding', label: '1-Device MAC Address Lock', desc: 'Enforce single device policy per employee with hardware MAC address binding and de-registration tickets' }
   ];
 
   // Dynamic system modules with fallback to static defaults
@@ -1301,47 +1285,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setError(err.message);
     } finally {
       setUpdatingModule(false);
-    }
-  };
-
-  // Handle Toggle Support Team Browser Push Notifications
-  const handleToggleSupportBrowserNotifs = async () => {
-    const nextVal = !supportBrowserNotifs;
-    setTogglingSupportNotifs(true);
-    setError('');
-    try {
-      const res = await apiRequest('/modules/browser_notifications/support', {
-        method: 'PUT',
-        body: { is_enabled: nextVal }
-      });
-      setSupportBrowserNotifs(nextVal);
-      setSuccess(res.message || `Support team browser notifications set to ${nextVal ? 'ENABLED' : 'DISABLED'}.`);
-      if (onSystemSettingsUpdate) {
-        onSystemSettingsUpdate({ support_browser_notifications: nextVal });
-      }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setTogglingSupportNotifs(false);
-    }
-  };
-
-  // Handle Batch Company Browser Push Notifications (All Companies)
-  const handleBatchCompanyBrowserNotifs = async (enableAll) => {
-    setBatchTogglingCompanyNotifs(true);
-    setError('');
-    try {
-      const res = await apiRequest('/modules/browser_notifications/batch-companies', {
-        method: 'PUT',
-        body: { is_enabled: enableAll }
-      });
-      setSuccess(res.message || `Browser notifications for all companies set to ${enableAll ? 'ENABLED' : 'DISABLED'}.`);
-      await fetchSystemModules();
-      fetchData();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBatchTogglingCompanyNotifs(false);
     }
   };
 
@@ -2682,164 +2625,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 {allCompaniesList.length || companies.length || (systemModules[0]?.total_companies || 0)}
               </p>
               <p className="text-[11px] text-slate-400 mt-1">Multi-tenant client accounts</p>
-            </div>
-          </div>
-
-          {/* SPECIAL MASTER HUB: BROWSER & MOBILE PUSH NOTIFICATIONS */}
-          <div className="bg-gradient-to-r from-slate-900 via-sky-950 to-indigo-950 text-white p-5 border-2 border-sky-500/40 shadow-xl space-y-4">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 border-b border-white/10 pb-3">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-sky-500/20 text-sky-400 border border-sky-400/30 rounded-none shrink-0">
-                  <Smartphone className="w-6 h-6 animate-pulse" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-base font-bold tracking-wide uppercase text-white">
-                      Mobile & Browser Notification Master Control
-                    </h3>
-                    <span className="text-[10px] font-bold px-2 py-0.5 bg-sky-500/30 text-sky-200 border border-sky-400/40 uppercase">
-                      Push vs Bell Icon Mode
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-300 mt-0.5">
-                    Control real-time browser push notifications on mobile phones for All Companies (Employees & Managers) and Support Team.
-                  </p>
-                </div>
-              </div>
-
-              {/* Status Pills */}
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[11px] px-2.5 py-1 bg-white/10 text-white rounded font-mono border border-white/20">
-                  🔔 Bell Icon Mode: Active Always
-                </span>
-              </div>
-            </div>
-
-            {/* Two Main Columns: Company Accounts & Support Accounts */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {/* Card 1: All Company Accounts (Employees & Managers) */}
-              <div className="bg-white/5 border border-white/15 p-4 rounded-none space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Building2 className="w-4 h-4 text-sky-400" />
-                    <span className="font-bold text-xs uppercase tracking-wide text-white">
-                      Company Portals (Employees & Managers)
-                    </span>
-                  </div>
-                  {(() => {
-                    const bnMod = effectiveModules.find(m => m.key === 'browser_notifications');
-                    const enabledComp = bnMod?.enabled_companies || 0;
-                    const totalComp = bnMod?.total_companies || (companies.length || 2);
-                    return (
-                      <span className="text-[11px] font-bold text-sky-300 font-mono">
-                        {enabledComp}/{totalComp} Companies Enabled
-                      </span>
-                    );
-                  })()}
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  When enabled, employees and managers are prompted to allow browser notifications on phone and receive instant system alerts with vibration. When disabled, alerts only appear inside the in-app Bell icon after login.
-                </p>
-
-                <div className="flex items-center gap-2 flex-wrap pt-1">
-                  <button
-                    type="button"
-                    disabled={batchTogglingCompanyNotifs}
-                    onClick={() => handleBatchCompanyBrowserNotifs(true)}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer uppercase tracking-wider"
-                  >
-                    <Smartphone className="w-3.5 h-3.5" />
-                    <span>Allow on Phone (All Companies)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={batchTogglingCompanyNotifs}
-                    onClick={() => handleBatchCompanyBrowserNotifs(false)}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer uppercase tracking-wider"
-                  >
-                    <Bell className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Bell Icon Only (All Companies)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const bnMod = systemModules.find(sm => sm.module_key === 'browser_notifications') ||
-                                    effectiveModules.find(m => m.key === 'browser_notifications');
-                      if (bnMod) {
-                        setSelectedModuleForAccess(bnMod);
-                        setShowCompanyAccessModal(true);
-                      }
-                    }}
-                    className="px-3 py-1.5 bg-sky-900/60 hover:bg-sky-800 text-sky-200 border border-sky-400/40 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ml-auto uppercase tracking-wider"
-                  >
-                    <Sliders className="w-3.5 h-3.5" />
-                    <span>Configure Per Company</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Card 2: Support Team Accounts */}
-              <div className="bg-white/5 border border-white/15 p-4 rounded-none space-y-3 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Shield className="w-4 h-4 text-purple-400" />
-                      <span className="font-bold text-xs uppercase tracking-wide text-white">
-                        Support Team Accounts
-                      </span>
-                    </div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 uppercase tracking-wider ${
-                      supportBrowserNotifs
-                        ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-400/40'
-                        : 'bg-amber-500/30 text-amber-300 border border-amber-400/40'
-                    }`}>
-                      {supportBrowserNotifs ? 'Phone/Web Push Allowed' : 'In-App Bell Only'}
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-slate-300 leading-relaxed mt-2">
-                    Controls whether Support Central staff receive real-time native device push notifications on their phones/browsers for high-priority tickets, device unbinding requests, and service escalations.
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between pt-2 border-t border-white/10">
-                  <span className="text-xs text-slate-300 font-medium">
-                    Native Browser Push: <strong className={supportBrowserNotifs ? 'text-emerald-400' : 'text-amber-400'}>
-                      {supportBrowserNotifs ? 'ENABLED (ON)' : 'DISABLED (OFF)'}
-                    </strong>
-                  </span>
-
-                  <button
-                    type="button"
-                    disabled={togglingSupportNotifs}
-                    onClick={handleToggleSupportBrowserNotifs}
-                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none ${
-                      supportBrowserNotifs ? 'bg-emerald-600' : 'bg-slate-700'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        supportBrowserNotifs ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Explainer Footer */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs pt-1 border-t border-white/10">
-              <div className="flex items-center gap-2 text-emerald-300">
-                <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
-                <span><strong>When ENABLED:</strong> Prompts permission on phone browser; alerts fire in native system notification tray.</span>
-              </div>
-              <div className="flex items-center gap-2 text-amber-200">
-                <Bell className="w-4 h-4 shrink-0 text-amber-400" />
-                <span><strong>When DISABLED:</strong> Suppresses device popups. After logging in, alerts show in the header <strong>Bell icon</strong>.</span>
-              </div>
             </div>
           </div>
 

@@ -8,31 +8,11 @@ import {
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
 import PihuAssistant from './PihuAssistant';
-import { useNotifications } from '../context/NotificationContext';
-import NotificationPermissionBanner from './NotificationPermissionBanner';
-import AndroidNotificationCard from './AndroidNotificationCard';
 
 export default function Layout({ user, company, systemSettings, activeTab, onSelectTab, onLogout, onUserUpdate, children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-
-  const {
-    permission,
-    requestPermission,
-    floatingNotifications,
-    dismissFloating,
-    handleOpenNotification,
-    isBrowserNotificationAllowed
-  } = useNotifications();
-
-  // Expose global tab switcher for native push notification clicks
-  useEffect(() => {
-    window.__hrmsSelectTab = onSelectTab;
-    return () => {
-      window.__hrmsSelectTab = null;
-    };
-  }, [onSelectTab]);
 
   // Dropdown open/close state in navigation (Accounts & Global Data for Super Admin)
   const [openDropdowns, setOpenDropdowns] = useState(() => {
@@ -354,29 +334,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
 
   return (
     <div className="h-screen overflow-hidden bg-slate-100 flex flex-col font-sans relative">
-      {/* Floating Android-style Notification Cards (stacked at top center, mirroring phone notifications) */}
-      {floatingNotifications && floatingNotifications.length > 0 && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-3 sm:px-0 flex flex-col gap-2.5 pointer-events-none">
-          {floatingNotifications.map((notif) => (
-            <div key={notif.id} className="pointer-events-auto">
-              <AndroidNotificationCard
-                notification={notif}
-                onDismiss={dismissFloating}
-                onOpen={handleOpenNotification}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Browser & Phone Notification Permission Request Banner */}
-      {isBrowserNotificationAllowed && (
-        <NotificationPermissionBanner
-          permission={permission}
-          onRequestPermission={requestPermission}
-        />
-      )}
-
       {/* Top Header */}
       <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm shrink-0">
         <div className="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">

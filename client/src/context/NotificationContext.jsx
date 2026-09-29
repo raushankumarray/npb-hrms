@@ -1,134 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { apiRequest, getToken } from '../api';
-import { playNotificationChime, triggerDeviceVibration, dispatchNativeNotification } from '../services/notificationSound';
 
 const NotificationContext = createContext(null);
 
-export function NotificationProvider({ children, onSelectTab, currentUser, company, systemSettings }) {
+export function NotificationProvider({ children, onSelectTab, currentUser }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [permission, setPermission] = useState(() => {
-    return (typeof window !== 'undefined' && 'Notification' in window) ? Notification.permission : 'denied';
-  });
-  const [floatingNotifications, setFloatingNotifications] = useState([]);
 
   const seenIdsRef = useRef(new Set());
   const initialFetchDone = useRef(false);
   const eventSourceRef = useRef(null);
-  // Check whether browser/mobile phone push notifications are allowed for current user & company
-  const isBrowserNotificationAllowed = () => {
-    if (!currentUser) return false;
-
-    // Support team accounts
-    if (currentUser.role === 'support') {
-      if (systemSettings && systemSettings.support_browser_notifications === false) {
-        return false;
-      }
-      return true;
-    }
-
-    // Super Admin accounts
-    if (currentUser.role === 'super_admin') {
-      return true;
-    }
-
-    // Company accounts (Employees, Managers, Company Admin)
-    if (company && company.modules) {
-      if (company.modules.browser_notifications === false) {
-        return false;
-      }
-    }
-
-    return true;
-  };
-
-
-  // Request browser notification permission
-  const requestPermission = async () => {
-    if (!isBrowserNotificationAllowed()) {
-      return 'denied';
-    }
-    if (typeof window === 'undefined' || !('Notification' in window)) {
-      alert('This browser does not support Web Notifications.');
-      return 'denied';
-    }
-
-    try {
-      const result = await Notification.requestPermission();
-      setPermission(result);
-
-      if (result === 'granted') {
-        playNotificationChime();
-        triggerDeviceVibration();
-
-        // Dispatch instant confirmation notification
-        dispatchNativeNotification({
-          title: 'NPB HRMS Notifications Active',
-          message: 'Real-time alerts enabled on this device for approvals, requests, and updates.',
-          link: '/dashboard',
-          id: 'welcome'
-        });
-
-        // Add welcome card to floating stack
-        const welcomeNotif = {
-          id: 'welcome-' + Date.now(),
-          title: 'Notifications Successfully Enabled',
-          message: 'You will now receive instant phone and browser alerts for approvals, shift assignments, and updates.',
-          type: 'system',
-          is_read: 0,
-          created_at: new Date().toISOString()
-        };
-        addFloatingNotification(welcomeNotif);
-      }
-      return result;
-    } catch (err) {
-      console.warn('Error requesting notification permission:', err);
-      return 'denied';
-    }
-  };
-
-  // Add notification to floating Android toast stack (auto-dismisses after 7 seconds)
-  const addFloatingNotification = (notif) => {
-    setFloatingNotifications((prev) => {
-      // Don't add duplicate
-      if (prev.some((n) => n.id === notif.id)) return prev;
-      // Keep max 3 notifications on screen at once
-      const updated = [notif, ...prev.slice(0, 2)];
-      return updated;
-    });
-
-    // Auto-dismiss after 7 seconds
-    setTimeout(() => {
-      dismissFloating(notif.id);
-    }, 7000);
-  };
-
-  const dismissFloating = (id) => {
-    setFloatingNotifications((prev) => prev.filter((n) => n.id !== id));
-  };
-
-  // Trigger sound, vibration, native push, and floating card for newly received notification
-  const handleIncomingNotification = (notif) => {
-    if (!notif || !notif.id) return;
-    if (seenIdsRef.current.has(notif.id)) return;
-    seenIdsRef.current.add(notif.id);
-
-    // 1. In-app Android notification card & pleasant chime always triggered
-    playNotificationChime();
-    addFloatingNotification(notif);
-
-    // 2. Dispatch native OS / Phone system tray notification & vibration if allowed
-    if (isBrowserNotificationAllowed()) {
-      triggerDeviceVibration();
-      dispatchNativeNotification({
-        id: notif.id,
-        title: notif.title,
-        message: notif.message,
-        link: notif.link,
-        tab: resolveTabForNotification(notif, currentUser?.role)
-      });
-    }
-  };
 
   // Fetch full notifications list from server
   const fetchNotifications = async () => {
@@ -140,15 +21,7 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
       const list = res.notifications || [];
       const unread = res.unreadCount || 0;
 
-      // Detect any unread notification that we haven't seen in this session
-      if (initialFetchDone.current) {
-        list.forEach((n) => {
-          if (!n.is_read && !seenIdsRef.current.has(n.id)) {
-            handleIncomingNotification(n);
-          }
-        });
-      } else {
-        // Record existing IDs so we don't alert spam on initial page load
+      if (!initialFetchDone.current) {
         list.forEach((n) => seenIdsRef.current.add(n.id));
         initialFetchDone.current = true;
       }
@@ -160,7 +33,7 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
     }
   };
 
-  // Connect to Server-Sent Events (SSE) for 0ms Instant Real-time Push
+  // Connect to Server-Sent Events (SSE) for in-app real-time bell updates
   useEffect(() => {
     const token = getToken();
     if (!token || !currentUser) {
@@ -184,7 +57,6 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
         try {
           const notif = JSON.parse(event.data);
           if (notif && notif.id) {
-            handleIncomingNotification(notif);
             setNotifications((prev) => [notif, ...prev.filter((n) => n.id !== notif.id)]);
             setUnreadCount((c) => c + 1);
           }
@@ -198,8 +70,8 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
       console.warn('SSE connection notice:', err);
     }
 
-    // Reliable fallback polling every 8 seconds
-    const interval = setInterval(fetchNotifications, 8000);
+    // Reliable fallback polling every 10 seconds
+    const interval = setInterval(fetchNotifications, 10000);
 
     return () => {
       clearInterval(interval);
@@ -210,34 +82,12 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
     };
   }, [currentUser?.id]);
 
-  // Listen for clicks from Service Worker background notifications
-  useEffect(() => {
-    const handleServiceWorkerMessage = (event) => {
-      if (event.data && event.data.type === 'NOTIFICATION_CLICKED') {
-        const { tab } = event.data;
-        if (tab && onSelectTab) {
-          onSelectTab(tab);
-        }
-      }
-    };
-
-    if (onSelectTab) {
-      window.__hrmsSelectTab = onSelectTab;
-    }
-
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
-      return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
-    }
-  }, [onSelectTab]);
-
   // Mark single as read
   const markSingleRead = async (id) => {
     try {
       await apiRequest(`/notifications/${id}/read`, { method: 'PUT' });
       setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: 1 } : n)));
       setUnreadCount((prev) => Math.max(0, prev - 1));
-      dismissFloating(id);
     } catch (err) {
       console.error(err);
     }
@@ -249,7 +99,6 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
       await apiRequest('/notifications/read-all', { method: 'PUT' });
       setNotifications((prev) => prev.map((n) => ({ ...n, is_read: 1 })));
       setUnreadCount(0);
-      setFloatingNotifications([]);
     } catch (err) {
       console.error(err);
     }
@@ -260,31 +109,15 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
     try {
       await apiRequest(`/notifications/${id}`, { method: 'DELETE' });
       setNotifications((prev) => prev.filter((n) => n.id !== id));
-      dismissFloating(id);
     } catch (err) {
       console.error(err);
     }
   };
 
-  // Send a test notification to verify audio & browser popups
-  const sendTestNotification = async () => {
-    try {
-      const res = await apiRequest('/notifications/test', { method: 'POST' });
-      if (res.notification) {
-        handleIncomingNotification(res.notification);
-        setNotifications((prev) => [res.notification, ...prev]);
-        setUnreadCount((c) => c + 1);
-      }
-    } catch (err) {
-      console.error('Failed to trigger test notification:', err);
-    }
-  };
-
-  // Handle clicking a notification card or dropdown item
+  // Handle clicking a notification dropdown item
   const handleOpenNotification = (notif) => {
     if (!notif) return;
     markSingleRead(notif.id);
-    dismissFloating(notif.id);
 
     const targetTab = resolveTabForNotification(notif, currentUser?.role);
     if (targetTab && onSelectTab) {
@@ -297,17 +130,11 @@ export function NotificationProvider({ children, onSelectTab, currentUser, compa
       value={{
         notifications,
         unreadCount,
-        permission,
-        requestPermission,
-        floatingNotifications,
-        dismissFloating,
         markSingleRead,
         markAllRead,
         deleteNotification,
-        sendTestNotification,
         handleOpenNotification,
-        fetchNotifications,
-        isBrowserNotificationAllowed: isBrowserNotificationAllowed()
+        fetchNotifications
       }}
     >
       {children}
