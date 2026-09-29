@@ -20,7 +20,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
     if (['companies', 'all-employees', 'support-accounts'].includes(activeTab)) {
       initial.accounts = true;
     }
-    if (['attendance', 'reports'].includes(activeTab)) {
+    if (['attendance', 'modules', 'reports'].includes(activeTab)) {
       initial['global-data'] = true;
     }
     return initial;
@@ -30,7 +30,7 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
   useEffect(() => {
     if (['companies', 'all-employees', 'support-accounts'].includes(activeTab)) {
       setOpenDropdowns(prev => ({ ...prev, accounts: true }));
-    } else if (['attendance', 'reports'].includes(activeTab)) {
+    } else if (['attendance', 'modules', 'reports'].includes(activeTab)) {
       setOpenDropdowns(prev => ({ ...prev, 'global-data': true }));
     }
   }, [activeTab]);
@@ -149,10 +149,10 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
             isDropdown: true,
             children: [
               { id: 'attendance', label: 'Global Attendance', icon: Clock },
+              { id: 'modules', label: 'Modules', icon: Sliders },
               { id: 'reports', label: 'Global Reports', icon: FileText }
             ]
           },
-          { id: 'modules', label: 'Modules', icon: Sliders },
           { id: 'calendar', label: 'System Calendar', icon: Calendar },
           { id: 'audit-logs', label: 'System Audit Logs', icon: FileSpreadsheet },
           { id: 'settings', label: 'Platform Settings', icon: Settings }

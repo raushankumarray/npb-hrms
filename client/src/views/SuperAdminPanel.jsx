@@ -165,6 +165,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [moduleSearch, setModuleSearch] = useState('');
   const [moduleCategoryFilter, setModuleCategoryFilter] = useState('all');
   const [moduleTypeFilter, setModuleTypeFilter] = useState('all'); // 'all' | 'core' | 'custom'
+  const [moduleAdoptionFilter, setModuleAdoptionFilter] = useState('all'); // 'all' | 'all_enabled' | 'partial' | 'all_disabled'
+  const [moduleSortFilter, setModuleSortFilter] = useState('default'); // 'default' | 'name_asc' | 'adoption_desc'
   const [showCreateModuleModal, setShowCreateModuleModal] = useState(false);
   const [createModuleForm, setCreateModuleForm] = useState({
     name: '',
@@ -1050,6 +1052,49 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         company_access: []
       }));
 
+  // Filtered and sorted modules based on active filter controls
+  const filteredModules = effectiveModules
+    .filter(m => {
+      // 1. Module Scope / Type
+      if (moduleTypeFilter === 'core' && !m.is_core) return false;
+      if (moduleTypeFilter === 'custom' && m.is_core) return false;
+
+      // 2. Category
+      if (moduleCategoryFilter !== 'all' && m.category !== moduleCategoryFilter) return false;
+
+      // 3. Adoption Status
+      const totalComp = m.total_companies || (systemModules[0]?.total_companies || allCompaniesList.length || companies.length || 1);
+      const enabledComp = m.enabled_companies || 0;
+      if (moduleAdoptionFilter === 'all_enabled' && enabledComp < totalComp) return false;
+      if (moduleAdoptionFilter === 'partial' && (enabledComp === 0 || enabledComp >= totalComp)) return false;
+      if (moduleAdoptionFilter === 'all_disabled' && enabledComp > 0) return false;
+
+      // 4. Search query
+      if (moduleSearch.trim()) {
+        const q = moduleSearch.toLowerCase();
+        const matchesName = (m.label || '').toLowerCase().includes(q);
+        const matchesKey = (m.key || '').toLowerCase().includes(q);
+        const matchesDesc = (m.desc || '').toLowerCase().includes(q);
+        const matchesCat = (m.category || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesKey && !matchesDesc && !matchesCat) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (moduleSortFilter === 'name_asc') {
+        return (a.label || '').localeCompare(b.label || '');
+      }
+      if (moduleSortFilter === 'adoption_desc') {
+        const totalA = a.total_companies || 1;
+        const totalB = b.total_companies || 1;
+        return ((b.enabled_companies || 0) / totalB) - ((a.enabled_companies || 0) / totalA);
+      }
+      if (a.is_core !== b.is_core) {
+        return a.is_core ? -1 : 1;
+      }
+      return 0;
+    });
+
   const openModulesModal = async (companyId) => {
     try {
       let currentModules = effectiveModules;
@@ -1349,18 +1394,6 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         </div>
 
         <div className="flex items-center gap-2">
-          {activeTab === 'modules' && (
-            <button
-              onClick={() => {
-                setCreateModuleForm({ name: '', key: '', category: 'Workforce Management', description: '' });
-                setShowCreateModuleModal(true);
-              }}
-              className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider"
-            >
-              <Plus className="w-4 h-4" />
-              Add New Module
-            </button>
-          )}
           {activeTab === 'support-accounts' && (
             <button
               onClick={() => setShowCreateSupport(true)}
@@ -2577,7 +2610,20 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         <div className="space-y-6">
           {/* Top Stat Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+            <div
+              onClick={() => {
+                setModuleTypeFilter('all');
+                setModuleCategoryFilter('all');
+                setModuleAdoptionFilter('all');
+                setModuleSearch('');
+              }}
+              className={`p-5 border shadow-sm cursor-pointer transition-all ${
+                moduleTypeFilter === 'all' && !moduleSearch && moduleCategoryFilter === 'all'
+                  ? 'bg-sky-50/60 border-sky-400 ring-2 ring-sky-300'
+                  : 'bg-white border-slate-200 hover:border-sky-400'
+              }`}
+              title="Click to view all modules"
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Modules</span>
                 <div className="p-2 bg-sky-50 text-sky-600">
@@ -2588,7 +2634,17 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               <p className="text-[11px] text-slate-400 mt-1">Platform capabilities registry</p>
             </div>
 
-            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+            <div
+              onClick={() => {
+                setModuleTypeFilter('core');
+              }}
+              className={`p-5 border shadow-sm cursor-pointer transition-all ${
+                moduleTypeFilter === 'core'
+                  ? 'bg-emerald-50/60 border-emerald-400 ring-2 ring-emerald-300'
+                  : 'bg-white border-slate-200 hover:border-emerald-400'
+              }`}
+              title="Click to filter Core System modules"
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Core System Modules</span>
                 <div className="p-2 bg-emerald-50 text-emerald-600">
@@ -2601,17 +2657,27 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               <p className="text-[11px] text-slate-400 mt-1">Built-in standard modules</p>
             </div>
 
-            <div className="bg-white p-5 border border-slate-200 shadow-sm">
+            <div
+              onClick={() => {
+                setModuleTypeFilter('custom');
+              }}
+              className={`p-5 border shadow-sm cursor-pointer transition-all ${
+                moduleTypeFilter === 'custom'
+                  ? 'bg-purple-50/70 border-purple-500 ring-2 ring-purple-300'
+                  : 'bg-white border-slate-200 hover:border-purple-400'
+              }`}
+              title="Click to filter Custom (Manually Added) modules"
+            >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Modules</span>
-                <div className="p-2 bg-purple-50 text-purple-600">
+                <span className="text-xs font-bold text-purple-700 uppercase tracking-wider">Custom (Manually)</span>
+                <div className="p-2 bg-purple-100 text-purple-600">
                   <Sparkles className="w-5 h-5" />
                 </div>
               </div>
-              <p className="text-2xl font-black text-slate-900 mt-2">
+              <p className="text-2xl font-black text-purple-950 mt-2">
                 {effectiveModules.filter(m => !m.is_core).length}
               </p>
-              <p className="text-[11px] text-slate-400 mt-1">Business extensions (Default OFF)</p>
+              <p className="text-[11px] text-purple-600 font-medium mt-1">Custom business extensions (Click to view)</p>
             </div>
 
             <div className="bg-white p-5 border border-slate-200 shadow-sm">
@@ -2628,73 +2694,190 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
             </div>
           </div>
 
-          {/* Search, Filter & Actions Toolbar */}
-          <div className="bg-white p-4 border border-slate-200 shadow-sm space-y-3">
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-              <div className="flex-1 relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Search modules by name, key, category, or description..."
-                  value={moduleSearch}
-                  onChange={(e) => setModuleSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-none text-xs focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none"
-                />
-                {moduleSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setModuleSearch('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
-                  >
-                    ✕
-                  </button>
+          {/* Module Filters & Display Controls Card */}
+          <div className="bg-white p-4 rounded-none border-2 border-slate-200 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-sky-600" />
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
+                  Module Filters & Display Controls
+                </h3>
+              </div>
+              <div className="text-xs text-slate-500 font-medium flex items-center gap-2">
+                <span>
+                  Matching Modules: <strong className="text-slate-900 font-mono font-bold">{filteredModules.length}</strong> / {effectiveModules.length}
+                </span>
+                {moduleTypeFilter === 'custom' && (
+                  <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-bold text-[10px] uppercase tracking-wider border border-purple-300">
+                    Custom (Manually) Active
+                  </span>
+                )}
+                {moduleTypeFilter === 'core' && (
+                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 font-bold text-[10px] uppercase tracking-wider border border-emerald-300">
+                    Core Only Active
+                  </span>
                 )}
               </div>
+            </div>
 
-              <div className="flex items-center gap-2 flex-wrap">
+            {/* Filter Inputs Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              {/* 1. Module Scope / Type */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Module Scope / Type</label>
+                <select
+                  value={moduleTypeFilter}
+                  onChange={(e) => setModuleTypeFilter(e.target.value)}
+                  className={`w-full py-2 px-3 border rounded-none font-semibold focus:outline-none focus:ring-1 focus:ring-sky-500 ${
+                    moduleTypeFilter === 'custom'
+                      ? 'bg-purple-50 text-purple-900 border-purple-300'
+                      : 'bg-slate-50 text-slate-800 border-slate-300'
+                  }`}
+                >
+                  <option value="all">All Modules (Core & Custom)</option>
+                  <option value="core">Core Platform Modules</option>
+                  <option value="custom">Custom (Manually Added)</option>
+                </select>
+              </div>
+
+              {/* 2. Category Dropdown */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Module Category</label>
                 <select
                   value={moduleCategoryFilter}
                   onChange={(e) => setModuleCategoryFilter(e.target.value)}
-                  className="px-3 py-2 border border-slate-300 rounded-none text-xs font-medium text-slate-700 bg-white outline-none focus:border-sky-500"
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
                   <option value="all">All Categories</option>
                   {Array.from(new Set(effectiveModules.map(m => m.category).filter(Boolean))).map(cat => (
                     <option key={cat} value={cat}>{cat}</option>
                   ))}
                 </select>
+              </div>
 
+              {/* 3. Company Adoption Status */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Company Adoption</label>
                 <select
-                  value={moduleTypeFilter}
-                  onChange={(e) => setModuleTypeFilter(e.target.value)}
-                  className="px-3 py-2 border border-slate-300 rounded-none text-xs font-medium text-slate-700 bg-white outline-none focus:border-sky-500"
+                  value={moduleAdoptionFilter}
+                  onChange={(e) => setModuleAdoptionFilter(e.target.value)}
+                  className="w-full py-2 px-3 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-sky-500"
                 >
-                  <option value="all">All Module Types</option>
-                  <option value="core">Core Platform Modules</option>
-                  <option value="custom">Custom Modules Only</option>
+                  <option value="all">All Adoption Levels</option>
+                  <option value="all_enabled">Active in All Companies (100%)</option>
+                  <option value="partial">Partially Enabled (&gt;0%)</option>
+                  <option value="all_disabled">Disabled Across All (0%)</option>
                 </select>
+              </div>
 
+              {/* 4. Search Query */}
+              <div>
+                <label className="font-semibold text-slate-600 block mb-1">Search Name / Key</label>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={moduleSearch}
+                    onChange={(e) => setModuleSearch(e.target.value)}
+                    placeholder="Search name, key, description..."
+                    className="w-full pl-8 pr-7 py-2 bg-slate-50 border border-slate-300 rounded-none text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
+                  {moduleSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setModuleSearch('')}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Filter Buttons & Quick Selection Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => {
                     fetchSystemModules();
                     fetchData();
                   }}
-                  className="p-2 border border-slate-300 hover:bg-slate-50 text-slate-600 rounded-none transition-colors"
-                  title="Refresh Modules"
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider cursor-pointer"
                 >
-                  <RefreshCw className={`w-4 h-4 ${loadingModules ? 'animate-spin' : ''}`} />
+                  <Filter className="w-3.5 h-3.5" />
+                  <span>Apply Filter</span>
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModuleSearch('');
+                    setModuleCategoryFilter('all');
+                    setModuleTypeFilter('all');
+                    setModuleAdoptionFilter('all');
+                    setModuleSortFilter('default');
+                  }}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-none text-xs font-bold flex items-center gap-1.5 transition-all uppercase tracking-wider cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Reset</span>
+                </button>
+
+                {/* Quick Toggle Tabs */}
+                <div className="h-5 w-[1px] bg-slate-300 mx-1 hidden sm:block" />
+
+                <button
+                  type="button"
+                  onClick={() => setModuleTypeFilter('all')}
+                  className={`px-3 py-1.5 text-xs font-bold transition-all border cursor-pointer ${
+                    moduleTypeFilter === 'all'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border-slate-200'
+                  }`}
+                >
+                  All ({effectiveModules.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModuleTypeFilter('core')}
+                  className={`px-3 py-1.5 text-xs font-bold transition-all border cursor-pointer ${
+                    moduleTypeFilter === 'core'
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-white text-slate-600 hover:bg-slate-100 border-slate-200'
+                  }`}
+                >
+                  Core System ({effectiveModules.filter(m => m.is_core).length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModuleTypeFilter('custom')}
+                  className={`px-3 py-1.5 text-xs font-bold transition-all border flex items-center gap-1.5 cursor-pointer ${
+                    moduleTypeFilter === 'custom'
+                      ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                      : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-300'
+                  }`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Custom (Manually) ({effectiveModules.filter(m => !m.is_core).length})</span>
+                </button>
+              </div>
+
+              {/* Action Button: Single Add New Module */}
+              <div className="flex items-center gap-2 ml-auto">
                 <button
                   type="button"
                   onClick={() => {
                     setCreateModuleForm({ name: '', key: '', category: 'Workforce Management', description: '' });
                     setShowCreateModuleModal(true);
                   }}
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
-                  Add New Module
+                  <span>Add New Module</span>
                 </button>
               </div>
             </div>
@@ -2710,23 +2893,71 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
           {/* Modules Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {effectiveModules
-              .filter(m => {
-                if (moduleCategoryFilter !== 'all' && m.category !== moduleCategoryFilter) return false;
-                if (moduleTypeFilter === 'core' && !m.is_core) return false;
-                if (moduleTypeFilter === 'custom' && m.is_core) return false;
-                if (moduleSearch.trim()) {
-                  const q = moduleSearch.toLowerCase();
-                  return (
-                    m.label.toLowerCase().includes(q) ||
-                    m.key.toLowerCase().includes(q) ||
-                    (m.desc && m.desc.toLowerCase().includes(q)) ||
-                    (m.category && m.category.toLowerCase().includes(q))
-                  );
-                }
-                return true;
-              })
-              .map(m => {
+            {filteredModules.length === 0 ? (
+              moduleTypeFilter === 'custom' ? (
+                <div className="col-span-full bg-white border-2 border-dashed border-purple-300 p-10 text-center space-y-4">
+                  <div className="w-14 h-14 mx-auto bg-purple-100 text-purple-600 flex items-center justify-center">
+                    <Sparkles className="w-7 h-7" />
+                  </div>
+                  <div className="max-w-md mx-auto space-y-1">
+                    <h4 className="text-base font-bold text-slate-900">
+                      No Custom (Manually Added) Modules Found
+                    </h4>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      You are currently viewing the <strong>Custom (Manually)</strong> filter. All 16 built-in modules are Core System modules. You can add a new custom module manually at any time by clicking the button below.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateModuleForm({ name: '', key: '', category: 'Workforce Management', description: '' });
+                        setShowCreateModuleModal(true);
+                      }}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all uppercase tracking-wider cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add New Custom Module</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModuleTypeFilter('all');
+                        setModuleCategoryFilter('all');
+                        setModuleAdoptionFilter('all');
+                        setModuleSearch('');
+                      }}
+                      className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all border border-slate-300 uppercase tracking-wider cursor-pointer"
+                    >
+                      View All Platform Modules ({effectiveModules.length})
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="col-span-full bg-white border-2 border-dashed border-slate-300 p-10 text-center space-y-3">
+                  <div className="w-12 h-12 mx-auto bg-slate-100 text-slate-500 flex items-center justify-center">
+                    <Search className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-800">No Modules Match Your Filter Criteria</h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    No modules match your current filter selection. Try changing the category, adoption level, or search term.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModuleTypeFilter('all');
+                      setModuleCategoryFilter('all');
+                      setModuleAdoptionFilter('all');
+                      setModuleSearch('');
+                    }}
+                    className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition-all uppercase tracking-wider cursor-pointer"
+                  >
+                    Reset All Filters
+                  </button>
+                </div>
+              )
+            ) : (
+              filteredModules.map(m => {
                 const totalComp = m.total_companies || (systemModules[0]?.total_companies || allCompaniesList.length || companies.length || 1);
                 const enabledComp = m.enabled_companies || 0;
                 const disabledComp = m.disabled_companies !== undefined ? m.disabled_companies : Math.max(0, totalComp - enabledComp);
@@ -2735,7 +2966,9 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 return (
                   <div
                     key={m.key}
-                    className="bg-white border-2 border-slate-200 hover:border-sky-300 p-5 shadow-sm hover:shadow transition-all flex flex-col justify-between"
+                    className={`bg-white border-2 p-5 shadow-sm hover:shadow transition-all flex flex-col justify-between ${
+                      !m.is_core ? 'border-purple-200 hover:border-purple-400' : 'border-slate-200 hover:border-sky-300'
+                    }`}
                   >
                     <div className="space-y-3">
                       {/* Top Header of Card */}
@@ -2746,12 +2979,14 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                               {m.category || 'General'}
                             </span>
                             {m.is_core ? (
-                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-sky-100 text-sky-800 border border-sky-200">
+                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-sky-100 text-sky-800 border border-sky-200 flex items-center gap-1">
+                                <Shield className="w-3 h-3 text-sky-600" />
                                 Core Module
                               </span>
                             ) : (
-                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-purple-100 text-purple-800 border border-purple-200">
-                                Custom (Default OFF)
+                              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
+                                <Sparkles className="w-3 h-3 text-purple-600" />
+                                Custom (Manually Added)
                               </span>
                             )}
                           </div>
@@ -2849,7 +3084,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                           setSelectedModuleForAccess(orig);
                           setShowCompanyAccessModal(true);
                         }}
-                        className="w-full py-2 px-3 bg-slate-100 hover:bg-sky-600 hover:text-white text-slate-800 text-xs font-bold flex items-center justify-center gap-2 transition-all uppercase tracking-wide border border-slate-200 hover:border-sky-600"
+                        className="w-full py-2 px-3 bg-slate-100 hover:bg-sky-600 hover:text-white text-slate-800 text-xs font-bold flex items-center justify-center gap-2 transition-all uppercase tracking-wide border border-slate-200 hover:border-sky-600 cursor-pointer"
                       >
                         <Sliders className="w-3.5 h-3.5" />
                         <span>Manage Company Access</span>
@@ -2857,7 +3092,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     </div>
                   </div>
                 );
-              })}
+              })
+            )}
           </div>
         </div>
       )}
