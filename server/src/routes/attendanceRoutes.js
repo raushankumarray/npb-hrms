@@ -1442,10 +1442,10 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
     ? calculateHours(newPunchIn, newPunchOut)
     : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : (current.total_hours || 0));
   const newStatus = (newPunchIn && newPunchOut)
-    ? deriveStatusFromHours(newHours, current.company_id, null)
-    : ((!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
-      ? deriveStatusFromHours(newHours, current.company_id, null)
-      : (status || current.status));
+    ? (status && status !== 'auto' ? status : deriveStatusFromHours(newHours, current.company_id, null))
+    : (status && status !== 'auto'
+      ? status
+      : (newPunchIn ? (current.status === 'Absent' ? 'Present' : (current.status || 'Present')) : (current.status || 'Absent')));
 
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
@@ -1512,9 +1512,13 @@ router.get('/audit-history/:id', verifyAuth, (req, res) => {
   res.json({ auditHistory: logs });
 });
 
-// Manual Attendance Entry / Upsert (Manager, Company Admin, Super Admin)
-router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
-  const companyId = getTenantCompanyId(req);
+// Manual Attendance Entry / Upsert (Manager, Company Admin, Super Admin, Support L2+)
+router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
+  if (req.user.role_name === 'support' && (req.user.support_level || 0) < 2) {
+    return res.status(403).json({ error: 'Support Level 2 or higher required to record or edit attendance.' });
+  }
+
+  let companyId = getTenantCompanyId(req);
   const {
     employee_id,
     date,
@@ -1531,12 +1535,20 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
   }
 
   // Resolve employee
-  const emp = db.prepare(`
-    SELECT * FROM employees WHERE (id = ? OR employee_id = ?) AND company_id = ? AND is_deleted = 0
-  `).get(employee_id, employee_id, companyId);
+  let emp;
+  if (req.user.role_name === 'super_admin' || req.user.role_name === 'support') {
+    emp = db.prepare(`
+      SELECT * FROM employees WHERE (id = ? OR employee_id = ?) AND is_deleted = 0
+    `).get(employee_id, employee_id);
+    if (emp) companyId = emp.company_id;
+  } else {
+    emp = db.prepare(`
+      SELECT * FROM employees WHERE (id = ? OR employee_id = ?) AND company_id = ? AND is_deleted = 0
+    `).get(employee_id, employee_id, companyId);
+  }
 
   if (!emp) {
-    return res.status(404).json({ error: 'Employee not found in company.' });
+    return res.status(404).json({ error: 'Employee not found.' });
   }
 
   // If manager, check mapping
@@ -1549,14 +1561,17 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
     }
   }
 
-  const hours = (punch_in_time && punch_out_time)
-    ? calculateHours(punch_in_time, punch_out_time)
-    : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : 0);
-  const effectiveStatus = (punch_in_time && punch_out_time)
-    ? deriveStatusFromHours(hours, companyId, null)
-    : ((!status || status === 'auto' || ['Present', 'Half Day', 'Absent'].includes(status))
-      ? deriveStatusFromHours(hours, companyId, null)
-      : status);
+  const existingRecord = db.prepare(`SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?`).get(companyId, emp.id, date);
+  const effectiveIn = (punch_in_time !== undefined && punch_in_time !== '') ? punch_in_time : (existingRecord?.punch_in_time || null);
+  const effectiveOut = (punch_out_time !== undefined && punch_out_time !== '') ? punch_out_time : (existingRecord?.punch_out_time || null);
+  const hours = (effectiveIn && effectiveOut)
+    ? calculateHours(effectiveIn, effectiveOut)
+    : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : (existingRecord?.total_hours || 0));
+  const effectiveStatus = (effectiveIn && effectiveOut)
+    ? (status && status !== 'auto' ? status : deriveStatusFromHours(hours, companyId, null))
+    : (status && status !== 'auto'
+      ? status
+      : (effectiveIn ? 'Present' : (existingRecord?.status || 'Absent')));
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
   const transaction = db.transaction(() => {
@@ -1567,14 +1582,14 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, 1, ?
       ) ON CONFLICT(company_id, employee_id, date) DO UPDATE SET
-        punch_in_time = excluded.punch_in_time,
-        punch_out_time = excluded.punch_out_time,
+        punch_in_time = COALESCE(excluded.punch_in_time, attendance_records.punch_in_time),
+        punch_out_time = COALESCE(excluded.punch_out_time, attendance_records.punch_out_time),
         total_hours = excluded.total_hours,
         status = excluded.status,
         remarks = COALESCE(excluded.remarks, attendance_records.remarks),
         is_edited = 1,
         updated_at = CURRENT_TIMESTAMP
-    `).run(companyId, emp.id, date, punch_in_time || null, punch_out_time || null, hours, effectiveStatus, remarks || 'Manual manager entry', emp.shift_id || null);
+    `).run(companyId, emp.id, date, punch_in_time || null, punch_out_time || null, hours, effectiveStatus, remarks || `${req.user.role_name} manual attendance entry`, emp.shift_id || null);
 
     const record = db.prepare(`SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?`).get(companyId, emp.id, date);
 

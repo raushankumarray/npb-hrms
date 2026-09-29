@@ -59,10 +59,30 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [editAttendanceModal, setEditAttendanceModal] = useState(false);
   const [selectedAtt, setSelectedAtt] = useState(null);
   const [attEditForm, setAttEditForm] = useState({
+    correction_type: 'both', // 'both' | 'in' | 'out'
     punch_in_time: '',
     punch_out_time: '',
     status: 'Present',
-    reason: ''
+    reason: '',
+    remarks: ''
+  });
+
+  // Attendance Support & Correction Extended State
+  const [attSectionTab, setAttSectionTab] = useState('records'); // 'records' | 'requests'
+  const [attCorrectionRequests, setAttCorrectionRequests] = useState([]);
+  const [attDateFilter, setAttDateFilter] = useState('');
+  const [attSearch, setAttSearch] = useState('');
+  const [showManualPunchModal, setShowManualPunchModal] = useState(false);
+  const [employeesList, setEmployeesList] = useState([]);
+  const [manualPunchForm, setManualPunchForm] = useState({
+    employee_id: '',
+    date: new Date().toISOString().slice(0, 10),
+    correction_type: 'both',
+    punch_in_time: '09:00:00',
+    punch_out_time: '18:00:00',
+    status: 'Present',
+    reason: '',
+    remarks: ''
   });
 
   // --- UNIVERSAL SEARCH ON ALL PAGES ---
@@ -230,8 +250,22 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         fetchSuspendedAccounts();
       }
       if (activeTab === 'attendance-support' || activeTab === 'dashboard') {
-        const res = await apiRequest(buildUrl('/attendance/list', 'limit=50'));
+        const queryParams = [];
+        if (attDateFilter) queryParams.push(`date=${attDateFilter}`);
+        queryParams.push('limit=100');
+        const res = await apiRequest(buildUrl('/attendance/list', queryParams.join('&')));
         setAttendanceRecords(res.records || []);
+
+        if (activeTab === 'attendance-support') {
+          try {
+            const crRes = await apiRequest('/attendance/correction-requests');
+            setAttCorrectionRequests(crRes.requests || []);
+          } catch (e) {}
+          try {
+            const empRes = await apiRequest(buildUrl('/employees', 'limit=200'));
+            setEmployeesList(empRes.employees || []);
+          } catch (e) {}
+        }
       }
       if (activeTab === 'audit-reports' || activeTab === 'audit-logs' || activeTab === 'dashboard') {
         fetchAuditReports();
@@ -302,7 +336,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
     return () => window.removeEventListener('master-refresh', handleMasterRefresh);
-  }, [activeTab, selectedCompanyId]);
+  }, [activeTab, selectedCompanyId, attDateFilter]);
 
   // --- UNIVERSAL INSTANT SEARCH LOGIC ---
   const handlePerformSearch = async (term) => {
@@ -571,16 +605,116 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
     }
 
     try {
-      await apiRequest(`/attendance/correct/${selectedAtt.id}`, {
-        method: 'PUT',
-        body: attEditForm
-      });
+      const mode = attEditForm.correction_type || 'both';
+      const payload = {
+        reason: attEditForm.reason.trim(),
+        remarks: attEditForm.remarks || undefined,
+        status: attEditForm.status
+      };
+
+      if (mode === 'in' || mode === 'both') {
+        payload.punch_in_time = attEditForm.punch_in_time || null;
+      }
+      if (mode === 'out' || mode === 'both') {
+        payload.punch_out_time = attEditForm.punch_out_time || null;
+      }
+
+      if (selectedAtt?.id) {
+        await apiRequest(`/attendance/correct/${selectedAtt.id}`, {
+          method: 'PUT',
+          body: payload
+        });
+      } else if (selectedAtt?.employee_id && selectedAtt?.date) {
+        await apiRequest('/attendance/manual', {
+          method: 'POST',
+          body: {
+            ...payload,
+            employee_id: selectedAtt.employee_id,
+            date: selectedAtt.date,
+            company_id: selectedAtt.company_id
+          }
+        });
+      } else {
+        throw new Error('No attendance record selected.');
+      }
+
       setSuccess('Attendance record corrected and audit log recorded.');
       setEditAttendanceModal(false);
       fetchData();
       if (selectedUserDiag) {
         handlePerformSearch(selectedUserDiag.username);
       }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleSaveManualPunch = async (e) => {
+    e.preventDefault();
+    if (!manualPunchForm.employee_id) {
+      setError('Please select an employee.');
+      return;
+    }
+    if (!manualPunchForm.date) {
+      setError('Attendance date is required.');
+      return;
+    }
+    if (!manualPunchForm.reason.trim()) {
+      setError('Audit reason is mandatory for manual attendance adjustment.');
+      return;
+    }
+
+    try {
+      const mode = manualPunchForm.correction_type || 'both';
+      const payload = {
+        employee_id: manualPunchForm.employee_id,
+        date: manualPunchForm.date,
+        status: manualPunchForm.status,
+        reason: manualPunchForm.reason.trim(),
+        remarks: manualPunchForm.remarks || undefined
+      };
+
+      if (mode === 'in' || mode === 'both') {
+        payload.punch_in_time = manualPunchForm.punch_in_time || null;
+      }
+      if (mode === 'out' || mode === 'both') {
+        payload.punch_out_time = manualPunchForm.punch_out_time || null;
+      }
+
+      await apiRequest('/attendance/manual', {
+        method: 'POST',
+        body: payload
+      });
+
+      setSuccess('Manual attendance/punch recorded successfully.');
+      setShowManualPunchModal(false);
+      setManualPunchForm({
+        employee_id: '',
+        date: new Date().toISOString().slice(0, 10),
+        correction_type: 'both',
+        punch_in_time: '09:00:00',
+        punch_out_time: '18:00:00',
+        status: 'Present',
+        reason: '',
+        remarks: ''
+      });
+      fetchData();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleReviewCorrectionRequest = async (requestId, decision) => {
+    try {
+      await apiRequest(`/attendance/correction-requests/${requestId}/review`, {
+        method: 'PUT',
+        body: {
+          status: decision,
+          review_notes: `Processed by Support Authority (Level ${pLevel})`
+        }
+      });
+      setSuccess(`Correction request #${requestId} ${decision === 'approved' ? 'approved' : 'rejected'} successfully.`);
+      fetchData();
     } catch (err) {
       setError(err.message);
     }
@@ -1077,51 +1211,32 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       })()}
 
       {/* ========================================================================= */}
-      {/* ACCOUNT ENABLE & SUSPENDED ACCOUNTS ACTIVATION HUB */}
+      {/* ACCOUNT ENABLE */}
       {/* ========================================================================= */}
       {activeTab === 'account-enable' && (
-        <div className="space-y-4">
-          {/* Top Banner */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="flex items-center gap-3.5">
-              <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl border border-emerald-200 shadow-xs">
-                <UserCheck className="w-6 h-6" />
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          {/* Header & Integrated Search Bar */}
+          <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl border border-emerald-200 shadow-xs">
+                <UserCheck className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
-                  Suspended Accounts Activation Desk
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
-                    Active Authority
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  Account Enable Desk
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-rose-50 text-rose-700 border border-rose-200">
+                    {suspendedAccounts.length} Suspended
                   </span>
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Search suspended accounts by Full Name, Username, Email, or Phone number to locate and enable employee access.
+                <p className="text-[11px] text-slate-400">
+                  Search and restore disabled employee accounts to enable platform access
                 </p>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => fetchSuspendedAccounts(suspendedSearch)}
-              disabled={suspendedLoading}
-              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shrink-0 shadow-xs"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${suspendedLoading ? 'animate-spin' : ''}`} />
-              <span>Refresh List</span>
-            </button>
-          </div>
-
-          {/* Search Bar */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                fetchSuspendedAccounts(suspendedSearch);
-              }}
-              className="flex flex-col sm:flex-row items-center gap-3"
-            >
-              <div className="relative flex-1 w-full">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <div className="flex items-center gap-2.5">
+              <div className="relative w-64 sm:w-80">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={suspendedSearch}
@@ -1129,8 +1244,8 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                     setSuspendedSearch(e.target.value);
                     fetchSuspendedAccounts(e.target.value);
                   }}
-                  placeholder="Search suspended account by Full Name, Username, Email address, or Phone number..."
-                  className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
+                  placeholder="Filter by name, username, email, or phone..."
+                  className="w-full pl-8 pr-8 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
                 />
                 {suspendedSearch && (
                   <button
@@ -1139,42 +1254,28 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                       setSuspendedSearch('');
                       fetchSuspendedAccounts('');
                     }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <X className="w-3 h-3" />
                   </button>
                 )}
               </div>
 
               <button
-                type="submit"
+                type="button"
+                onClick={() => fetchSuspendedAccounts(suspendedSearch)}
                 disabled={suspendedLoading}
-                className="w-full sm:w-auto px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all shrink-0"
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shrink-0 shadow-xs"
+                title="Refresh Suspended Accounts List"
               >
-                <Search className="w-4 h-4" />
-                <span>Find Account</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${suspendedLoading ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
               </button>
-            </form>
+            </div>
           </div>
 
-          {/* Results Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-bold text-slate-900">
-                  Suspended Accounts Found ({suspendedAccounts.length})
-                </h4>
-                <p className="text-[11px] text-slate-400">
-                  Accounts that are currently suspended or disabled. Click "Enable Account" to restore full platform access.
-                </p>
-              </div>
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
-                {suspendedAccounts.length} Suspended
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
                 <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
                   <tr>
                     <th className="p-3">Employee / Name</th>
@@ -1265,81 +1366,359 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
               </table>
             </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
       {/* ========================================================================= */}
-      {/* ATTENDANCE SUPPORT */}
+      {/* ATTENDANCE SUPPORT & CORRECTION DESK */}
       {/* ========================================================================= */}
-      {activeTab === 'attendance-support' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900">Attendance Correction Desk</h3>
-            <span className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded-lg font-semibold">
-              Requires Level 2+ Support
-            </span>
-          </div>
+      {activeTab === 'attendance-support' && (() => {
+        const filteredAttendance = attendanceRecords.filter(a => {
+          if (!attSearch.trim()) return true;
+          const s = attSearch.toLowerCase();
+          return (
+            (a.employee_name && a.employee_name.toLowerCase().includes(s)) ||
+            (a.employee_code && a.employee_code.toLowerCase().includes(s)) ||
+            (a.company_name && a.company_name.toLowerCase().includes(s))
+          );
+        });
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Employee</th>
-                  <th className="p-3">Company</th>
-                  <th className="p-3">Date</th>
-                  <th className="p-3">Punch In</th>
-                  <th className="p-3">Punch Out</th>
-                  <th className="p-3">Hours</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {attendanceRecords.map(a => (
-                  <tr key={a.id} className="hover:bg-slate-50/50">
-                    <td className="p-3 font-semibold text-slate-900">{a.employee_name} ({a.employee_code})</td>
-                    <td className="p-3 text-slate-600">{a.company_name}</td>
-                    <td className="p-3 text-slate-700">{a.date}</td>
-                    <td className="p-3 font-mono text-emerald-700">{a.punch_in_time || 'Missing'}</td>
-                    <td className="p-3 font-mono text-rose-700">{a.punch_out_time || 'Missing'}</td>
-                    <td className="p-3 font-medium">{a.total_hours} hrs</td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                        a.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
-                        a.status === 'Half Day' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
-                      }`}>
-                        {a.status}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">
-                      <button
-                        onClick={() => {
-                          if (pLevel < 2) {
-                            setError('Support Level 2 or higher required to correct attendance.');
-                            return;
-                          }
-                          setSelectedAtt(a);
-                          setAttEditForm({
-                            punch_in_time: a.punch_in_time || '09:00:00',
-                            punch_out_time: a.punch_out_time || '18:00:00',
-                            status: a.status || 'Present',
-                            reason: ''
-                          });
-                          setEditAttendanceModal(true);
-                        }}
-                        className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 ml-auto"
-                      >
-                        <Edit3 className="w-3 h-3" />
-                        Correct
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        const pendingRequests = attCorrectionRequests.filter(r => r.status === 'pending');
+
+        return (
+          <div className="space-y-4">
+            {/* Top Toolbar */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl border border-amber-200 shadow-xs">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    Attendance Correction Desk
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-50 text-purple-700 border border-purple-200">
+                      Level {pLevel} Clearance
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Manually update punch in, punch out, or both times, or record adjustments
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (pLevel < 2) {
+                      setError('Support Level 2 or higher required for manual punch adjustments.');
+                      return;
+                    }
+                    setManualPunchForm({
+                      employee_id: '',
+                      date: attDateFilter || new Date().toISOString().slice(0, 10),
+                      correction_type: 'both',
+                      punch_in_time: '09:00:00',
+                      punch_out_time: '18:00:00',
+                      status: 'Present',
+                      reason: '',
+                      remarks: ''
+                    });
+                    setShowManualPunchModal(true);
+                  }}
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all hover:scale-105 active:scale-95"
+                  title="Add manual punch or correction from scratch"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Manual Punch / Entry</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => fetchData()}
+                  disabled={loading}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs"
+                  title="Refresh Attendance Records"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Filter and Section Selector */}
+            <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAttSectionTab('records')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                    attSectionTab === 'records'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Attendance Records ({filteredAttendance.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAttSectionTab('requests')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                    attSectionTab === 'requests'
+                      ? 'bg-slate-900 text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <Edit3 className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Correction Requests ({pendingRequests.length})</span>
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Date Filter */}
+                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-xs">
+                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                  <span className="text-[11px] text-slate-500 font-medium">Date:</span>
+                  <input
+                    type="date"
+                    value={attDateFilter}
+                    onChange={(e) => setAttDateFilter(e.target.value)}
+                    className="bg-transparent text-xs text-slate-800 font-semibold focus:outline-none cursor-pointer"
+                  />
+                  {attDateFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setAttDateFilter('')}
+                      className="p-0.5 text-slate-400 hover:text-slate-600 rounded-full"
+                      title="Clear date filter to view recent logs"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Search Filter */}
+                <div className="relative w-48 sm:w-60">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={attSearch}
+                    onChange={(e) => setAttSearch(e.target.value)}
+                    placeholder="Search employee..."
+                    className="w-full pl-8 pr-7 py-1 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"
+                  />
+                  {attSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setAttSearch('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* TAB CONTENT: ATTENDANCE RECORDS */}
+            {attSectionTab === 'records' && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
+                      <tr>
+                        <th className="p-3">Employee</th>
+                        <th className="p-3">Company</th>
+                        <th className="p-3">Date</th>
+                        <th className="p-3">Punch In</th>
+                        <th className="p-3">Punch Out</th>
+                        <th className="p-3">Hours</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredAttendance.map(a => (
+                        <tr key={a.id || `${a.employee_id}_${a.date}`} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="p-3">
+                            <div className="font-bold text-slate-900">{a.employee_name || 'Staff Member'}</div>
+                            <div className="text-[10px] font-mono text-slate-400">{a.employee_code || `EMP #${a.employee_id}`}</div>
+                          </td>
+                          <td className="p-3 font-medium text-slate-600">{a.company_name || 'N/A'}</td>
+                          <td className="p-3 font-semibold text-slate-700">{a.date}</td>
+                          <td className="p-3 font-mono">
+                            {a.punch_in_time ? (
+                              <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded font-bold border border-emerald-200">
+                                {a.punch_in_time}
+                              </span>
+                            ) : (
+                              <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded text-[11px] font-medium border border-rose-200">
+                                Missing In
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3 font-mono">
+                            {a.punch_out_time ? (
+                              <span className="text-sky-700 bg-sky-50 px-2 py-0.5 rounded font-bold border border-sky-200">
+                                {a.punch_out_time}
+                              </span>
+                            ) : (
+                              <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded text-[11px] font-medium border border-amber-200">
+                                Missing Out
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3 font-medium text-slate-700">
+                            {a.total_hours !== undefined ? `${a.total_hours} hrs` : '-'}
+                          </td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              a.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
+                              a.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
+                              a.status === 'Leave' ? 'bg-purple-100 text-purple-700' :
+                              a.status === 'Holiday' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'
+                            }`}>
+                              {a.status || 'Absent'}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (pLevel < 2) {
+                                  setError('Support Level 2 or higher required to correct attendance.');
+                                  return;
+                                }
+                                setSelectedAtt(a);
+                                const initialMode = (a.punch_in_time && !a.punch_out_time) ? 'out' : (!a.punch_in_time && a.punch_out_time) ? 'in' : 'both';
+                                setAttEditForm({
+                                  correction_type: initialMode,
+                                  punch_in_time: a.punch_in_time || '09:00:00',
+                                  punch_out_time: a.punch_out_time || '18:00:00',
+                                  status: a.status || 'Present',
+                                  reason: '',
+                                  remarks: ''
+                                });
+                                setEditAttendanceModal(true);
+                              }}
+                              className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition-all hover:scale-105 active:scale-95"
+                              title="Correct single punch (in or out) or both punches"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Correct Punch</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {filteredAttendance.length === 0 && (
+                        <tr>
+                          <td colSpan="8" className="p-10 text-center text-slate-400 text-xs">
+                            No attendance records found matching filters. Try changing date or search criteria.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB CONTENT: PENDING CORRECTION REQUESTS */}
+            {attSectionTab === 'requests' && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900">Employee Attendance Correction Requests</h4>
+                    <p className="text-[11px] text-slate-400">Review and authorize pending employee punch regularization requests</p>
+                  </div>
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">
+                    {pendingRequests.length} Pending
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-slate-600 uppercase font-semibold text-[10px]">
+                      <tr>
+                        <th className="p-3">Req ID</th>
+                        <th className="p-3">Employee</th>
+                        <th className="p-3">Date</th>
+                        <th className="p-3">Type</th>
+                        <th className="p-3">Requested In</th>
+                        <th className="p-3">Requested Out</th>
+                        <th className="p-3">Reason</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {attCorrectionRequests.map(r => (
+                        <tr key={r.id} className="hover:bg-slate-50/60">
+                          <td className="p-3 font-mono font-bold text-slate-900">#{r.id}</td>
+                          <td className="p-3">
+                            <div className="font-bold text-slate-900">{r.employee_name || 'Staff Member'}</div>
+                            <div className="text-[10px] text-slate-400">{r.company_name}</div>
+                          </td>
+                          <td className="p-3 font-semibold text-slate-700">{r.date}</td>
+                          <td className="p-3">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-purple-50 text-purple-700 border border-purple-200 font-mono">
+                              {r.correction_type || 'both'}
+                            </span>
+                          </td>
+                          <td className="p-3 font-mono text-emerald-700 font-semibold">{r.requested_punch_in || '-'}</td>
+                          <td className="p-3 font-mono text-sky-700 font-semibold">{r.requested_punch_out || '-'}</td>
+                          <td className="p-3 text-slate-600 max-w-xs truncate" title={r.reason}>{r.reason}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              r.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                              r.status === 'rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
+                            }`}>
+                              {r.status}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            {r.status === 'pending' && (
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleReviewCorrectionRequest(r.id, 'approved')}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs transition-all hover:scale-105 active:scale-95"
+                                  title="Approve and mark Present"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>Approve</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleReviewCorrectionRequest(r.id, 'rejected')}
+                                  className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold transition-all"
+                                  title="Reject request"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>Reject</span>
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {attCorrectionRequests.length === 0 && (
+                        <tr>
+                          <td colSpan="9" className="p-8 text-center text-slate-400 text-xs">
+                            No attendance correction requests submitted.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ========================================================================= */}
       {/* OPERATIONS CALENDAR */}
@@ -2708,49 +3087,145 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         </div>
       )}
 
-      {/* EDIT ATTENDANCE MODAL */}
+      {/* EDIT ATTENDANCE MODAL (SINGLE OR BOTH PUNCH CORRECTION) */}
       {editAttendanceModal && selectedAtt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
-            <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
-              Correct Attendance Record
-            </h3>
-
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-0.5">
-              <p className="font-bold text-slate-900">{selectedAtt.employee_name} ({selectedAtt.employee_code})</p>
-              <p className="text-slate-500">Date: {selectedAtt.date}</p>
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Attendance Correction Desk
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Update single punch (in or out) or both punch times with mandatory audit trail
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditAttendanceModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
 
-            <form onSubmit={handleSaveAttendanceCorrection} className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Punch In Time</label>
-                  <input
-                    type="time"
-                    step="1"
-                    value={attEditForm.punch_in_time}
-                    onChange={(e) => setAttEditForm({ ...attEditForm, punch_in_time: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Punch Out Time</label>
-                  <input
-                    type="time"
-                    step="1"
-                    value={attEditForm.punch_out_time}
-                    onChange={(e) => setAttEditForm({ ...attEditForm, punch_out_time: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                  />
+            {/* Target Information */}
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-bold text-slate-900">{selectedAtt.employee_name} ({selectedAtt.employee_code || `EMP #${selectedAtt.employee_id}`})</p>
+                <p className="text-[11px] text-slate-500">{selectedAtt.company_name || 'Organization Staff'}</p>
+              </div>
+              <div className="text-right">
+                <span className="font-mono font-semibold text-slate-700 bg-white px-2 py-0.5 rounded border border-slate-200">
+                  {selectedAtt.date}
+                </span>
+                <p className="text-[10px] text-slate-400 mt-0.5">Current: {selectedAtt.status || 'Present'}</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveAttendanceCorrection} className="space-y-4 text-xs">
+              {/* Correction Mode Selector */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1.5 uppercase text-[10px] tracking-wider">
+                  Select Correction Scope
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAttEditForm({ ...attEditForm, correction_type: 'both' })}
+                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
+                      attEditForm.correction_type === 'both'
+                        ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Both In & Out
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAttEditForm({ ...attEditForm, correction_type: 'in' })}
+                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
+                      attEditForm.correction_type === 'in'
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Punch In Only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAttEditForm({ ...attEditForm, correction_type: 'out' })}
+                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
+                      attEditForm.correction_type === 'out'
+                        ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Punch Out Only
+                  </button>
                 </div>
               </div>
 
+              {/* Time Inputs */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Punch In */}
+                <div className={`p-3 rounded-xl border ${
+                  attEditForm.correction_type === 'out'
+                    ? 'bg-slate-50 border-dashed border-slate-200 opacity-60'
+                    : 'bg-white border-slate-200 focus-within:border-emerald-500 ring-emerald-500/10'
+                }`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-700">Punch In Time</label>
+                    {attEditForm.correction_type === 'out' && (
+                      <span className="text-[10px] text-slate-400 italic">Untouched</span>
+                    )}
+                  </div>
+                  <input
+                    type="time"
+                    step="1"
+                    disabled={attEditForm.correction_type === 'out'}
+                    value={attEditForm.punch_in_time}
+                    onChange={(e) => setAttEditForm({ ...attEditForm, punch_in_time: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {selectedAtt.punch_in_time ? `Current: ${selectedAtt.punch_in_time}` : 'Currently missing'}
+                  </p>
+                </div>
+
+                {/* Punch Out */}
+                <div className={`p-3 rounded-xl border ${
+                  attEditForm.correction_type === 'in'
+                    ? 'bg-slate-50 border-dashed border-slate-200 opacity-60'
+                    : 'bg-white border-slate-200 focus-within:border-sky-500 ring-sky-500/10'
+                }`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-700">Punch Out Time</label>
+                    {attEditForm.correction_type === 'in' && (
+                      <span className="text-[10px] text-slate-400 italic">Untouched</span>
+                    )}
+                  </div>
+                  <input
+                    type="time"
+                    step="1"
+                    disabled={attEditForm.correction_type === 'in'}
+                    value={attEditForm.punch_out_time}
+                    onChange={(e) => setAttEditForm({ ...attEditForm, punch_out_time: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {selectedAtt.punch_out_time ? `Current: ${selectedAtt.punch_out_time}` : 'Currently missing'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Attendance Status */}
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Attendance Status</label>
+                <label className="font-bold text-slate-700 block mb-1">Resolved Attendance Status</label>
                 <select
                   value={attEditForm.status}
                   onChange={(e) => setAttEditForm({ ...attEditForm, status: e.target.value })}
-                  className="w-full p-2 border rounded-lg bg-white"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium"
                 >
                   <option value="Present">Present</option>
                   <option value="Half Day">Half Day</option>
@@ -2761,31 +3236,246 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 </select>
               </div>
 
+              {/* Mandatory Audit Reason */}
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Mandatory Audit Reason *</label>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Mandatory Audit Reason <span className="text-rose-500">*</span>
+                </label>
                 <textarea
                   rows={2}
                   required
                   value={attEditForm.reason}
                   onChange={(e) => setAttEditForm({ ...attEditForm, reason: e.target.value })}
-                  placeholder="e.g. Employee verified client visit punch glitch"
-                  className="w-full p-2 border rounded-lg"
+                  placeholder="e.g. Employee biometric machine glitch / onsite duty verified by manager"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs"
                 />
               </div>
 
+              {/* Supervisor Remarks */}
+              <div>
+                <label className="font-medium text-slate-600 block mb-1">Internal Remarks / Notes (Optional)</label>
+                <input
+                  type="text"
+                  value={attEditForm.remarks || ''}
+                  onChange={(e) => setAttEditForm({ ...attEditForm, remarks: e.target.value })}
+                  placeholder="e.g. Corrected via Level 2 Support Desk"
+                  className="w-full p-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-purple-500 text-xs"
+                />
+              </div>
+
+              {/* Action Buttons */}
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setEditAttendanceModal(false)}
-                  className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
+                  className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-xl font-bold shadow-sm transition-all hover:scale-105 active:scale-95"
                 >
                   Save & Audit Log
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MANUAL PUNCH / ATTENDANCE ENTRY MODAL */}
+      {showManualPunchModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Manual Attendance & Punch Entry
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Record new attendance or manually adjust punch for an employee
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowManualPunchModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveManualPunch} className="space-y-4 text-xs">
+              {/* Employee Selection */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Select Employee <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  required
+                  value={manualPunchForm.employee_id}
+                  onChange={(e) => setManualPunchForm({ ...manualPunchForm, employee_id: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                >
+                  <option value="">-- Choose Employee --</option>
+                  {employeesList.map(emp => (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.full_name} ({emp.employee_code || `ID: ${emp.id}`}) {emp.company_name ? `• ${emp.company_name}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Date */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Attendance Date <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={manualPunchForm.date}
+                  onChange={(e) => setManualPunchForm({ ...manualPunchForm, date: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                />
+              </div>
+
+              {/* Correction Scope Selector */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1.5 uppercase text-[10px] tracking-wider">
+                  Punch Scope
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setManualPunchForm({ ...manualPunchForm, correction_type: 'both' })}
+                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
+                      manualPunchForm.correction_type === 'both'
+                        ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Both In & Out
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualPunchForm({ ...manualPunchForm, correction_type: 'in' })}
+                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
+                      manualPunchForm.correction_type === 'in'
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Punch In Only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualPunchForm({ ...manualPunchForm, correction_type: 'out' })}
+                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
+                      manualPunchForm.correction_type === 'out'
+                        ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    Punch Out Only
+                  </button>
+                </div>
+              </div>
+
+              {/* Time Inputs */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className={`p-3 rounded-xl border ${
+                  manualPunchForm.correction_type === 'out'
+                    ? 'bg-slate-50 border-dashed border-slate-200 opacity-60'
+                    : 'bg-white border-slate-200 focus-within:border-emerald-500'
+                }`}>
+                  <label className="font-bold text-slate-700 block mb-1">Punch In Time</label>
+                  <input
+                    type="time"
+                    step="1"
+                    disabled={manualPunchForm.correction_type === 'out'}
+                    value={manualPunchForm.punch_in_time}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, punch_in_time: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                  />
+                </div>
+
+                <div className={`p-3 rounded-xl border ${
+                  manualPunchForm.correction_type === 'in'
+                    ? 'bg-slate-50 border-dashed border-slate-200 opacity-60'
+                    : 'bg-white border-slate-200 focus-within:border-sky-500'
+                }`}>
+                  <label className="font-bold text-slate-700 block mb-1">Punch Out Time</label>
+                  <input
+                    type="time"
+                    step="1"
+                    disabled={manualPunchForm.correction_type === 'in'}
+                    value={manualPunchForm.punch_out_time}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, punch_out_time: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                  />
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Status</label>
+                <select
+                  value={manualPunchForm.status}
+                  onChange={(e) => setManualPunchForm({ ...manualPunchForm, status: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                >
+                  <option value="Present">Present</option>
+                  <option value="Half Day">Half Day</option>
+                  <option value="Absent">Absent</option>
+                  <option value="Leave">Leave</option>
+                  <option value="Holiday">Holiday</option>
+                  <option value="Weekly Off">Weekly Off</option>
+                </select>
+              </div>
+
+              {/* Mandatory Reason */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Mandatory Audit Reason <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  rows={2}
+                  required
+                  value={manualPunchForm.reason}
+                  onChange={(e) => setManualPunchForm({ ...manualPunchForm, reason: e.target.value })}
+                  placeholder="e.g. Employee forgot card / server maintenance window"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-xs"
+                />
+              </div>
+
+              {/* Remarks */}
+              <div>
+                <label className="font-medium text-slate-600 block mb-1">Remarks (Optional)</label>
+                <input
+                  type="text"
+                  value={manualPunchForm.remarks || ''}
+                  onChange={(e) => setManualPunchForm({ ...manualPunchForm, remarks: e.target.value })}
+                  placeholder="e.g. Added via Support Panel"
+                  className="w-full p-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-amber-500 text-xs"
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowManualPunchModal(false)}
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-xl font-bold shadow-sm transition-all hover:scale-105 active:scale-95"
+                >
+                  Record Attendance
                 </button>
               </div>
             </form>
