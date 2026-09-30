@@ -3,7 +3,7 @@ import {
   Building2, Users, Calendar, Clock, MapPin, FileSpreadsheet,
   FileText, Ticket, Settings, LogOut, Menu, X, Shield,
   Layers, Compass, UserCheck, ChevronRight, ChevronDown, UserCog, Laptop, Edit3, LayoutDashboard, RefreshCw, CheckCircle2,
-  Radio, Sparkles, Database, Sliders
+  Sparkles, Database, Sliders
 } from 'lucide-react';
 import NotificationDropdown from './NotificationDropdown';
 import UserProfileModal from './UserProfileModal';
@@ -170,7 +170,6 @@ export default function Layout({ user, company, systemSettings, activeTab, onSel
         if (user?.enable_audit_logs !== false && user?.enable_audit_logs !== 0) {
           supportNav.push({ id: 'audit-reports', label: 'Audit Reports & Logs', icon: FileSpreadsheet, badge: 'Level 4' });
         }
-        supportNav.push({ id: 'remote-access', label: 'Remote Access', icon: Radio, badge: 'Level 4' });
         return supportNav;
       }
 

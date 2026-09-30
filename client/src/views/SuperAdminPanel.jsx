@@ -2654,7 +2654,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                               {lvl === 3 && <span className="text-indigo-700 font-medium">Level 3 – Advanced (Device Unlock & Corrections)</span>}
                               {lvl === 4 && (
                                 <span className="font-semibold text-purple-700 flex items-center gap-1">
-                                  <span>Level 4 – Full Authority (Device Unlock, Biometrics Reset, Remote Session, Realtime Sync)</span>
+                                  <span>Level 4 – Full Authority (Device Unlock, Biometrics Reset, Account Ops, Realtime Sync)</span>
                                 </span>
                               )}
                             </div>
@@ -4399,13 +4399,13 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <option value={1}>Level 1 – View Only Support (Audit Logs & Read-only Access)</option>
                     <option value={2}>Level 2 – Operator Support (Edit Employee, Shifts & Attendance)</option>
                     <option value={3}>Level 3 – Advanced Support (Device Unlock & Attendance Correction)</option>
-                    <option value={4}>Level 4 – Full Support Authority (Device Unlock, Biometrics Reset, Remote Session, Realtime Sync)</option>
+                    <option value={4}>Level 4 – Full Support Authority (Device Unlock, Biometrics Reset, Account Ops, Realtime Sync)</option>
                   </select>
                   {parseInt(newSupport.permission_level, 10) === 4 && (
                     <div className="mt-1.5 p-2.5 rounded-lg bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 text-[11px] text-purple-900 flex items-start gap-2 shadow-sm">
                       <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
                       <div>
-                        <strong>Level 4 Full Authority Active:</strong> User is granted highest privilege support level including Device Unbinding, Biometric Reset, Remote Support Sessions, Attendance Adjustments, and Live Audit Trail. Stored as Level 4 with automated Firebase Firestore &amp; RTDB real-time sync.
+                        <strong>Level 4 Full Authority Active:</strong> User is granted highest privilege support level including Device Unbinding, Biometric Reset, Account Management, Attendance Adjustments, and Live Audit Trail. Stored as Level 4 with automated Firebase Firestore &amp; RTDB real-time sync.
                       </div>
                     </div>
                   )}
