@@ -43,6 +43,24 @@ try {
 } catch (e) {}
 
 try {
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS purged_tombstones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('company', 'employee', 'user')),
+      entity_id TEXT NOT NULL,
+      company_id TEXT,
+      code TEXT,
+      identifier TEXT,
+      purged_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+  db.prepare("CREATE INDEX IF NOT EXISTS idx_purged_tombstones_type_id ON purged_tombstones(entity_type, entity_id)").run();
+  db.prepare("CREATE INDEX IF NOT EXISTS idx_purged_tombstones_code ON purged_tombstones(code)").run();
+  db.prepare("CREATE INDEX IF NOT EXISTS idx_purged_tombstones_identifier ON purged_tombstones(identifier)").run();
+} catch (e) {}
+
+
+try {
   db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_role TEXT DEFAULT 'manager'").run();
 } catch (e) {}
 

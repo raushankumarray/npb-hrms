@@ -687,3 +687,19 @@ CREATE TABLE IF NOT EXISTS attendance_correction_requests (
 CREATE INDEX IF NOT EXISTS idx_att_corr_emp ON attendance_correction_requests(employee_id, date);
 CREATE INDEX IF NOT EXISTS idx_att_corr_comp_status ON attendance_correction_requests(company_id, status);
 
+-- 23. Permanently Purged Entity Tombstones (Zero-Resurrection Registry)
+CREATE TABLE IF NOT EXISTS purged_tombstones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('company', 'employee', 'user')),
+  entity_id TEXT NOT NULL,
+  company_id TEXT,
+  code TEXT,
+  identifier TEXT,
+  purged_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_purged_tombstones_type_id ON purged_tombstones(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_purged_tombstones_code ON purged_tombstones(code);
+CREATE INDEX IF NOT EXISTS idx_purged_tombstones_identifier ON purged_tombstones(identifier);
+
+

@@ -1796,6 +1796,213 @@ async function deleteFirestoreDocPrefix(collectionName, prefix) {
 }
 
 /**
+ * Permanently registers a tombstone for a deleted entity in SQLite, Firestore, and RTDB
+ * to guarantee that deleted companies, employees, or managers can NEVER be restored in the future.
+ */
+async function registerPurgedTombstone(entityType, entityId, options = {}) {
+  const {
+    code = '',
+    identifier = '',
+    companyId = null,
+    relatedEmployeeIds = [],
+    relatedUserIds = [],
+    relatedCodes = [],
+    relatedUsernames = []
+  } = options;
+
+  const strEntityId = String(entityId);
+  const strCompId = companyId ? String(companyId) : null;
+  const strCode = String(code || '').trim().toUpperCase();
+  const strIdent = String(identifier || '').trim().toLowerCase();
+
+  // 1. Record in local SQLite purged_tombstones
+  try {
+    const ins = db.prepare(`
+      INSERT OR REPLACE INTO purged_tombstones (entity_type, entity_id, company_id, code, identifier)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    ins.run(entityType, strEntityId, strCompId, strCode || null, strIdent || null);
+
+    if (Array.isArray(relatedEmployeeIds)) {
+      relatedEmployeeIds.forEach((eId, idx) => {
+        const eCode = relatedCodes[idx] || null;
+        ins.run('employee', String(eId), strCompId, eCode ? String(eCode).toUpperCase() : null, null);
+      });
+    }
+
+    if (Array.isArray(relatedUserIds)) {
+      relatedUserIds.forEach((uId, idx) => {
+        const uName = relatedUsernames[idx] || null;
+        ins.run('user', String(uId), strCompId, null, uName ? String(uName).toLowerCase() : null);
+      });
+    }
+  } catch (err) {
+    console.warn('[Tombstone] SQLite registration notice:', err.message);
+  }
+
+  // 2. Dual-sync tombstone to Firebase Firestore & RTDB
+  if (!firebaseStatus.connected) return;
+
+  const tombstonePayload = {
+    entityType,
+    entityId: strEntityId,
+    companyId: strCompId,
+    code: strCode,
+    identifier: strIdent,
+    purgedAt: new Date().toISOString()
+  };
+
+  try {
+    if (firestoreDb) {
+      await firestoreDb.collection('purged_tombstones').doc(`${entityType}_${strEntityId}`).set(tombstonePayload, { merge: true }).catch(() => {});
+      if (Array.isArray(relatedEmployeeIds)) {
+        for (let i = 0; i < relatedEmployeeIds.length; i++) {
+          const eId = String(relatedEmployeeIds[i]);
+          const eCode = relatedCodes[i] || '';
+          await firestoreDb.collection('purged_tombstones').doc(`employee_${eId}`).set({
+            entityType: 'employee',
+            entityId: eId,
+            companyId: strCompId,
+            code: eCode ? String(eCode).toUpperCase() : null,
+            purgedAt: new Date().toISOString()
+          }, { merge: true }).catch(() => {});
+        }
+      }
+      if (Array.isArray(relatedUserIds)) {
+        for (let i = 0; i < relatedUserIds.length; i++) {
+          const uId = String(relatedUserIds[i]);
+          const uName = relatedUsernames[i] || '';
+          await firestoreDb.collection('purged_tombstones').doc(`user_${uId}`).set({
+            entityType: 'user',
+            entityId: uId,
+            companyId: strCompId,
+            identifier: uName ? String(uName).toLowerCase() : null,
+            purgedAt: new Date().toISOString()
+          }, { merge: true }).catch(() => {});
+        }
+      }
+    }
+
+    if (realtimeDb) {
+      await realtimeDb.ref(`purged_tombstones/${entityType}/${strEntityId}`).set(tombstonePayload).catch(() => {});
+      if (strCode) {
+        await realtimeDb.ref(`purged_tombstones/codes/${strCode}`).set(true).catch(() => {});
+      }
+      if (strIdent) {
+        await realtimeDb.ref(`purged_tombstones/identifiers/${strIdent}`).set(true).catch(() => {});
+      }
+      if (Array.isArray(relatedEmployeeIds)) {
+        for (const eId of relatedEmployeeIds) {
+          await realtimeDb.ref(`purged_tombstones/employee/${eId}`).set(true).catch(() => {});
+        }
+      }
+      if (Array.isArray(relatedUserIds)) {
+        for (const uId of relatedUserIds) {
+          await realtimeDb.ref(`purged_tombstones/user/${uId}`).set(true).catch(() => {});
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Tombstone] Firebase sync notice:', err.message);
+  }
+}
+
+/**
+ * Loads all active purged tombstones from local SQLite, Firestore, and RTDB
+ * to ensure zero deleted data is ever resurrected or re-imported.
+ */
+async function loadPurgedTombstones() {
+  const purgedCompanyIds = new Set();
+  const purgedCompanyCodes = new Set();
+  const purgedCompanyNames = new Set();
+  const purgedEmployeeIds = new Set();
+  const purgedEmployeeCodes = new Set();
+  const purgedUserIds = new Set();
+  const purgedUsernames = new Set();
+
+  // 1. From SQLite
+  try {
+    const rows = db.prepare('SELECT * FROM purged_tombstones').all();
+    for (const r of rows) {
+      if (r.entity_type === 'company') {
+        if (r.entity_id) purgedCompanyIds.add(String(r.entity_id));
+        if (r.company_id) purgedCompanyIds.add(String(r.company_id));
+        if (r.code) purgedCompanyCodes.add(String(r.code).trim().toUpperCase());
+        if (r.identifier) purgedCompanyNames.add(String(r.identifier).trim().toLowerCase());
+      } else if (r.entity_type === 'employee') {
+        if (r.entity_id) purgedEmployeeIds.add(String(r.entity_id));
+        if (r.code) purgedEmployeeCodes.add(String(r.code).trim().toUpperCase());
+        if (r.identifier) purgedUsernames.add(String(r.identifier).trim().toLowerCase());
+      } else if (r.entity_type === 'user') {
+        if (r.entity_id) purgedUserIds.add(String(r.entity_id));
+        if (r.identifier) purgedUsernames.add(String(r.identifier).trim().toLowerCase());
+      }
+    }
+  } catch (e) {}
+
+  // 2. From Firestore if available
+  if (firebaseStatus.connected && firestoreDb) {
+    try {
+      const snap = await firestoreDb.collection('purged_tombstones').limit(1000).get().catch(() => null);
+      if (snap && !snap.empty) {
+        snap.forEach(doc => {
+          const d = doc.data();
+          if (d.entityType === 'company') {
+            if (d.entityId) purgedCompanyIds.add(String(d.entityId));
+            if (d.companyId) purgedCompanyIds.add(String(d.companyId));
+            if (d.code) purgedCompanyCodes.add(String(d.code).trim().toUpperCase());
+            if (d.identifier) purgedCompanyNames.add(String(d.identifier).trim().toLowerCase());
+          } else if (d.entityType === 'employee') {
+            if (d.entityId) purgedEmployeeIds.add(String(d.entityId));
+            if (d.code) purgedEmployeeCodes.add(String(d.code).trim().toUpperCase());
+            if (d.identifier) purgedUsernames.add(String(d.identifier).trim().toLowerCase());
+          } else if (d.entityType === 'user') {
+            if (d.entityId) purgedUserIds.add(String(d.entityId));
+            if (d.identifier) purgedUsernames.add(String(d.identifier).trim().toLowerCase());
+          }
+        });
+      }
+    } catch (e) {}
+  }
+
+  // 3. From RTDB if available
+  if (firebaseStatus.connected && realtimeDb) {
+    try {
+      const snap = await realtimeDb.ref('purged_tombstones').once('value').catch(() => null);
+      const val = snap ? snap.val() : null;
+      if (val && typeof val === 'object') {
+        if (val.company && typeof val.company === 'object') {
+          Object.keys(val.company).forEach(id => purgedCompanyIds.add(String(id)));
+        }
+        if (val.employee && typeof val.employee === 'object') {
+          Object.keys(val.employee).forEach(id => purgedEmployeeIds.add(String(id)));
+        }
+        if (val.user && typeof val.user === 'object') {
+          Object.keys(val.user).forEach(id => purgedUserIds.add(String(id)));
+        }
+        if (val.codes && typeof val.codes === 'object') {
+          Object.keys(val.codes).forEach(c => purgedCompanyCodes.add(String(c).trim().toUpperCase()));
+        }
+        if (val.identifiers && typeof val.identifiers === 'object') {
+          Object.keys(val.identifiers).forEach(i => purgedCompanyNames.add(String(i).trim().toLowerCase()));
+        }
+      }
+    } catch (e) {}
+  }
+
+  return {
+    purgedCompanyIds,
+    purgedCompanyCodes,
+    purgedCompanyNames,
+    purgedEmployeeIds,
+    purgedEmployeeCodes,
+    purgedUserIds,
+    purgedUsernames
+  };
+}
+
+/**
  * Real-time permanent delete from Firebase (Firestore + Realtime Database)
  * Handles instant automatic cascade deletion for Companies, Employees, Geofences, Shifts,
  * Leaves, Holidays, Weekly Offs, Service Requests / Tickets, Mappings, and Device Locks.
@@ -1808,11 +2015,44 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
 
     if (entityType === 'companies') {
       const compId = numId;
+      const compCode = extra.code ? String(extra.code).trim().toUpperCase() : '';
+      const compName = extra.name ? String(extra.name).trim().toLowerCase() : '';
+
+      // Register Permanent Purge Tombstone in SQLite & Firebase
+      await registerPurgedTombstone('company', strId, {
+        code: compCode,
+        identifier: compName,
+        companyId: strId,
+        relatedEmployeeIds: extra.employeeIds || [],
+        relatedUserIds: extra.userIds || [],
+        relatedCodes: extra.employeeCodes || [],
+        relatedUsernames: extra.usernames || []
+      });
+
       if (firestoreDb) {
         // 1. Delete company document and its subcollections (employees, users, attendance, devices, etc.)
         await safeDeleteFirestoreDoc('companies', strId);
         await safeDeleteFirestoreDoc('company_settings', strId);
         await safeDeleteFirestoreDoc('company_modules', strId);
+
+        if (compCode) {
+          await deleteFirestoreMatching('companies', 'code', compCode);
+        }
+        await deleteFirestoreMatching('companies', 'id', compId);
+        await deleteFirestoreMatching('companies', 'id', strId);
+
+        // Delete all subcollections directly
+        const subColls = ['employees', 'users', 'attendance', 'devices', 'leave_requests', 'leave_balances'];
+        for (const sub of subColls) {
+          try {
+            const subSnap = await firestoreDb.collection('companies').doc(strId).collection(sub).limit(500).get().catch(() => null);
+            if (subSnap && !subSnap.empty) {
+              for (const sDoc of subSnap.docs) {
+                await sDoc.ref.delete().catch(() => {});
+              }
+            }
+          } catch (e) {}
+        }
 
         // 2. Cascade delete all documents belonging to this company from top-level collections
         const companyCollections = [
@@ -1948,12 +2188,31 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
       }
     } else if (entityType === 'employees') {
       const empId = numId;
-      const compId = extra.companyId;
-      const userId = extra.userId;
+      const compId = extra.companyId ? String(extra.companyId) : null;
+      const userId = extra.userId ? String(extra.userId) : null;
+      const empCode = extra.employeeCode ? String(extra.employeeCode).trim().toUpperCase() : '';
+      const empUsername = extra.username ? String(extra.username).trim().toLowerCase() : '';
+
+      // Register Permanent Purge Tombstone in SQLite & Firebase
+      await registerPurgedTombstone('employee', strId, {
+        code: empCode,
+        identifier: empUsername,
+        companyId: compId,
+        relatedUserIds: userId ? [userId] : [],
+        relatedUsernames: empUsername ? [empUsername] : []
+      });
 
       if (firestoreDb) {
         // 1. Delete main employee document & company subcollection
         await safeDeleteFirestoreDoc('employees', strId);
+        if (empCode) {
+          await deleteFirestoreMatching('employees', 'employeeId', empCode);
+          await deleteFirestoreMatching('employees', 'employee_id', empCode);
+          await deleteFirestoreMatching('employees', 'employeeCode', empCode);
+        }
+        if (empUsername) {
+          await deleteFirestoreMatching('employees', 'username', empUsername);
+        }
         if (compId) {
           await safeDeleteFirestoreDoc(`companies/${compId}/employees`, strId);
           await safeDeleteFirestoreDoc(`companies/${compId}/devices`, strId);
@@ -1969,6 +2228,9 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
           }
           await deleteFirestoreMatching('notifications', 'userId', userId);
           await deleteFirestoreMatching('notifications', 'user_id', userId);
+        }
+        if (empUsername) {
+          await deleteFirestoreMatching('users', 'username', empUsername);
         }
         await safeDeleteFirestoreDoc('device_bindings', strId);
 
@@ -3040,6 +3302,114 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       }
     }
 
+    // Load All Permanent Purge Tombstones from SQLite, Firestore, and RTDB
+    // to strictly prevent any deleted company, employee, or user from ever being recovered!
+    const {
+      purgedCompanyIds,
+      purgedCompanyCodes,
+      purgedCompanyNames,
+      purgedEmployeeIds,
+      purgedEmployeeCodes,
+      purgedUserIds,
+      purgedUsernames
+    } = await loadPurgedTombstones();
+
+    // 1. Prune Companies Map against tombstones & deleted status
+    for (const [docKey, c] of Array.from(companiesMap.entries())) {
+      const rawId = String(c.id || docKey);
+      const rawCodeUpper = String(c.code || '').trim().toUpperCase();
+      const rawNameLower = String(c.name || c.portalName || c.portal_name || '').trim().toLowerCase();
+      const isDeleted = c.is_deleted === 1 || c.is_deleted === '1' || c.isDeleted === true || c.status === 'deleted';
+
+      if (
+        isDeleted ||
+        purgedCompanyIds.has(rawId) ||
+        (rawCodeUpper && purgedCompanyCodes.has(rawCodeUpper)) ||
+        (rawNameLower && purgedCompanyNames.has(rawNameLower))
+      ) {
+        companiesMap.delete(docKey);
+        // Clean up any lingering docs in cloud so they never return
+        if (firestoreDb) {
+          safeDeleteFirestoreDoc('companies', docKey);
+          if (c.id && String(c.id) !== String(docKey)) safeDeleteFirestoreDoc('companies', String(c.id));
+        }
+        if (realtimeDb) {
+          realtimeDb.ref(`companies/${docKey}`).remove().catch(() => {});
+          if (c.id && String(c.id) !== String(docKey)) realtimeDb.ref(`companies/${c.id}`).remove().catch(() => {});
+        }
+      }
+    }
+
+    // 2. Prune Employees Map against tombstones & deleted status
+    for (const [docKey, emp] of Array.from(employeesMap.entries())) {
+      const rawId = String(emp.id || docKey);
+      const rawEmpCodeUpper = String(emp.employeeCode || emp.employee_id || '').trim().toUpperCase();
+      const rawUsernameLower = String(emp.username || '').trim().toLowerCase();
+      const rawUserId = String(emp.userId || emp.user_id || '');
+      const rawCompId = String(emp.companyId || emp.company_id || '');
+      const isDeleted = emp.is_deleted === 1 || emp.is_deleted === '1' || emp.isDeleted === true || emp.status === 'deleted';
+
+      if (
+        isDeleted ||
+        purgedEmployeeIds.has(rawId) ||
+        (rawEmpCodeUpper && purgedEmployeeCodes.has(rawEmpCodeUpper)) ||
+        (rawUsernameLower && purgedUsernames.has(rawUsernameLower)) ||
+        (rawUserId && purgedUserIds.has(rawUserId)) ||
+        (rawCompId && (purgedCompanyIds.has(rawCompId) || !companiesMap.has(rawCompId)))
+      ) {
+        employeesMap.delete(docKey);
+        if (firestoreDb) {
+          safeDeleteFirestoreDoc('employees', docKey);
+          if (emp.id && String(emp.id) !== String(docKey)) safeDeleteFirestoreDoc('employees', String(emp.id));
+        }
+        if (realtimeDb) {
+          realtimeDb.ref(`employees/${docKey}`).remove().catch(() => {});
+          if (emp.id && String(emp.id) !== String(docKey)) realtimeDb.ref(`employees/${emp.id}`).remove().catch(() => {});
+        }
+      }
+    }
+
+    // 3. Prune Users Map against tombstones & deleted status
+    for (const [docKey, u] of Array.from(usersMap.entries())) {
+      const rawId = String(u.id || docKey);
+      const rawUsernameLower = String(u.username || '').trim().toLowerCase();
+      const rawCompId = String(u.companyId || u.company_id || '');
+      const isDeleted = u.is_deleted === 1 || u.is_deleted === '1' || u.isDeleted === true || u.status === 'deleted';
+
+      if (rawUsernameLower === 'adminn') continue; // Never purge super admin
+
+      if (
+        isDeleted ||
+        purgedUserIds.has(rawId) ||
+        (rawUsernameLower && purgedUsernames.has(rawUsernameLower)) ||
+        (rawCompId && (purgedCompanyIds.has(rawCompId) || (!companiesMap.has(rawCompId) && u.role !== 'super_admin')))
+      ) {
+        usersMap.delete(docKey);
+        if (firestoreDb) {
+          safeDeleteFirestoreDoc('users', docKey);
+          if (u.id && String(u.id) !== String(docKey)) safeDeleteFirestoreDoc('users', String(u.id));
+        }
+        if (realtimeDb) {
+          realtimeDb.ref(`users/${docKey}`).remove().catch(() => {});
+          if (u.id && String(u.id) !== String(docKey)) realtimeDb.ref(`users/${u.id}`).remove().catch(() => {});
+        }
+      }
+    }
+
+    // 4. Prune Attendance Records for purged companies/employees
+    for (const [key, att] of Array.from(attendanceMap.entries())) {
+      const compId = String(att.companyId || att.company_id || '');
+      const empId = String(att.employeeId || att.employee_id || '');
+      const empCode = String(att.employeeCode || att.employee_id || '').trim().toUpperCase();
+      if (
+        (compId && (purgedCompanyIds.has(compId) || !companiesMap.has(compId))) ||
+        (empId && purgedEmployeeIds.has(empId)) ||
+        (empCode && purgedEmployeeCodes.has(empCode))
+      ) {
+        attendanceMap.delete(key);
+      }
+    }
+
     // Strict 1:1 Mirror: Purge existing local tenant data before restore so that local database
     // strictly mirrors Firebase with 0 ghost/leftover companies, while strictly preserving Super Admin `adminn`.
     // SAFETY GUARD: Only wipe if we actually found company, employee, user, or attendance data in Firebase to restore!
@@ -3077,6 +3447,16 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         const rawCodeUpper = String(c.code || '').trim().toUpperCase();
         const rawNameLower = String(c.name || c.portalName || c.portal_name || '').trim().toLowerCase();
         const rawDocKeyUpper = String(docKey || '').trim().toUpperCase();
+
+        // Check if company is in permanent purge tombstone blacklist
+        if (
+          purgedCompanyIds.has(String(rawId)) ||
+          purgedCompanyIds.has(String(docKey)) ||
+          (rawCodeUpper && purgedCompanyCodes.has(rawCodeUpper)) ||
+          (rawNameLower && purgedCompanyNames.has(rawNameLower))
+        ) {
+          continue;
+        }
 
         // Permanent Exclusion for legacy demo companies requested by user
         const isLegacyExcluded =
@@ -3298,6 +3678,15 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
         const originalUsername = baseUsername;
         const email = (u.email || '').trim().toLowerCase();
+
+        // Check if user is in permanent purge tombstone blacklist
+        if (
+          purgedUserIds.has(String(rawUserId)) ||
+          purgedUserIds.has(String(docKey)) ||
+          (originalUsername && purgedUsernames.has(originalUsername.toLowerCase()))
+        ) {
+          continue;
+        }
 
         // Permanent Exclusion for legacy support_rahul requested by user
         if (baseUsername.toLowerCase() === 'support_rahul' || email === 'rahul.support@npbhrms.com') {
@@ -3793,6 +4182,16 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         if (!compId || !claimedCompanyIds.has(compId)) continue;
 
         const rawCode = (emp.employeeCode || emp.employee_id || (!isNaN(rawEmpId) && rawEmpId > 0 ? `EMP${rawEmpId}` : `EMP_${Date.now()}`)).trim();
+
+        // Check if employee is in permanent purge tombstone blacklist
+        if (
+          purgedEmployeeIds.has(String(rawEmpId)) ||
+          purgedEmployeeIds.has(String(docKey)) ||
+          (rawCode && purgedEmployeeCodes.has(rawCode.toUpperCase())) ||
+          (emp.username && purgedUsernames.has(String(emp.username).trim().toLowerCase()))
+        ) {
+          continue;
+        }
         const fullName = (emp.fullName || emp.full_name || emp.username || `Employee ${rawCode}`).trim();
         const email = emp.email || '';
         const mobile = emp.mobile || '';
@@ -4503,6 +4902,8 @@ module.exports = {
   syncEmployee,
   syncUser,
   syncSupportUser,
+  registerPurgedTombstone,
+  loadPurgedTombstones,
   deleteFromFirebase,
   syncCompanyReports,
   syncAllDatabaseToFirebase,

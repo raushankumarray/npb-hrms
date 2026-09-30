@@ -895,7 +895,7 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'm
 
 // Permanent Delete Employee (Cannot be backed up / permanently deleted from database)
 // Strictly Company Admin and Super Admin (Managers are NOT allowed to delete employees)
-router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', 'support']), (req, res) => {
+router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', 'support']), async (req, res) => {
   // Security: Managers are strictly NOT allowed to delete employees. Only Company Admin can delete employee data.
   if (req.user.role_name === 'manager') {
     return res.status(403).json({ error: 'Managers are not allowed to delete employee data. Only Company Administrator can delete employee accounts.' });
@@ -903,7 +903,7 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', '
 
   const empId = parseInt(req.params.id, 10);
   const emp = db.prepare(`
-    SELECT e.*, r.name as role_name
+    SELECT e.*, u.username, r.name as role_name
     FROM employees e
     JOIN users u ON e.user_id = u.id
     JOIN roles r ON u.role_id = r.id
@@ -920,6 +920,15 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', '
   }
 
   const transaction = db.transaction(() => {
+    // 0. Register permanent purge tombstones in SQLite database
+    try {
+      const insTombstone = db.prepare('INSERT OR IGNORE INTO purged_tombstones (entity_type, entity_id, company_id, code, identifier) VALUES (?, ?, ?, ?, ?)');
+      insTombstone.run('employee', String(empId), String(emp.company_id), emp.employee_id || '', emp.full_name || '');
+      if (emp.user_id) {
+        insTombstone.run('user', String(emp.user_id), String(emp.company_id), '', emp.username || '');
+      }
+    } catch (e) {}
+
     // 1. Attendance & Tracking
     try { db.prepare('DELETE FROM attendance_edit_logs WHERE attendance_record_id IN (SELECT id FROM attendance_records WHERE employee_id = ?)').run(empId); } catch(e) {}
     try { db.prepare('DELETE FROM attendance_corrections WHERE employee_id = ?').run(empId); } catch(e) {}
@@ -967,16 +976,24 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', '
       targetEntity: 'employees',
       targetId: empId,
       oldValues: { full_name: emp.full_name, employee_id: emp.employee_id },
-      reason: 'Employee and all associated records permanently removed from database'
+      reason: 'Employee and all associated records permanently removed from database with zero future recovery'
     });
   });
 
   transaction();
 
-  // Delete from Firebase
-  deleteFromFirebase('employees', empId, { companyId: emp.company_id, userId: emp.user_id }).catch(() => {});
+  // Delete from Firebase (Firestore + Realtime Database) with Full Tombstone Protection
+  await deleteFromFirebase('employees', empId, {
+    companyId: emp.company_id,
+    userId: emp.user_id,
+    employeeCode: emp.employee_id,
+    username: emp.username
+  });
 
-  res.json({ success: true, message: `Employee "${emp.full_name}" has been permanently deleted from the database.` });
+  res.json({
+    success: true,
+    message: `Employee "${emp.full_name}" has been permanently deleted from the database and cloud with zero future recovery.`
+  });
 });
 
 // One-Time Bulk Employee Mapping (Company Admin, Manager, Super Admin)

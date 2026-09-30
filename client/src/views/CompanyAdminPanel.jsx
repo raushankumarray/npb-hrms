@@ -568,9 +568,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     }
   };
 
-  // Soft Delete Employee
+  // 100% Permanent Delete Employee (Zero Future Recovery)
   const handleDeleteStaff = async (emp) => {
-    if (!window.confirm(`Are you sure you want to permanently delete account for "${emp.full_name}" (${emp.employee_id})?`)) return;
+    if (!window.confirm(`Are you sure you want to PERMANENTLY delete account for "${emp.full_name}" (${emp.employee_id})? This will permanently wipe all login credentials, attendance records, leaves, device bindings, and tracking data from the website, database, and cloud. This action CANNOT be recovered or undone in the future.`)) return;
     try {
       const res = await apiRequest(`/employees/${emp.id}`, { method: 'DELETE' });
       setSuccess(res.message);

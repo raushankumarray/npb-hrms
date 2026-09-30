@@ -651,11 +651,11 @@ router.post('/:id/favicon', verifyAuth, uploadLogo.single('favicon'), (req, res)
 });
 
 // Helper function to permanently remove a company and ALL cascading data from the database
-function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) {
+async function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) {
   const company = db.prepare('SELECT id, name, code, logo FROM companies WHERE id = ?').get(companyId);
   if (!company) return null;
 
-  // Pre-fetch all related IDs for full Firebase cascade deletion
+  // Pre-fetch all related IDs for full Firebase cascade deletion and tombstone registration
   let companyEmployees = [];
   let companyUsers = [];
   let companyGeofences = [];
@@ -667,8 +667,8 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
   let companyTickets = [];
 
   try {
-    companyEmployees = db.prepare('SELECT id, user_id FROM employees WHERE company_id = ?').all(companyId);
-    companyUsers = db.prepare('SELECT id FROM users WHERE company_id = ?').all(companyId);
+    companyEmployees = db.prepare('SELECT id, user_id, employee_id, full_name FROM employees WHERE company_id = ?').all(companyId);
+    companyUsers = db.prepare('SELECT id, username FROM users WHERE company_id = ?').all(companyId);
     companyGeofences = db.prepare('SELECT id FROM geofences WHERE company_id = ?').all(companyId);
     companyShifts = db.prepare('SELECT id FROM shifts WHERE company_id = ?').all(companyId);
     companyRotShifts = db.prepare('SELECT id FROM rotational_shifts WHERE company_id = ?').all(companyId);
@@ -678,217 +678,234 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
     companyTickets = db.prepare('SELECT id FROM service_requests WHERE company_id = ?').all(companyId);
   } catch (e) {}
 
-  // 1. Service Requests & Chat Messages (request_id points to service_requests.id, user_id points to users.id)
+  // Register permanent purge tombstones in SQLite database
   try {
-    db.prepare(`
-      DELETE FROM service_request_messages 
-      WHERE request_id IN (SELECT id FROM service_requests WHERE company_id = ?)
-         OR user_id IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId, companyId);
+    const insTombstone = db.prepare('INSERT OR IGNORE INTO purged_tombstones (entity_type, entity_id, company_id, code, identifier) VALUES (?, ?, ?, ?, ?)');
+    insTombstone.run('company', String(companyId), String(companyId), company.code || '', company.name || '');
+    for (const emp of companyEmployees) {
+      insTombstone.run('employee', String(emp.id), String(companyId), emp.employee_id || '', emp.full_name || '');
+    }
+    for (const u of companyUsers) {
+      insTombstone.run('user', String(u.id), String(companyId), '', u.username || '');
+    }
   } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM service_requests WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+  // Perform SQLite database cascade deletion in a transaction
+  const dbPurgeTransaction = db.transaction(() => {
+    // 1. Service Requests & Chat Messages (request_id points to service_requests.id, user_id points to users.id)
+    try {
+      db.prepare(`
+        DELETE FROM service_request_messages 
+        WHERE request_id IN (SELECT id FROM service_requests WHERE company_id = ?)
+           OR user_id IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM support_tickets 
-      WHERE company_id = ? 
-         OR created_by_user_id IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM service_requests WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 2. Attendance & Correction Requests & Tracking Logs
-  try {
-    db.prepare(`
-      DELETE FROM attendance_edit_logs 
-      WHERE attendance_record_id IN (SELECT id FROM attendance_records WHERE company_id = ?)
-         OR employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-         OR edited_by IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId, companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM support_tickets 
+        WHERE company_id = ? 
+           OR created_by_user_id IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM attendance_correction_requests WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    // 2. Attendance & Correction Requests & Tracking Logs
+    try {
+      db.prepare(`
+        DELETE FROM attendance_edit_logs 
+        WHERE attendance_record_id IN (SELECT id FROM attendance_records WHERE company_id = ?)
+           OR employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+           OR edited_by IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId, companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM attendance_import_logs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM attendance_correction_requests WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM attendance_export_logs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM attendance_import_logs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM attendance_records WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM attendance_export_logs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM location_tracking_logs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM attendance_records WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM route_tracking_logs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM location_tracking_logs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 3. Leave Management & Balances
-  try {
-    db.prepare('DELETE FROM leave_requests WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM route_tracking_logs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM leave_transactions 
-      WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-         OR leave_type_id IN (SELECT id FROM leave_types WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    // 3. Leave Management & Balances
+    try {
+      db.prepare('DELETE FROM leave_requests WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM leave_balances 
-      WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-         OR leave_type_id IN (SELECT id FROM leave_types WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM leave_transactions 
+        WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+           OR leave_type_id IN (SELECT id FROM leave_types WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM leave_accrual_logs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM leave_balances 
+        WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+           OR leave_type_id IN (SELECT id FROM leave_types WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM leave_types WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM leave_accrual_logs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 4. Excel & Report Exports Jobs
-  try {
-    db.prepare('DELETE FROM excel_import_jobs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM leave_types WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM excel_update_jobs WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    // 4. Excel & Report Exports Jobs
+    try {
+      db.prepare('DELETE FROM excel_import_jobs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM report_exports WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM excel_update_jobs WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 5. Notifications & Audits
-  try {
-    db.prepare(`
-      DELETE FROM notifications 
-      WHERE company_id = ? 
-         OR user_id IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM report_exports WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM audit_logs 
-      WHERE company_id = ? 
-         OR user_id IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    // 5. Notifications & Audits
+    try {
+      db.prepare(`
+        DELETE FROM notifications 
+        WHERE company_id = ? 
+           OR user_id IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  // 6. Device Bindings
-  try {
-    db.prepare(`
-      DELETE FROM employee_devices 
-      WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM audit_logs 
+        WHERE company_id = ? 
+           OR user_id IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM device_binding_logs 
-      WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)
-    `).run(companyId);
-  } catch (e) {}
+    // 6. Device Bindings
+    try {
+      db.prepare(`
+        DELETE FROM employee_devices 
+        WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId);
+    } catch (e) {}
 
-  // 7. Employee Mappings, Profiles, Weekly Offs, Assignments
-  try {
-    db.prepare(`
-      DELETE FROM employee_mappings 
-      WHERE company_id = ? 
-         OR employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-         OR manager_id IN (SELECT id FROM employees WHERE company_id = ?)
-    `).run(companyId, companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM device_binding_logs 
+        WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)
+      `).run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM employee_profiles 
-      WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-    `).run(companyId);
-  } catch (e) {}
+    // 7. Employee Mappings, Profiles, Weekly Offs, Assignments
+    try {
+      db.prepare(`
+        DELETE FROM employee_mappings 
+        WHERE company_id = ? 
+           OR employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+           OR manager_id IN (SELECT id FROM employees WHERE company_id = ?)
+      `).run(companyId, companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM employee_weekly_offs 
-      WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-    `).run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM employee_profiles 
+        WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+      `).run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM shift_assignments 
-      WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-         OR shift_id IN (SELECT id FROM shifts WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM employee_weekly_offs 
+        WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+      `).run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare(`
-      DELETE FROM geofence_assignments 
-      WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
-         OR geofence_id IN (SELECT id FROM geofences WHERE company_id = ?)
-    `).run(companyId, companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM shift_assignments 
+        WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+           OR shift_id IN (SELECT id FROM shifts WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  // 8. Shifts, Geofences, Holidays, Weekly Offs
-  try {
-    db.prepare('DELETE FROM geofences WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare(`
+        DELETE FROM geofence_assignments 
+        WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ?)
+           OR geofence_id IN (SELECT id FROM geofences WHERE company_id = ?)
+      `).run(companyId, companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM shifts WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    // 8. Shifts, Geofences, Holidays, Weekly Offs
+    try {
+      db.prepare('DELETE FROM geofences WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM rotational_shifts WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM shifts WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM weekly_off_settings WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM rotational_shifts WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM holidays WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM weekly_off_settings WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 9. Employees
-  try {
-    db.prepare('DELETE FROM employees WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    try {
+      db.prepare('DELETE FROM holidays WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 10. Users
-  try {
-    db.prepare('DELETE FROM users WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    // 9. Employees
+    try {
+      db.prepare('DELETE FROM employees WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 11. Company Settings & Modules
-  try {
-    db.prepare('DELETE FROM company_modules WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    // 10. Users
+    try {
+      db.prepare('DELETE FROM users WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  try {
-    db.prepare('DELETE FROM company_settings WHERE company_id = ?').run(companyId);
-  } catch (e) {}
+    // 11. Company Settings & Modules
+    try {
+      db.prepare('DELETE FROM company_modules WHERE company_id = ?').run(companyId);
+    } catch (e) {}
 
-  // 12. Delete Company Permanently
-  db.prepare('DELETE FROM companies WHERE id = ?').run(companyId);
+    try {
+      db.prepare('DELETE FROM company_settings WHERE company_id = ?').run(companyId);
+    } catch (e) {}
+
+    // 12. Delete Company Permanently
+    db.prepare('DELETE FROM companies WHERE id = ?').run(companyId);
+  });
+
+  dbPurgeTransaction();
 
   // 13. Clean up logo file from disk if it was uploaded
   if (company.logo && typeof company.logo === 'string' && company.logo.startsWith('/uploads/')) {
@@ -913,14 +930,18 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
       targetEntity: 'companies',
       targetId: companyId,
       oldValues: { name: company.name, code: company.code },
-      reason: 'Company and all associated accounts/records permanently purged from database'
+      reason: 'Company and all associated accounts/records permanently purged from database with zero future recovery'
     });
   } catch (e) {}
 
-  // Delete from Firebase (Firestore + Realtime Database)
-  deleteFromFirebase('companies', companyId, {
+  // Delete from Firebase (Firestore + Realtime Database) with Full Tombstone Protection
+  await deleteFromFirebase('companies', companyId, {
+    code: company.code,
+    name: company.name,
     employeeIds: companyEmployees.map(e => e.id),
     userIds: companyUsers.map(u => u.id),
+    employeeCodes: companyEmployees.map(e => e.employee_id).filter(Boolean),
+    usernames: companyUsers.map(u => u.username).filter(Boolean),
     geofenceIds: companyGeofences.map(g => g.id),
     shiftIds: companyShifts.map(s => s.id),
     rotationalShiftIds: companyRotShifts.map(r => r.id),
@@ -928,54 +949,48 @@ function executePermanentCompanyDeletion(companyId, adminUsername, adminUserId) 
     weeklyOffIds: companyWeeklyOffs.map(w => w.id),
     leaveTypeIds: companyLeaveTypes.map(l => l.id),
     ticketIds: companyTickets.map(t => t.id)
-  }).catch(() => {});
+  });
 
   return company.name;
 }
 
 // Delete Single Company (Super Admin only - 100% Permanent Deletion, No Soft Delete)
-router.delete('/:id', verifyAuth, requireRole(['super_admin']), (req, res) => {
+router.delete('/:id', verifyAuth, requireRole(['super_admin']), async (req, res) => {
   const companyId = parseInt(req.params.id, 10);
   const company = db.prepare('SELECT name FROM companies WHERE id = ?').get(companyId);
   if (!company) {
     return res.status(404).json({ error: 'Company not found.' });
   }
 
-  const transaction = db.transaction(() => {
-    executePermanentCompanyDeletion(companyId, req.user.username, req.user.id);
-  });
+  await executePermanentCompanyDeletion(companyId, req.user.username, req.user.id);
 
-  transaction();
   return res.json({
     success: true,
-    message: `Company "${company.name}" and all associated data have been permanently deleted from the database.`
+    message: `Company "${company.name}" and all associated data have been permanently deleted from the database and cloud with zero future recovery.`
   });
 });
 
 // Bulk Delete Multiple Companies Permanently (Super Admin only - 100% Permanent Deletion)
-router.post('/bulk-delete', verifyAuth, requireRole(['super_admin']), (req, res) => {
+router.post('/bulk-delete', verifyAuth, requireRole(['super_admin']), async (req, res) => {
   const { company_ids } = req.body;
   if (!Array.isArray(company_ids) || company_ids.length === 0) {
     return res.status(400).json({ error: 'Please select at least one company to permanently delete.' });
   }
 
   const deletedNames = [];
-  const transaction = db.transaction(() => {
-    for (const rawId of company_ids) {
-      const cId = parseInt(rawId, 10);
-      if (!isNaN(cId)) {
-        const name = executePermanentCompanyDeletion(cId, req.user.username, req.user.id);
-        if (name) deletedNames.push(name);
-      }
+  for (const rawId of company_ids) {
+    const cId = parseInt(rawId, 10);
+    if (!isNaN(cId)) {
+      const name = await executePermanentCompanyDeletion(cId, req.user.username, req.user.id);
+      if (name) deletedNames.push(name);
     }
-  });
+  }
 
-  transaction();
   return res.json({
     success: true,
     deletedCount: deletedNames.length,
     deletedNames,
-    message: `Successfully and permanently deleted ${deletedNames.length} company portal(s) and all associated records from the database.`
+    message: `Successfully and permanently deleted ${deletedNames.length} company portal(s) and all associated records from the database and cloud with zero future recovery.`
   });
 });
 

@@ -991,10 +991,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   };
 
   const handleDeleteDirEmployee = async (empId, name) => {
-    if (!window.confirm(`Are you sure you want to delete employee "${name}"? This will deactivate the account.`)) return;
+    if (!window.confirm(`Are you sure you want to PERMANENTLY delete personnel "${name}"? This will permanently delete this employee account, user credentials, attendance records, leaves, and device bindings from the website, database, and cloud. This action CANNOT be recovered or undone in the future.`)) return;
     try {
       await apiRequest(`/employees/${empId}`, { method: 'DELETE' });
-      setSuccess(`Employee "${name}" deleted.`);
+      setSuccess(`Employee "${name}" has been permanently deleted with zero future recovery.`);
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -4907,7 +4907,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 Are you sure you want to permanently purge "{deleteTarget.name}" ({deleteTarget.code})?
               </p>
               <p className="text-[11px] leading-relaxed">
-                This will permanently delete from the database:
+                This will permanently delete from the website, database, and cloud:
               </p>
               <ul className="list-disc list-inside text-[11px] space-y-0.5 text-rose-700">
                 <li>All company staff, managers & employees</li>
@@ -4915,9 +4915,10 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 <li>All attendance logs, GPS punches & tracking coordinates</li>
                 <li>All leave records, balances, quotas & transactions</li>
                 <li>All geofences, shifts, and helpdesk tickets</li>
+                <li>Permanent purge tombstone recorded: Zero data can ever be recovered or resurrected even upon Firebase reconnection</li>
               </ul>
               <p className="font-black text-rose-900 text-[11px] pt-1">
-                ⚠️ THIS ACTION CANNOT BE UNDONE!
+                ⚠️ THIS ACTION IS 100% PERMANENT AND CAN NEVER BE RECOVERED OR UNDONE!
               </p>
             </div>
 
@@ -4973,7 +4974,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               <div className="space-y-1">
                 <p className="font-bold text-rose-900">Permanent Hard Deletion Warning:</p>
                 <ul className="list-disc list-inside text-[11px] text-rose-700 space-y-0.5">
-                  <li>Zero backup: Data CANNOT be restored or recovered under any circumstances.</li>
+                  <li>Zero recovery: Purged tombstones recorded so data CANNOT be recovered or resurrected even upon Firebase reconnection.</li>
                   <li>All employee profiles, users, login credentials, and device bindings will be deleted.</li>
                   <li>All attendance punches, GPS tracking coordinates, and shift rosters will be wiped out.</li>
                   <li>All leave requests, balances, service tickets, and company settings will be permanently destroyed.</li>
@@ -4981,7 +4982,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
               </div>
 
               <p className="font-black text-rose-950 text-xs bg-rose-200/60 p-2 rounded-lg text-center">
-                ⚠️ THIS HARD DELETION IS ABSOLUTE AND PERMANENT!
+                ⚠️ THIS HARD DELETION IS ABSOLUTE AND PERMANENT WITH ZERO RECOVERY!
               </p>
             </div>
 
