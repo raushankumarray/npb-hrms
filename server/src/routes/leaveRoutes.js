@@ -15,7 +15,9 @@ const {
   ensureCompanyLeaveTypes,
   autoCreditEmployeeLeaves,
   getEmployeeCreditedCLInYear,
-  getEmployeeCreditedELInMonth
+  getEmployeeCreditedELInMonth,
+  getFinancialYearInfo,
+  calculateEmployeeFYTenure
 } = require('../services/leaveService');
 
 // List Leave Types for Company (Strictly Casual Leave [12/yr] and Earned Leave [1.25/mo])
@@ -180,7 +182,8 @@ router.get('/summary', verifyAuth, (req, res) => {
   const companyId = getTenantCompanyId(req);
   if (!companyId) return res.json({ summary: {} });
 
-  const currentYear = new Date().getFullYear();
+  const fyInfo = getFinancialYearInfo();
+  const currentYear = fyInfo.startYear;
 
   // 1. CL stats
   const clStats = db.prepare(`
@@ -246,12 +249,14 @@ router.get('/company-balances', verifyAuth, requireRole(['company_admin', 'manag
   const companyId = getTenantCompanyId(req);
   if (!companyId) return res.json({ employees: [], transactions: [] });
 
-  const currentYear = new Date().getFullYear();
+  const fyInfo = getFinancialYearInfo();
+  const currentYear = fyInfo.startYear;
   const { clType, elType } = ensureCompanyLeaveTypes(companyId);
 
-  // Active staff
+  // Active staff (employees and managers)
   const employees = db.prepare(`
     SELECT e.id, e.employee_id as employee_code, e.full_name, e.department, e.designation, e.city,
+           e.employment_start_date, e.created_at,
            u.role_id, r.name as role_name
     FROM employees e
     JOIN users u ON e.user_id = u.id
@@ -287,6 +292,8 @@ router.get('/company-balances', verifyAuth, requireRole(['company_admin', 'manag
     const totalUsed = Number(cl.used || 0) + Number(el.used || 0);
     const totalAvailable = Number(cl.balance || 0) + Number(el.balance || 0);
 
+    const tenure = calculateEmployeeFYTenure(emp.employment_start_date || emp.created_at, fyInfo.startYear, fyInfo.endYear);
+
     return {
       ...emp,
       cl_balance: Number(cl.balance || 0),
@@ -300,6 +307,15 @@ router.get('/company-balances', verifyAuth, requireRole(['company_admin', 'manag
       total_credited: Math.round(totalCredited * 100) / 100,
       total_used: Math.round(totalUsed * 100) / 100,
       total_available: Math.round(totalAvailable * 100) / 100,
+      joining_date: tenure.joinDateFormatted,
+      active_months_to_march: tenure.activeMonths,
+      max_statutory_cl: tenure.maxCL,
+      is_mid_year: tenure.isMidYear,
+      tenure_label: tenure.isMidYear
+        ? `Joined ${tenure.joinDateFormatted} • ${tenure.activeMonths} mos to 31 Mar (${fyInfo.fyCode})`
+        : `Full Year (${fyInfo.fyLabel})`,
+      fy_code: fyInfo.fyCode,
+      fy_label: fyInfo.fyLabel,
       last_updated: cl.updated_at || el.updated_at || null
     };
   });
@@ -320,6 +336,7 @@ router.get('/company-balances', verifyAuth, requireRole(['company_admin', 'manag
   res.json({
     employees: staffBalances,
     transactions,
+    financial_year: fyInfo,
     current_year: currentYear
   });
 });
@@ -416,7 +433,8 @@ router.get('/balances', verifyAuth, async (req, res) => {
     return res.status(400).json({ error: 'employee_id is required.' });
   }
 
-  const currentYear = new Date().getFullYear();
+  const fyInfo = getFinancialYearInfo();
+  const currentYear = fyInfo.startYear;
   const emp = db.prepare('SELECT id, company_id FROM employees WHERE id = ?').get(empId);
 
   // Auto-restore leave balances from Firebase if connected
@@ -463,7 +481,7 @@ router.get('/balances', verifyAuth, async (req, res) => {
     LIMIT 30
   `).all(empId);
 
-  res.json({ balances, accrualHistory: history, history });
+  res.json({ balances, accrualHistory: history, history, financial_year: fyInfo });
 });
 
 // Trigger Monthly Earned Leave Accrual on Demand
@@ -1080,7 +1098,8 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
   const isEarnedLeave = leaveType.code === 'EL' || leaveType.name.toLowerCase().includes('earned');
 
   const now = new Date();
-  const targetYear = year ? parseInt(year, 10) : now.getFullYear();
+  const fyInfo = getFinancialYearInfo(now, year);
+  const targetYear = fyInfo.startYear;
   const targetMonth = month ? parseInt(month, 10) : (now.getMonth() + 1);
 
   const monthNames = [
@@ -1091,12 +1110,12 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
 
   let targetEmployees = [];
   if (apply_to_all) {
-    targetEmployees = db.prepare('SELECT id, full_name, employee_id as employee_code FROM employees WHERE company_id = ? AND status = \'active\' AND is_deleted = 0').all(companyId);
+    targetEmployees = db.prepare('SELECT id, full_name, employee_id as employee_code, employment_start_date, created_at FROM employees WHERE company_id = ? AND status = \'active\' AND is_deleted = 0').all(companyId);
   } else {
     if (!employee_id) {
       return res.status(400).json({ error: 'Please select an employee or check "Apply to all employees".' });
     }
-    const single = db.prepare('SELECT id, full_name, employee_id as employee_code FROM employees WHERE id = ? AND company_id = ?').get(employee_id, companyId);
+    const single = db.prepare('SELECT id, full_name, employee_id as employee_code, employment_start_date, created_at FROM employees WHERE id = ? AND company_id = ?').get(employee_id, companyId);
     if (!single) return res.status(404).json({ error: 'Employee not found.' });
     targetEmployees = [single];
   }
@@ -1105,18 +1124,26 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     return res.status(400).json({ error: 'No active employees found to credit leaves.' });
   }
 
-  // 1. Strict Validation: Casual Leave (CL) cannot exceed 12 days per calendar year
+  // 1. Strict Validation: Casual Leave (CL) calculated from Joining Date to 31 March
   if (isCasualLeave) {
-    if (numDays > 12.0) {
-      return res.status(400).json({ error: 'Casual Leave (CL) quota cannot exceed the maximum statutory limit of 12 days per year.' });
-    }
     if (!apply_to_all) {
-      const alreadyCredited = getEmployeeCreditedCLInYear(targetEmployees[0].id, leaveType.id, targetYear);
-      if (alreadyCredited + numDays > 12.001) {
-        const remaining = Math.max(0, 12.0 - alreadyCredited);
+      const tenure = calculateEmployeeFYTenure(targetEmployees[0].employment_start_date || targetEmployees[0].created_at, fyInfo.startYear, fyInfo.endYear);
+      const maxAllowedCL = tenure.maxCL;
+      if (numDays > maxAllowedCL) {
         return res.status(400).json({
-          error: `Casual Leave (CL) annual cap of 12 days exceeded for ${targetEmployees[0].full_name}. Already credited in ${targetYear}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+          error: `Pro-rata Casual Leave cap for ${targetEmployees[0].full_name} is ${maxAllowedCL.toFixed(1)} days (joined ${tenure.joinDateFormatted}, ${tenure.activeMonths} active months to 31 March ${fyInfo.endYear}). Cannot credit more than ${maxAllowedCL.toFixed(1)} days.`
         });
+      }
+      const alreadyCredited = getEmployeeCreditedCLInYear(targetEmployees[0].id, leaveType.id, targetYear);
+      if (alreadyCredited + numDays > maxAllowedCL + 0.001) {
+        const remaining = Math.max(0, maxAllowedCL - alreadyCredited);
+        return res.status(400).json({
+          error: `Casual Leave (CL) statutory limit of ${maxAllowedCL.toFixed(1)} days exceeded for ${targetEmployees[0].full_name}. Already credited in ${fyInfo.fyCode}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+        });
+      }
+    } else {
+      if (numDays > 12.0) {
+        return res.status(400).json({ error: 'Casual Leave (CL) quota cannot exceed the maximum statutory limit of 12 days per financial year.' });
       }
     }
   }
@@ -1155,14 +1182,16 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
       ) VALUES (?, ?, 'adjustment', ?, ?, ?, ?, ?, ?)
     `);
 
-    const periodTag = isEarnedLeave ? `${monthName} ${targetYear}` : `${targetYear}`;
+    const periodTag = isEarnedLeave ? `${monthName} ${targetYear}` : `${fyInfo.fyCode} (${fyInfo.fyLabel})`;
 
     for (const emp of targetEmployees) {
       let empCredit = numDays;
 
       if (isCasualLeave) {
+        const tenure = calculateEmployeeFYTenure(emp.employment_start_date || emp.created_at, fyInfo.startYear, fyInfo.endYear);
+        const maxAllowedCL = tenure.maxCL;
         const alreadyCredited = getEmployeeCreditedCLInYear(emp.id, leaveType.id, targetYear);
-        const remaining = Math.max(0, 12.0 - alreadyCredited);
+        const remaining = Math.max(0, maxAllowedCL - alreadyCredited);
         empCredit = apply_to_all ? Math.min(numDays, remaining) : numDays;
       } else if (isEarnedLeave) {
         const alreadyMonthCredited = getEmployeeCreditedELInMonth(emp.id, leaveType.id, targetYear, targetMonth);
@@ -1267,7 +1296,8 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
     return res.status(400).json({ error: 'A mandatory reason is required for leave deletion / deduction audit.' });
   }
 
-  const currentYear = new Date().getFullYear();
+  const fyInfo = getFinancialYearInfo();
+  const currentYear = fyInfo.startYear;
   let targetEmployees = [];
 
   if (isApplyToAll) {
@@ -1366,8 +1396,8 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
   res.json({
     success: true,
     message: action_type === 'reset_zero'
-      ? `Successfully reset "${leaveType.name}" balance to 0 for ${targetEmployees.length} employee(s).`
-      : `Successfully deducted ${numDays} days of "${leaveType.name}" for ${targetEmployees.length} employee(s).`,
+      ? `Successfully reset "${leaveType.name}" balance to 0 for ${targetEmployees.length} staff member(s) (employees & managers).`
+      : `Successfully deducted ${numDays} days of "${leaveType.name}" for ${targetEmployees.length} staff member(s) (employees & managers).`,
     affectedCount: targetEmployees.length
   });
 });

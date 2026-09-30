@@ -4056,9 +4056,9 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         }
       }
 
-      // Ensure all restored active employees for claimed companies have CL and EL auto-credited if missing
+      // Ensure all restored active employees have zero-balance records initialized if missing (NO auto-credits)
       try {
-        const { autoCreditEmployeeLeaves, checkAndRunMonthlyAccrual } = require('./leaveService');
+        const { autoCreditEmployeeLeaves } = require('./leaveService');
         const activeEmps = db.prepare("SELECT id, company_id FROM employees WHERE status = 'active' AND is_deleted = 0").all();
         for (const ae of activeEmps) {
           if (claimedCompanyIds.has(ae.company_id)) {
@@ -4068,7 +4068,6 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
             }
           }
         }
-        checkAndRunMonthlyAccrual();
       } catch (e) {}
 
       // Phase 9: Restore Attendance Corrections & Attendance Records

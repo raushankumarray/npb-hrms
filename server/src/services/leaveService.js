@@ -80,7 +80,8 @@ function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId 
   if (!companyId) return { success: false, error: 'Company ID could not be determined' };
 
   const { clType, elType } = ensureCompanyLeaveTypes(companyId);
-  const currentYear = new Date().getFullYear();
+  const fyInfo = getFinancialYearInfo();
+  const currentYear = fyInfo.startYear;
 
   const insertZeroBalance = db.prepare(`
     INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
@@ -128,12 +129,13 @@ function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId 
 }
 
 /**
- * Helper: Computes total Casual Leave (CL) credited to an employee in a given calendar year.
- * Rule: Maximum 12.0 CL per calendar year.
+ * Helper: Computes total Casual Leave (CL) credited to an employee in a given financial year.
+ * Rule: Maximum 12.0 CL per financial year (1 Apr - 31 Mar).
  * Correctly accounts for deductions and resets so employees whose balances were reset can be re-credited cleanly.
  */
 function getEmployeeCreditedCLInYear(employeeId, leaveTypeId, year = null) {
-  const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
+  const fyInfo = getFinancialYearInfo();
+  const targetYear = year ? parseInt(year, 10) : fyInfo.startYear;
 
   const balRow = db.prepare(`
     SELECT balance, used, opening_balance, accrued
@@ -330,13 +332,65 @@ function accrueMonthlyEarnedLeave(targetYear = null, targetMonth = null, applied
 }
 
 /**
- * Background auto-accrual check.
- * Strictly disabled per user specification: Leaves can ONLY be manually credited.
+ * Helper: Computes Indian Financial Year (1 April to 31 March) info.
+ * E.g., Date in Sep 2026 -> Start Year: 2026, End Year: 2027, FY 2026-27 (1 Apr 2026 - 31 Mar 2027)
  */
-function checkAndRunMonthlyAccrual() {
-  // Disabled: Automated background leaf additions are prohibited.
-  // Company Admins manually credit leaves.
-  return;
+function getFinancialYearInfo(targetDate = new Date(), targetYear = null) {
+  let startYear;
+  if (targetYear) {
+    startYear = parseInt(targetYear, 10);
+  } else {
+    const d = new Date(targetDate);
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1; // 1-12
+    startYear = m >= 4 ? y : y - 1;
+  }
+  const endYear = startYear + 1;
+  return {
+    startYear,
+    endYear,
+    fyCode: `FY ${startYear}-${String(endYear).slice(-2)}`,
+    fyLabel: `1 Apr ${startYear} - 31 Mar ${endYear}`,
+    fyStartDate: `${startYear}-04-01`,
+    fyEndDate: `${endYear}-03-31`,
+    currentYear: startYear
+  };
+}
+
+/**
+ * Helper: Computes employee active period from Joining Date to 31 March of the Financial Year.
+ * - Joined on or before 1 April: 12 months, max 12.0 CL.
+ * - Joined mid-year (e.g. July): Remaining months to 31 March (e.g. 9 months, max 9.0 CL).
+ * - Statutory pro-rata: 1.0 day CL per active month to 31 March.
+ */
+function calculateEmployeeFYTenure(joinDateStr, fyStartYear, fyEndYear) {
+  const fyStart = new Date(`${fyStartYear}-04-01T00:00:00`);
+  const fyEnd = new Date(`${fyEndYear}-03-31T23:59:59`);
+
+  if (!joinDateStr) {
+    return { activeMonths: 12, maxCL: 12.0, isMidYear: false, joinDateFormatted: 'N/A' };
+  }
+
+  const joinDate = new Date(joinDateStr);
+  const joinDateFormatted = !isNaN(joinDate.getTime()) ? joinDate.toISOString().split('T')[0] : 'N/A';
+
+  if (isNaN(joinDate.getTime()) || joinDate <= fyStart) {
+    return { activeMonths: 12, maxCL: 12.0, isMidYear: false, joinDateFormatted };
+  } else if (joinDate > fyEnd) {
+    return { activeMonths: 0, maxCL: 0.0, isMidYear: true, joinDateFormatted };
+  } else {
+    const joinYear = joinDate.getFullYear();
+    const joinMonth = joinDate.getMonth() + 1; // 1-12
+    let activeMonths = 0;
+    if (joinYear === fyStartYear) {
+      activeMonths = (12 - joinMonth + 1) + 3;
+    } else {
+      activeMonths = (3 - joinMonth + 1);
+    }
+    activeMonths = Math.max(1, Math.min(12, activeMonths));
+    const maxCL = Math.round((activeMonths / 12) * 12.0 * 10) / 10;
+    return { activeMonths, maxCL, isMidYear: true, joinDateFormatted };
+  }
 }
 
 module.exports = {
@@ -344,6 +398,7 @@ module.exports = {
   autoCreditEmployeeLeaves,
   getEmployeeCreditedCLInYear,
   getEmployeeCreditedELInMonth,
-  accrueMonthlyEarnedLeave,
-  checkAndRunMonthlyAccrual
+  getFinancialYearInfo,
+  calculateEmployeeFYTenure,
+  accrueMonthlyEarnedLeave
 };

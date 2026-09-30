@@ -145,6 +145,12 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   // Staff Leave Balances & Transactions state
   const [companyStaffBalances, setCompanyStaffBalances] = useState([]);
   const [companyLeaveTransactions, setCompanyLeaveTransactions] = useState([]);
+  const [currentFY, setCurrentFY] = useState({
+    fyCode: 'FY 2026-27',
+    fyLabel: '1 Apr 2026 - 31 Mar 2027',
+    startYear: 2026,
+    endYear: 2027
+  });
   const [leaveSearchQuery, setLeaveSearchQuery] = useState('');
   const [leaveDeptFilter, setLeaveDeptFilter] = useState('all');
 
@@ -298,7 +304,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     setLoading(true);
     setError('');
     try {
-      if (activeTab === 'dashboard' || activeTab === 'employees' || activeTab === 'mapping') {
+      if (activeTab === 'dashboard' || activeTab === 'employees' || activeTab === 'mapping' || activeTab === 'leave') {
         const queryParams = new URLSearchParams();
         if (activeTab === 'employees') {
           queryParams.append('limit', pageSize);
@@ -368,6 +374,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       }
       if (activeTab === 'leave') {
         const compBalRes = await apiRequest('/leave/company-balances');
+        if (compBalRes.financial_year) setCurrentFY(compBalRes.financial_year);
         setCompanyStaffBalances(compBalRes.employees || []);
         setCompanyLeaveTransactions(compBalRes.transactions || []);
       }
@@ -2007,20 +2014,23 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   <div>
                     <h3 className="text-base font-bold text-slate-900">Leave Management & Manual Crediting</h3>
                     <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        Leave Period: 1 Apr - 31 Mar ({currentFY.fyCode})
+                      </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
-                        CL: Max 12.0d / Calendar Year
+                        CL: Max 12.0d / FY (Pro-rata Joining to 31 Mar)
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                         EL: Max 1.25d / Month
                       </span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                        Strictly Manual Credit Only
+                        Strictly Manual Credit via Button Only
                       </span>
                     </div>
                   </div>
                 </div>
                 <p className="text-xs text-slate-500 mt-2">
-                  No automated bulk leaves. Leave balances are manually credited or adjusted with strict statutory limits. All changes auto-sync to Firebase Firestore & RTDB in real time.
+                  No automated leave allotments. New employees and managers start with 0.0 leaves. Balances only appear in Employee & Manager panels after Company Admin clicks the Credit button. All changes dual-sync instantly to Firebase Firestore & RTDB.
                 </p>
               </div>
 
@@ -2309,8 +2319,24 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                             <div className="text-[11px] font-mono text-slate-500">{emp.employee_code || `EMP-${emp.id}`}</div>
                           </td>
                           <td className="p-3 text-slate-600">
-                            <div className="font-medium text-slate-800">{emp.department || 'General'}</div>
-                            <div className="text-[10px] text-slate-400 capitalize">{emp.role_name || emp.designation || 'Staff'}</div>
+                            <div className="font-medium text-slate-800 flex items-center gap-1.5">
+                              <span>{emp.department || 'General'}</span>
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                                emp.role_name === 'manager' || emp.role === 'manager'
+                                  ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                                  : 'bg-slate-100 text-slate-600 border border-slate-200'
+                              }`}>
+                                {emp.role_name === 'manager' || emp.role === 'manager' ? '👔 Manager' : '👤 Employee'}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                              {emp.tenure_label || 'Full Year (1 Apr - 31 Mar)'}
+                            </div>
+                            {emp.total_credited === 0 && (
+                              <div className="inline-block mt-0.5 text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                Awaiting Manual Credit
+                              </div>
+                            )}
                           </td>
                           <td className="p-3">
                             <div className="flex items-center gap-1.5">
@@ -2318,9 +2344,14 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                                 {emp.cl_balance}d
                               </span>
                               <span className="text-[10px] text-slate-400">
-                                (Credited: {emp.cl_credited} / 12)
+                                (Credited: {emp.cl_credited} / {emp.max_statutory_cl !== undefined ? emp.max_statutory_cl : 12}d)
                               </span>
                             </div>
+                            {emp.max_statutory_cl !== undefined && emp.max_statutory_cl < 12 && (
+                              <div className="text-[9px] text-indigo-600 font-semibold mt-0.5">
+                                Pro-rata cap: {emp.max_statutory_cl}d (Mid-year joiner)
+                              </div>
+                            )}
                           </td>
                           <td className="p-3">
                             <div className="flex items-center gap-1.5">
@@ -2351,7 +2382,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                                     cadence: 'year',
                                     days: 1.0,
                                     month: new Date().getMonth() + 1,
-                                    year: new Date().getFullYear(),
+                                    year: currentFY?.startYear || new Date().getFullYear(),
                                     reason: `Manual leave credit for ${emp.full_name}`,
                                     apply_to_all: false
                                   });
@@ -4207,7 +4238,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                         isCL ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                       }`}>
-                        {isCL ? 'Annual Cap: Max 12.0 CL / Year' : 'Monthly Cap: Max 1.25 EL / Month'}
+                        {isCL ? `Period: 1 Apr - 31 Mar (${currentFY.fyCode}) • Max 12.0 CL` : 'Monthly Cap: Max 1.25 EL / Month'}
                       </span>
                     </div>
 
@@ -4228,15 +4259,15 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       )}
 
                       <div className={isCL ? 'col-span-2' : ''}>
-                        <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Calendar Year *</label>
+                        <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Statutory Leave Period (1 Apr - 31 Mar) *</label>
                         <select
-                          value={masterLeaveForm.year || new Date().getFullYear()}
+                          value={masterLeaveForm.year || currentFY.startYear}
                           onChange={(e) => setMasterLeaveForm({ ...masterLeaveForm, year: parseInt(e.target.value, 10) })}
                           className="w-full p-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-indigo-500"
                         >
-                          {[2024, 2025, 2026, 2027, 2028].map(yr => (
-                            <option key={yr} value={yr}>{yr}</option>
-                          ))}
+                          <option value={2026}>1 Apr 2026 - 31 Mar 2027 (FY 2026-27) • Current</option>
+                          <option value={2025}>1 Apr 2025 - 31 Mar 2026 (FY 2025-26)</option>
+                          <option value={2027}>1 Apr 2027 - 31 Mar 2028 (FY 2027-28)</option>
                         </select>
                       </div>
                     </div>
@@ -4330,7 +4361,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                     <div className="p-2.5 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-900 text-[11px] font-medium flex items-center gap-2">
                       <Users className="w-4 h-4 text-indigo-600 flex-shrink-0" />
                       <span>
-                        <strong>Target:</strong> All <strong>{employees.length} active employees & managers</strong> across the company will be safely credited up to their statutory limit without errors.
+                        <strong>Smart Statutory Pro-Rata Allocation:</strong> All <strong>{employees.length} active employees & managers</strong> across the company will be directly credited. Staff who joined on/before 1 April receive up to {masterLeaveForm.days} days, while mid-year joiners are automatically capped to their active months up to 31 March (1.0 day/mo pro-rata) without errors.
                       </span>
                     </div>
                   </div>
@@ -4565,15 +4596,15 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       )}
 
                       <div className={isCL ? 'col-span-2' : ''}>
-                        <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Calendar Year *</label>
+                        <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Statutory Leave Period (1 Apr - 31 Mar) *</label>
                         <select
-                          value={manualLeaveForm.year || new Date().getFullYear()}
+                          value={manualLeaveForm.year || currentFY.startYear}
                           onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, year: parseInt(e.target.value, 10) })}
                           className="w-full p-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-sky-500"
                         >
-                          {[2024, 2025, 2026, 2027, 2028].map(yr => (
-                            <option key={yr} value={yr}>{yr}</option>
-                          ))}
+                          <option value={2026}>1 Apr 2026 - 31 Mar 2027 (FY 2026-27) • Current</option>
+                          <option value={2025}>1 Apr 2025 - 31 Mar 2026 (FY 2025-26)</option>
+                          <option value={2027}>1 Apr 2027 - 31 Mar 2028 (FY 2027-28)</option>
                         </select>
                       </div>
                     </div>
@@ -4668,56 +4699,88 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
               })()}
 
               {/* Step 4: Select Staff Member (Employee or Manager) */}
-              <div className="space-y-2">
-                <label className="font-bold text-slate-800 block uppercase tracking-wider text-[11px]">
-                  4. Select Staff Member (Employee or Manager) *
-                </label>
-                <select
-                  required
-                  value={manualLeaveForm.employee_id}
-                  onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, employee_id: e.target.value, apply_to_all: false })}
-                  className="w-full p-2.5 border border-slate-300 rounded-xl bg-white font-medium text-xs focus:ring-1 focus:ring-sky-500"
-                >
-                  <option value="">Select an employee or manager...</option>
-                  {employees.map(emp => (
-                    <option key={emp.id} value={emp.id}>
-                      {emp.full_name} ({emp.employee_id}) • {emp.role_name === 'manager' || emp.role === 'manager' ? '👔 Manager' : '👤 Employee'} • {emp.department || 'Staff'}
-                    </option>
-                  ))}
-                </select>
+              {(() => {
+                const staffList = companyStaffBalances.length > 0 ? companyStaffBalances : employees;
+                const sel = companyStaffBalances.find(s => String(s.id) === String(manualLeaveForm.employee_id));
+                const currentLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
+                const isCL = !currentLT || currentLT.code === 'CL' || currentLT.name.toLowerCase().includes('casual');
+                const maxCLAllowed = sel?.max_statutory_cl !== undefined ? sel.max_statutory_cl : 12.0;
+                const remainingCL = sel ? Math.max(0, maxCLAllowed - (sel.cl_credited || 0)) : 12.0;
 
-                {/* Live Balance Status Card for Selected Staff */}
-                {(() => {
-                  const sel = companyStaffBalances.find(s => String(s.id) === String(manualLeaveForm.employee_id));
-                  if (!sel) return null;
-                  const currentLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
-                  const isCL = !currentLT || currentLT.code === 'CL' || currentLT.name.toLowerCase().includes('casual');
-                  const remainingCL = Math.max(0, 12 - (sel.cl_credited || 0));
+                return (
+                  <div className="space-y-2">
+                    <label className="font-bold text-slate-800 block uppercase tracking-wider text-[11px]">
+                      4. Select Staff Member (Employee or Manager) *
+                    </label>
+                    <select
+                      required
+                      value={manualLeaveForm.employee_id}
+                      onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, employee_id: e.target.value, apply_to_all: false })}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl bg-white font-medium text-xs focus:ring-1 focus:ring-sky-500"
+                    >
+                      <option value="">Select an employee or manager...</option>
+                      {staffList.map(emp => {
+                        const code = emp.employee_code || emp.employee_id || `EMP-${emp.id}`;
+                        const isMgr = emp.role_name === 'manager' || emp.role === 'manager';
+                        return (
+                          <option key={emp.id} value={emp.id}>
+                            {emp.full_name} ({code}) • {isMgr ? '👔 Manager' : '👤 Employee'} • {emp.department || 'Staff'}
+                          </option>
+                        );
+                      })}
+                    </select>
 
-                  return (
-                    <div className="p-2.5 bg-sky-50/70 border border-sky-200 rounded-xl space-y-1 text-[11px]">
-                      <div className="flex items-center justify-between font-bold text-sky-900">
-                        <span>{sel.full_name} ({sel.employee_code})</span>
-                        <span>Net Balance: {sel.total_available}d</span>
-                      </div>
-                      <div className="flex items-center gap-3 text-slate-600">
-                        <span>
-                          CL: <strong>{sel.cl_balance}d</strong> (Credited: {sel.cl_credited}/12)
-                        </span>
-                        <span>•</span>
-                        <span>
-                          EL: <strong>{sel.el_balance}d</strong> (Credited: {sel.el_credited}d)
-                        </span>
-                      </div>
-                      {isCL && (
-                        <div className="text-[10px] text-sky-700 font-semibold pt-0.5">
-                          Remaining CL quota allowed for this calendar year: <strong>{remainingCL.toFixed(2)} days</strong>
+                    {/* Live Balance Status & Employment Period Card for Selected Staff */}
+                    {sel && (
+                      <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl space-y-1.5 text-[11px]">
+                        <div className="flex items-center justify-between font-bold text-sky-900">
+                          <span className="flex items-center gap-1.5">
+                            <span>{sel.role_name === 'manager' || sel.role === 'manager' ? '👔' : '👤'}</span>
+                            <span>{sel.full_name} ({sel.employee_code || sel.employee_id})</span>
+                          </span>
+                          <span className="bg-sky-200/70 text-sky-900 px-2 py-0.5 rounded font-mono text-[10px]">
+                            Net Balance: {sel.total_available}d
+                          </span>
                         </div>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
+
+                        {/* Employment Period & FY Statutory Allowance */}
+                        <div className="p-2 bg-white/90 border border-sky-100 rounded-lg text-[10px] space-y-1">
+                          <div className="text-slate-700 font-semibold flex items-center justify-between">
+                            <span>Employment Period:</span>
+                            <span className="text-sky-800 font-bold">{sel.tenure_label || 'Full Year (1 Apr - 31 Mar)'}</span>
+                          </div>
+                          <div className="text-slate-600 flex items-center justify-between">
+                            <span>Tenure to 31 Mar:</span>
+                            <span className="font-semibold text-slate-800">
+                              {sel.active_months_to_march !== undefined ? `${sel.active_months_to_march} active month(s)` : '12 active months'}
+                            </span>
+                          </div>
+                          <div className="text-slate-600 flex items-center justify-between">
+                            <span>Statutory Pro-Rata CL Limit:</span>
+                            <span className="font-bold text-indigo-700">Max {maxCLAllowed} days allowed</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between text-slate-600 text-[10px] px-1">
+                          <span>
+                            CL: <strong>{sel.cl_balance}d</strong> (Credited: {sel.cl_credited}/{maxCLAllowed}d)
+                          </span>
+                          <span>•</span>
+                          <span>
+                            EL: <strong>{sel.el_balance}d</strong> (Credited: {sel.el_credited}d)
+                          </span>
+                        </div>
+
+                        {isCL && (
+                          <div className="text-[10px] text-sky-800 font-semibold bg-sky-100/60 p-1.5 rounded text-center">
+                            Remaining CL quota allowed for this period (to 31 Mar): <strong>{remainingCL.toFixed(2)} days</strong>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Step 5: Mandatory Reason */}
               <div>
@@ -4867,7 +4930,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       onChange={() => setDeleteLeaveForm({ ...deleteLeaveForm, target_type: 'all', employee_id: '' })}
                       className="text-rose-600"
                     />
-                    <span className="font-medium text-slate-800">All Company Staff ({employees.length})</span>
+                    <span className="font-medium text-slate-800">All Company Staff & Managers ({employees.length || companyStaffBalances.length})</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -4877,27 +4940,59 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                       onChange={() => setDeleteLeaveForm({ ...deleteLeaveForm, target_type: 'single' })}
                       className="text-rose-600"
                     />
-                    <span className="font-medium text-slate-800">Specific Employee</span>
+                    <span className="font-medium text-slate-800">Specific Staff (Employee or Manager)</span>
                   </label>
                 </div>
               </div>
 
-              {deleteLeaveForm.target_type === 'single' && (
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Select Employee *</label>
-                  <select
-                    required={deleteLeaveForm.target_type === 'single'}
-                    value={deleteLeaveForm.employee_id}
-                    onChange={(e) => setDeleteLeaveForm({ ...deleteLeaveForm, employee_id: e.target.value })}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  >
-                    <option value="">Select an employee...</option>
-                    {employees.map(emp => (
-                      <option key={emp.id} value={emp.id}>{emp.full_name} ({emp.employee_id}) - {emp.department}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              {deleteLeaveForm.target_type === 'single' && (() => {
+                const staffList = companyStaffBalances.length > 0 ? companyStaffBalances : employees;
+                const sel = companyStaffBalances.find(s => String(s.id) === String(deleteLeaveForm.employee_id));
+
+                return (
+                  <div className="space-y-2">
+                    <label className="font-semibold text-slate-700 block text-xs">Select Staff Member (Employee or Manager) *</label>
+                    <select
+                      required={deleteLeaveForm.target_type === 'single'}
+                      value={deleteLeaveForm.employee_id}
+                      onChange={(e) => setDeleteLeaveForm({ ...deleteLeaveForm, employee_id: e.target.value })}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl bg-white text-xs font-medium focus:ring-1 focus:ring-rose-500"
+                    >
+                      <option value="">Select an employee or manager...</option>
+                      {staffList.map(emp => {
+                        const code = emp.employee_code || emp.employee_id || `EMP-${emp.id}`;
+                        const isMgr = emp.role_name === 'manager' || emp.role === 'manager';
+                        return (
+                          <option key={emp.id} value={emp.id}>
+                            {emp.full_name} ({code}) • {isMgr ? '👔 Manager' : '👤 Employee'} • {emp.department || 'Staff'}
+                          </option>
+                        );
+                      })}
+                    </select>
+
+                    {sel && (
+                      <div className="p-2.5 bg-rose-50/70 border border-rose-200 rounded-xl space-y-1 text-[11px]">
+                        <div className="flex items-center justify-between font-bold text-rose-900">
+                          <span className="flex items-center gap-1.5">
+                            <span>{sel.role_name === 'manager' || sel.role === 'manager' ? '👔' : '👤'}</span>
+                            <span>{sel.full_name} ({sel.employee_code || sel.employee_id})</span>
+                          </span>
+                          <span className="bg-rose-200/80 text-rose-950 px-2 py-0.5 rounded font-mono text-[10px]">
+                            Available: {sel.total_available}d
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 text-slate-600 text-[10px]">
+                          <span>CL: <strong>{sel.cl_balance}d</strong></span>
+                          <span>•</span>
+                          <span>EL: <strong>{sel.el_balance}d</strong></span>
+                          <span>•</span>
+                          <span>Total Used: <strong>{sel.total_used}d</strong></span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {deleteLeaveForm.action_type === 'deduct_days' && (
                 <div>

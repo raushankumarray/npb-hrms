@@ -13,19 +13,8 @@ seedDatabase();
 const { sanitizeDatabase } = require('./services/sanitize');
 sanitizeDatabase();
 
-// Check and auto-credit monthly Earned Leaves across companies
-try {
-  const { checkAndRunMonthlyAccrual } = require('./services/leaveService');
-  checkAndRunMonthlyAccrual();
-  // Check hourly for month rollover
-  setInterval(() => {
-    try {
-      checkAndRunMonthlyAccrual();
-    } catch (e) {}
-  }, 3600000);
-} catch (e) {
-  console.warn('Initial leave accrual notice:', e.message);
-}
+// Strictly Manual Leave Credit Policy: Auto-crediting is completely disabled across all panels.
+// Leaves are only credited when the Company Admin explicitly clicks Master Credit or Manual Credit.
 
 // Middlewares
 app.use(cors());
