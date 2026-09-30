@@ -345,12 +345,14 @@ export default function ManagerPanel({ user, company, activeTab }) {
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
+    window.addEventListener('npb-realtime-update', handleMasterRefresh);
 
     return () => {
       if (attSyncChannel) attSyncChannel.close();
       if (leaveSyncChannel) leaveSyncChannel.close();
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('master-refresh', handleMasterRefresh);
+      window.removeEventListener('npb-realtime-update', handleMasterRefresh);
     };
   }, [activeTab, page, pageSize, roleFilter, statusFilter, cityFilter, searchQuery]);
 

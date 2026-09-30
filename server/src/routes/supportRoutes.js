@@ -6,8 +6,8 @@ const { verifyAuth } = require('../middleware/auth');
 const { requireRole, requireSupportLevel, parseSupportAssignedCompanies, isCompanyAuthorized } = require('../middleware/rbac');
 const { unbindUserDevice } = require('../services/deviceBinding');
 const { logAudit } = require('../services/audit');
-const { createNotification } = require('../services/notificationService');
-const { syncSupportUser, syncUser, syncEmployee, syncLeaveRequest, syncLeaveBalance, syncLeaveTransaction, syncAttendancePunch, deleteFromFirebase } = require('../services/firebase');
+const { createNotification, broadcastRealtimeEvent } = require('../services/notificationService');
+const { syncSupportUser, syncUser, syncEmployee, syncLeaveRequest, syncLeaveBalance, syncLeaveTransaction, syncAttendancePunch, deleteFromFirebase, purgeAllAuditLogsFromFirebase } = require('../services/firebase');
 
 // List Support Accounts (Super Admin only)
 router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
@@ -335,6 +335,19 @@ router.post('/users/:id/change-password', verifyAuth, requireRole(['super_admin'
     reason: `Password updated for support staff (${user.username})`
   });
 
+  // Real-time sync updated password to Firebase (Firestore & RTDB)
+  try {
+    const freshUser = db.prepare('SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?').get(userId);
+    if (freshUser) syncUser(freshUser).catch(() => {});
+    const freshSupport = db.prepare('SELECT s.*, u.username, u.email FROM support_users s JOIN users u ON s.user_id = u.id WHERE s.user_id = ?').get(userId);
+    if (freshSupport) syncSupportUser(freshSupport).catch(() => {});
+  } catch (e) {}
+
+  // Broadcast instant real-time event to all connected clients
+  try {
+    broadcastRealtimeEvent({ entity: 'support_user', action: 'PASSWORD_CHANGED', id: userId });
+  } catch (e) {}
+
   res.json({ success: true, message: `Password for support user "${user.username}" updated successfully.` });
 });
 
@@ -366,6 +379,19 @@ router.put('/users/:id/status', verifyAuth, requireRole(['super_admin']), (req, 
     newValues: { status },
     reason: `Support account status changed to ${status}`
   });
+
+  // Real-time sync updated status to Firebase (Firestore & RTDB)
+  try {
+    const freshUser = db.prepare('SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?').get(userId);
+    if (freshUser) syncUser(freshUser).catch(() => {});
+    const freshSupport = db.prepare('SELECT s.*, u.username, u.email FROM support_users s JOIN users u ON s.user_id = u.id WHERE s.user_id = ?').get(userId);
+    if (freshSupport) syncSupportUser(freshSupport).catch(() => {});
+  } catch (e) {}
+
+  // Broadcast instant real-time event to all connected clients
+  try {
+    broadcastRealtimeEvent({ entity: 'support_user', action: status === 'active' ? 'ENABLE' : 'DISABLE', id: userId, data: { status } });
+  } catch (e) {}
 
   res.json({ success: true, message: `Support account "${user.username}" status updated to ${status}.` });
 });
@@ -416,12 +442,15 @@ router.delete('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res)
 
   transaction();
 
-  // Clean up from Firebase
+  // Clean up from Firebase (Firestore + RTDB)
   try {
-    const { deleteFromFirebase } = require('../services/firebase');
-    if (deleteFromFirebase) {
-      deleteFromFirebase('users', userId).catch(() => {});
-    }
+    deleteFromFirebase('users', userId).catch(() => {});
+    deleteFromFirebase('support_users', userId).catch(() => {});
+  } catch (e) {}
+
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({ entity: 'support_user', action: 'DELETE', id: userId });
   } catch (e) {}
 
   res.json({ success: true, message: `Support account "${currentSupport.username}" deleted successfully.` });
@@ -561,9 +590,55 @@ router.get('/devices', verifyAuth, requireSupportLevel(1), (req, res) => {
 });
 
 // Audit Logs & System Reports View (Support Level 1+ or Super Admin)
-const handleGetAuditLogs = (req, res) => {
+const handleGetAuditLogs = async (req, res) => {
   if (req.user.role_name === 'support' && (req.user.enable_audit_logs === 0 || req.user.enable_audit_logs === false)) {
     return res.status(403).json({ error: 'Audit log access is disabled for your support account by Super Admin.' });
+  }
+
+  // Auto-restore audit logs from Firebase if local SQLite database has 0 logs
+  try {
+    const localAuditCount = db.prepare('SELECT COUNT(*) as count FROM audit_logs').get()?.count || 0;
+    if (localAuditCount === 0) {
+      const { firestoreDb, loadPurgedTombstones } = require('../services/firebase');
+      if (firestoreDb) {
+        const { purgedAuditLogIds } = await loadPurgedTombstones();
+        const snap = await firestoreDb.collection('audit_logs').limit(500).get();
+        if (!snap.empty) {
+          const insertStmt = db.prepare(`
+            INSERT OR IGNORE INTO audit_logs (
+              id, company_id, user_id, user_name, role, panel, action,
+              target_entity, target_id, old_values_json, new_values_json, reason, ip_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+          const dbRestoreTx = db.transaction(() => {
+            snap.forEach(doc => {
+              const d = doc.data();
+              const logId = String(d.id || doc.id);
+              if (purgedAuditLogIds.has(logId)) return; // Strictly ignore purged/deleted audit logs
+              insertStmt.run(
+                isNaN(Number(logId)) ? null : Number(logId),
+                d.company_id || d.companyId || null,
+                d.user_id || d.userId || null,
+                d.user_name || d.userName || 'System',
+                d.role || 'system',
+                d.panel || 'General',
+                d.action || 'OPERATION',
+                d.target_entity || d.targetEntity || '',
+                d.target_id || d.targetId || null,
+                d.old_values_json || (typeof d.oldValues === 'object' ? JSON.stringify(d.oldValues) : null),
+                d.new_values_json || (typeof d.newValues === 'object' ? JSON.stringify(d.newValues) : null),
+                d.reason || '',
+                d.ip_address || d.ipAddress || '127.0.0.1',
+                d.created_at || d.createdAt || new Date().toISOString()
+              );
+            });
+          });
+          dbRestoreTx();
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Audit logs auto-fetch from Firebase notice:', e.message);
   }
 
   const { view = 'all', date, month, company_id, action, search, limit = 50, offset = 0 } = req.query;
@@ -663,7 +738,7 @@ router.get('/audit-reports', verifyAuth, requireSupportLevel(1), handleGetAuditL
 
 // Delete Audit Logs (Level 4 Support or Super Admin only)
 // Supports Day-wise, Month-wise, Filtered, and Single-row deletion
-router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
+router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), async (req, res) => {
   if (req.user.role_name === 'support' && (req.user.enable_audit_logs === 0 || req.user.enable_audit_logs === false)) {
     return res.status(403).json({ error: 'Audit log access is disabled for your support account by Super Admin.' });
   }
@@ -671,7 +746,7 @@ router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
   const payload = { ...(req.body || {}), ...(req.query || {}) };
   const { mode = 'single', id, date, month, company_id, action, search, view } = payload;
 
-  let deleteSql = 'DELETE FROM audit_logs WHERE ';
+  let whereClause = '';
   const params = [];
   let description = '';
 
@@ -679,21 +754,21 @@ router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
     if (!id) {
       return res.status(400).json({ error: 'Audit log ID is required for single deletion.' });
     }
-    deleteSql += 'id = ?';
+    whereClause = 'WHERE id = ?';
     params.push(id);
     description = `Single audit record #${id}`;
   } else if (mode === 'day') {
     if (!date) {
       return res.status(400).json({ error: 'Target date (YYYY-MM-DD) is required for day-wise deletion.' });
     }
-    deleteSql += 'date(created_at) = date(?)';
+    whereClause = 'WHERE date(created_at) = date(?)';
     params.push(date);
     description = `All audit logs for day ${date}`;
   } else if (mode === 'month') {
     if (!month) {
       return res.status(400).json({ error: 'Target month (YYYY-MM) is required for month-wise deletion.' });
     }
-    deleteSql += "strftime('%Y-%m', created_at) = ?";
+    whereClause = "WHERE strftime('%Y-%m', created_at) = ?";
     params.push(month);
     description = `All audit logs for month ${month}`;
   } else if (mode === 'filtered') {
@@ -727,19 +802,40 @@ router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
     if (conditions.length === 1) {
       return res.status(400).json({ error: 'At least one filter condition required for filtered deletion.' });
     }
-    deleteSql += conditions.join(' AND ');
+    whereClause = 'WHERE ' + conditions.join(' AND ');
     description = 'Audit logs matching active filters';
   } else if (mode === 'all') {
-    deleteSql = 'DELETE FROM audit_logs';
+    whereClause = '';
     description = 'All audit records in system';
   } else {
     return res.status(400).json({ error: `Invalid deletion mode: ${mode}` });
   }
 
   try {
+    // 1. Collect target IDs before deletion
+    const selectSql = `SELECT id FROM audit_logs ${whereClause}`;
+    const targetRows = db.prepare(selectSql).all(...params);
+    const targetIds = targetRows.map(r => r.id);
+
+    // 2. Delete from SQLite
+    const deleteSql = `DELETE FROM audit_logs ${whereClause}`;
     const result = db.prepare(deleteSql).run(...params);
     const deletedCount = result.changes;
 
+    // 3. Register tombstones and delete from Firebase (Firestore + RTDB)
+    try {
+      if (mode === 'all') {
+        await purgeAllAuditLogsFromFirebase();
+      } else {
+        for (const tId of targetIds) {
+          await deleteFromFirebase('audit_logs', tId);
+        }
+      }
+    } catch (e) {
+      console.warn('Firebase audit log delete notice:', e.message);
+    }
+
+    // 4. Log deletion in audit table
     logAudit({
       companyId: null,
       userId: req.user.id,
@@ -753,12 +849,14 @@ router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), (req, res) => {
       reason: `Deleted ${deletedCount} record(s): ${description} by Level 4 Support`
     });
 
-    if (mode === 'single' && id) {
-      try {
-        const { deleteFromFirebase } = require('../services/firebase');
-        deleteFromFirebase('audit_logs', id).catch(() => {});
-      } catch (e) {}
-    }
+    // 5. Broadcast instant real-time event
+    try {
+      broadcastRealtimeEvent({
+        entity: 'audit_logs',
+        action: 'DELETE',
+        data: { mode, deletedCount, targetIds }
+      });
+    } catch (e) {}
 
     res.json({
       success: true,
@@ -974,6 +1072,28 @@ router.put('/update-user-profile/:id', verifyAuth, requireSupportLevel(1), (req,
 
   try {
     transaction();
+
+    // Real-time sync updated user credentials & employee details to Firebase (Firestore & RTDB)
+    try {
+      const freshUser = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id LEFT JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(userId);
+      if (freshUser) syncUser(freshUser).catch(() => {});
+      if (targetUser.employee_row_id) {
+        const freshEmp = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(targetUser.employee_row_id);
+        if (freshEmp) syncEmployee(freshEmp).catch(() => {});
+      }
+    } catch (e) {}
+
+    // Broadcast instant real-time event
+    try {
+      broadcastRealtimeEvent({
+        companyId: targetUser.company_id,
+        entity: 'user',
+        action: 'PROFILE_UPDATED',
+        id: userId,
+        data: { status, email, mobile }
+      });
+    } catch (e) {}
+
     res.json({
       success: true,
       message: `Account requirements updated successfully for "${targetUser.username}".`
@@ -1113,22 +1233,26 @@ router.post('/enable-account/:id', verifyAuth, requireRole(['support', 'super_ad
 
   // 4. Sync with Firebase (Realtime DB and Firestore)
   try {
-    const { syncEmployee, realtimeDb, firestoreDb } = require('../services/firebase');
-    if (syncEmployee && emp.id) {
-      const freshEmp = db.prepare('SELECT * FROM employees WHERE id = ?').get(emp.id);
+    const freshUser = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id LEFT JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(emp.user_id);
+    if (freshUser) syncUser(freshUser).catch(() => {});
+    if (emp.id) {
+      const freshEmp = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(emp.id);
       if (freshEmp) syncEmployee(freshEmp).catch(() => {});
-    }
-    if (realtimeDb) {
-      realtimeDb.ref(`users/${emp.user_id}/status`).set('active').catch(() => {});
-      if (emp.id) realtimeDb.ref(`employees/${emp.id}/status`).set('active').catch(() => {});
-    }
-    if (firestoreDb) {
-      firestoreDb.collection('users').doc(String(emp.user_id)).set({ status: 'active' }, { merge: true }).catch(() => {});
-      if (emp.id) firestoreDb.collection('employees').doc(String(emp.id)).set({ status: 'active' }, { merge: true }).catch(() => {});
     }
   } catch (e) {
     console.warn('Firebase sync note on enable account:', e.message);
   }
+
+  // 5. Broadcast instant real-time event to all connected clients
+  try {
+    broadcastRealtimeEvent({
+      companyId: emp.company_id,
+      entity: 'account',
+      action: 'ENABLE',
+      id: emp.id || emp.user_id,
+      data: { status: 'active', userId: emp.user_id }
+    });
+  } catch (e) {}
 
   res.json({
     success: true,

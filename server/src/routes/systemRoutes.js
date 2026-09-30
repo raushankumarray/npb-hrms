@@ -5,8 +5,8 @@ const db = require('../db');
 const { verifyAuth, generateToken } = require('../middleware/auth');
 const { requireRole } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase, fetchAllFromFirebaseAndRestoreToDb, resetFirebaseConfig, wipeAllCompanyDataFromDb } = require('../services/firebase');
-const { createNotification } = require('../services/notificationService');
+const { getFirebaseStatus, saveFirebaseConfig, testFirebaseConnection, syncAllDatabaseToFirebase, fetchAllFromFirebaseAndRestoreToDb, resetFirebaseConfig, wipeAllCompanyDataFromDb, syncUser } = require('../services/firebase');
+const { createNotification, broadcastRealtimeEvent } = require('../services/notificationService');
 
 // Helper to get or insert an application setting
 function getSetting(key, defaultValue = '') {
@@ -195,6 +195,23 @@ router.put('/superadmin/account', verifyAuth, requireRole(['super_admin']), (req
     });
 
     transaction();
+
+    // Real-time sync updated Super Admin credentials to Firebase (Firestore & RTDB)
+    try {
+      const freshUser = db.prepare('SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?').get(req.user.id);
+      if (freshUser) {
+        syncUser(freshUser).catch(() => {});
+      }
+    } catch (e) {}
+
+    // Broadcast instant real-time event to all connected clients
+    try {
+      broadcastRealtimeEvent({
+        entity: 'super_admin',
+        action: 'ACCOUNT_UPDATED',
+        id: req.user.id
+      });
+    } catch (e) {}
 
     // Generate refreshed token with new username
     const refreshedToken = generateToken({

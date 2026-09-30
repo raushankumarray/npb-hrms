@@ -55,10 +55,20 @@ export function NotificationProvider({ children, onSelectTab, currentUser }) {
 
       es.onmessage = (event) => {
         try {
-          const notif = JSON.parse(event.data);
-          if (notif && notif.id) {
-            setNotifications((prev) => [notif, ...prev.filter((n) => n.id !== notif.id)]);
-            setUnreadCount((c) => c + 1);
+          const payload = JSON.parse(event.data);
+          if (payload) {
+            // Real-time sync update event across panels and databases
+            if (payload.is_realtime_event || payload.entity) {
+              window.dispatchEvent(new CustomEvent('npb-realtime-update', { detail: payload }));
+              window.dispatchEvent(new CustomEvent('master-refresh', { detail: payload }));
+            }
+            // In-app bell notification item
+            if (payload.id && !payload.is_realtime_event) {
+              setNotifications((prev) => [payload, ...prev.filter((n) => n.id !== payload.id)]);
+              setUnreadCount((c) => c + 1);
+              window.dispatchEvent(new CustomEvent('npb-realtime-update', { detail: payload }));
+              window.dispatchEvent(new CustomEvent('master-refresh', { detail: payload }));
+            }
           }
         } catch (e) {}
       };

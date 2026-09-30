@@ -351,7 +351,11 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
-    return () => window.removeEventListener('master-refresh', handleMasterRefresh);
+    window.addEventListener('npb-realtime-update', handleMasterRefresh);
+    return () => {
+      window.removeEventListener('master-refresh', handleMasterRefresh);
+      window.removeEventListener('npb-realtime-update', handleMasterRefresh);
+    };
   }, [activeTab, dirPage, dirPageSize, dirCompanyFilter, dirRoleFilter, dirStatusFilter, dirCityFilter, dirSearchQuery, companyFilterStatus, selectedCompanyFilter, companySearchQuery]);
 
   // Handle Logo Upload

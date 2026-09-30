@@ -186,10 +186,53 @@ function notifyEmployeeManager(employeeId, notificationData) {
   return [];
 }
 
+/**
+ * Broadcast real-time system event to all connected clients (or specific company/role)
+ * and update Firebase RTDB realtime_sync/latest
+ */
+function broadcastRealtimeEvent({ companyId = null, role = null, entity, action, id = null, data = {} }) {
+  const payload = JSON.stringify({
+    is_realtime_event: true,
+    companyId,
+    entity,
+    action,
+    id: id ? String(id) : null,
+    data: typeof data === 'object' ? data : {},
+    timestamp: new Date().toISOString()
+  });
+  const sseMsg = `data: ${payload}\n\n`;
+
+  for (const [userId, resSet] of sseClients.entries()) {
+    for (const res of resSet) {
+      try {
+        res.write(sseMsg);
+      } catch (err) {
+        resSet.delete(res);
+      }
+    }
+  }
+
+  // Also write to Firebase RTDB realtime_sync/latest
+  try {
+    const { realtimeDb } = require('./firebase');
+    if (realtimeDb) {
+      realtimeDb.ref('realtime_sync/latest').set({
+        companyId,
+        entity,
+        action,
+        id: id ? String(id) : null,
+        data: typeof data === 'object' ? data : {},
+        updatedAt: Date.now()
+      }).catch(() => {});
+    }
+  } catch (e) {}
+}
+
 module.exports = {
   addSseClient,
   removeSseClient,
   broadcastSse,
+  broadcastRealtimeEvent,
   createNotification,
   notifyUsers,
   notifyCompanyAdmins,
@@ -197,3 +240,4 @@ module.exports = {
   notifySupportTeam,
   notifyEmployeeManager
 };
+

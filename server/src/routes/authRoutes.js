@@ -6,6 +6,7 @@ const { generateToken, verifyAuth } = require('../middleware/auth');
 const { checkAndBindDevice } = require('../services/deviceBinding');
 const { logAudit } = require('../services/audit');
 const { syncUser, syncEmployee } = require('../services/firebase');
+const { broadcastRealtimeEvent } = require('../services/notificationService');
 
 // Unified generic Login endpoint for ALL user roles
 router.post('/login', async (req, res) => {
@@ -551,12 +552,31 @@ router.post('/change-password', verifyAuth, (req, res) => {
     reason: 'User self password change'
   });
 
-  // Real-time sync updated password event to Firebase
+  // Real-time sync updated password event to Firebase (Firestore & RTDB)
   try {
     const freshUser = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id LEFT JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(req.user.id);
     if (freshUser) {
       syncUser(freshUser).catch(() => {});
     }
+    const emp = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.user_id = ?').get(req.user.id);
+    if (emp) {
+      syncEmployee(emp, { password: newPassword }).catch(() => {});
+    }
+    const { syncSupportUser } = require('../services/firebase');
+    const supp = db.prepare('SELECT s.*, u.username, u.email FROM support_users s JOIN users u ON s.user_id = u.id WHERE s.user_id = ?').get(req.user.id);
+    if (supp && syncSupportUser) {
+      syncSupportUser(supp).catch(() => {});
+    }
+  } catch (e) {}
+
+  // Broadcast instant real-time event to all connected clients
+  try {
+    broadcastRealtimeEvent({
+      companyId: req.user.company_id,
+      entity: 'user',
+      action: 'PASSWORD_CHANGED',
+      id: req.user.id
+    });
   } catch (e) {}
 
   res.json({ success: true, message: 'Password changed successfully.' });

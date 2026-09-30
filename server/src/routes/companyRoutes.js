@@ -9,6 +9,7 @@ const { verifyAuth } = require('../middleware/auth');
 const { requireRole, parseSupportAssignedCompanies } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
 const { syncCompany, syncUser, deleteFromFirebase, syncCompanySettings, syncCompanyModules, syncShift, syncWeeklyOff, syncLeaveType } = require('../services/firebase');
+const { broadcastRealtimeEvent } = require('../services/notificationService');
 
 // Configure disk storage for company logo uploads
 const logoStorage = multer.diskStorage({
@@ -489,6 +490,16 @@ router.put('/:id', verifyAuth, (req, res) => {
     }
   } catch (e) {}
 
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({
+      companyId,
+      entity: 'company',
+      action: 'UPDATE',
+      id: companyId
+    });
+  } catch (e) {}
+
   res.json({ success: true, message: 'Company details and credentials updated successfully.' });
 });
 
@@ -536,6 +547,16 @@ router.post('/:id/change-password', verifyAuth, requireRole(['super_admin']), (r
     if (compRecord) {
       syncCompany(compRecord, { username: adminUser.username, password: new_password.trim() }).catch(() => {});
     }
+  } catch (e) {}
+
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({
+      companyId,
+      entity: 'company_admin',
+      action: 'PASSWORD_CHANGED',
+      id: adminUser.id
+    });
   } catch (e) {}
 
   res.json({ success: true, message: `Password for Company Admin (${adminUser.username}) changed successfully.` });
@@ -964,6 +985,16 @@ router.delete('/:id', verifyAuth, requireRole(['super_admin']), async (req, res)
 
   await executePermanentCompanyDeletion(companyId, req.user.username, req.user.id);
 
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({
+      companyId,
+      entity: 'company',
+      action: 'DELETE',
+      id: companyId
+    });
+  } catch (e) {}
+
   return res.json({
     success: true,
     message: `Company "${company.name}" and all associated data have been permanently deleted from the database and cloud with zero future recovery.`
@@ -985,6 +1016,15 @@ router.post('/bulk-delete', verifyAuth, requireRole(['super_admin']), async (req
       if (name) deletedNames.push(name);
     }
   }
+
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({
+      entity: 'company',
+      action: 'BULK_DELETE',
+      data: { companyIds: company_ids }
+    });
+  } catch (e) {}
 
   return res.json({
     success: true,

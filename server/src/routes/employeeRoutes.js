@@ -15,7 +15,7 @@ const {
 } = require('../services/excelService');
 const { logAudit } = require('../services/audit');
 const { syncEmployee, syncUser, deleteFromFirebase, syncEmployeeMapping, deleteEmployeeMapping, syncLeaveBalance } = require('../services/firebase');
-const { createNotification, notifyUsers } = require('../services/notificationService');
+const { createNotification, notifyUsers, broadcastRealtimeEvent } = require('../services/notificationService');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -741,6 +741,16 @@ router.put('/:id', verifyAuth, requireRole(['company_admin', 'manager', 'super_a
     }
   } catch (e) {}
 
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({
+      companyId: currentEmp.company_id,
+      entity: 'employee',
+      action: 'UPDATE',
+      id: empId
+    });
+  } catch (e) {}
+
   res.json({ success: true, message: 'Personnel updated successfully.' });
 });
 
@@ -827,6 +837,17 @@ router.post('/:id/toggle-status', verifyAuth, requireRole(['company_admin', 'man
     });
   } catch (e) {}
 
+  // Broadcast instant real-time event to all connected clients
+  try {
+    broadcastRealtimeEvent({
+      companyId: emp.company_id,
+      entity: 'employee',
+      action: targetStatus === 'active' ? 'ENABLE' : 'DISABLE',
+      id: empId,
+      data: { status: targetStatus, userId: emp.user_id }
+    });
+  } catch (e) {}
+
   res.json({ success: true, status: targetStatus, message: `Account for "${emp.full_name}" is now ${targetStatus}.` });
 });
 
@@ -888,6 +909,17 @@ router.post('/:id/change-password', verifyAuth, requireRole(['company_admin', 'm
     if (empRecord) {
       syncEmployee(empRecord, { password: targetPassword.trim() }).catch(() => {});
     }
+  } catch (e) {}
+
+  // Broadcast instant real-time event to all connected clients
+  try {
+    broadcastRealtimeEvent({
+      companyId: emp.company_id,
+      entity: 'employee',
+      action: 'PASSWORD_CHANGED',
+      id: empId,
+      data: { userId: emp.user_id }
+    });
   } catch (e) {}
 
   res.json({ success: true, message: `Password for "${emp.full_name}" updated successfully.` });
@@ -989,6 +1021,17 @@ router.delete('/:id', verifyAuth, requireRole(['company_admin', 'super_admin', '
     employeeCode: emp.employee_id,
     username: emp.username
   });
+
+  // Broadcast instant real-time event
+  try {
+    broadcastRealtimeEvent({
+      companyId: emp.company_id,
+      entity: 'employee',
+      action: 'DELETE',
+      id: empId,
+      data: { userId: emp.user_id }
+    });
+  } catch (e) {}
 
   res.json({
     success: true,

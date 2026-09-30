@@ -513,9 +513,16 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
 
     const handleMasterRefresh = () => {
       fetchData();
+      if (activeTab === 'audit-reports' || activeTab === 'audit-logs') {
+        fetchAuditReports();
+      }
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
-    return () => window.removeEventListener('master-refresh', handleMasterRefresh);
+    window.addEventListener('npb-realtime-update', handleMasterRefresh);
+    return () => {
+      window.removeEventListener('master-refresh', handleMasterRefresh);
+      window.removeEventListener('npb-realtime-update', handleMasterRefresh);
+    };
   }, [activeTab, selectedCompanyId, attDateFilter]);
 
   // --- UNIVERSAL INSTANT SEARCH LOGIC ---

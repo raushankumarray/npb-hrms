@@ -415,12 +415,14 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
+    window.addEventListener('npb-realtime-update', handleMasterRefresh);
 
     return () => {
       if (attSyncChannel) attSyncChannel.close();
       if (leaveSyncChannel) leaveSyncChannel.close();
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('master-refresh', handleMasterRefresh);
+      window.removeEventListener('npb-realtime-update', handleMasterRefresh);
     };
   }, [activeTab, roleFilter, statusFilter, cityFilter, page, pageSize, searchQuery]);
 

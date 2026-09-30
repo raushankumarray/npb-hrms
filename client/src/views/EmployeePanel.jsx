@@ -703,6 +703,7 @@ Please deregister this device in Support Panel so I can register and log in on m
       fetchData();
     };
     window.addEventListener('master-refresh', handleMasterRefresh);
+    window.addEventListener('npb-realtime-update', handleMasterRefresh);
 
     return () => {
       if (watchId !== null && navigator.geolocation) {
@@ -715,6 +716,7 @@ Please deregister this device in Support Panel so I can register and log in on m
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('focus', fetchData);
       window.removeEventListener('master-refresh', handleMasterRefresh);
+      window.removeEventListener('npb-realtime-update', handleMasterRefresh);
     };
   }, [activeTab, filterMonth, filterYear]);
 

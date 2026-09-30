@@ -180,6 +180,10 @@ function initFirebase() {
       return false;
     }
 
+    if (!databaseURL && (serviceAccount?.project_id || explicitProjectId)) {
+      databaseURL = `https://${serviceAccount?.project_id || explicitProjectId}-default-rtdb.firebaseio.com`;
+    }
+
     // Initialize Firebase Admin with modern modular SDK
     const config = {
       credential: cert(serviceAccount)
@@ -1920,6 +1924,7 @@ async function loadPurgedTombstones() {
   const purgedEmployeeCodes = new Set();
   const purgedUserIds = new Set();
   const purgedUsernames = new Set();
+  const purgedAuditLogIds = new Set();
 
   // 1. From SQLite
   try {
@@ -1937,6 +1942,8 @@ async function loadPurgedTombstones() {
       } else if (r.entity_type === 'user') {
         if (r.entity_id) purgedUserIds.add(String(r.entity_id));
         if (r.identifier) purgedUsernames.add(String(r.identifier).trim().toLowerCase());
+      } else if (r.entity_type === 'audit_log') {
+        if (r.entity_id) purgedAuditLogIds.add(String(r.entity_id));
       }
     }
   } catch (e) {}
@@ -1960,6 +1967,8 @@ async function loadPurgedTombstones() {
           } else if (d.entityType === 'user') {
             if (d.entityId) purgedUserIds.add(String(d.entityId));
             if (d.identifier) purgedUsernames.add(String(d.identifier).trim().toLowerCase());
+          } else if (d.entityType === 'audit_log') {
+            if (d.entityId) purgedAuditLogIds.add(String(d.entityId));
           }
         });
       }
@@ -1981,6 +1990,9 @@ async function loadPurgedTombstones() {
         if (val.user && typeof val.user === 'object') {
           Object.keys(val.user).forEach(id => purgedUserIds.add(String(id)));
         }
+        if (val.audit_log && typeof val.audit_log === 'object') {
+          Object.keys(val.audit_log).forEach(id => purgedAuditLogIds.add(String(id)));
+        }
         if (val.codes && typeof val.codes === 'object') {
           Object.keys(val.codes).forEach(c => purgedCompanyCodes.add(String(c).trim().toUpperCase()));
         }
@@ -1998,7 +2010,8 @@ async function loadPurgedTombstones() {
     purgedEmployeeIds,
     purgedEmployeeCodes,
     purgedUserIds,
-    purgedUsernames
+    purgedUsernames,
+    purgedAuditLogIds
   };
 }
 
@@ -2478,6 +2491,14 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
       if (realtimeDb) {
         await realtimeDb.ref(`notifications/${strId}`).remove().catch(() => {});
       }
+    } else if (entityType === 'audit_logs' || entityType === 'audit_log') {
+      await registerPurgedTombstone('audit_log', strId, {});
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('audit_logs', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`audit_logs/${strId}`).remove().catch(() => {});
+      }
     } else {
       if (firestoreDb) {
         await safeDeleteFirestoreDoc(entityType, strId);
@@ -2493,6 +2514,28 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
   } catch (err) {
     console.warn(`Firebase deleteFromFirebase (${entityType}/${id}) notice:`, err.message);
     return false;
+  }
+}
+
+/**
+ * Purge all audit logs from Firebase Firestore and Realtime Database
+ */
+async function purgeAllAuditLogsFromFirebase() {
+  if (!firebaseStatus.connected) return;
+  try {
+    if (firestoreDb) {
+      const snap = await firestoreDb.collection('audit_logs').limit(500).get().catch(() => null);
+      if (snap && !snap.empty) {
+        const batch = firestoreDb.batch();
+        snap.docs.forEach(doc => batch.delete(doc.ref));
+        await batch.commit().catch(() => {});
+      }
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref('audit_logs').remove().catch(() => {});
+    }
+  } catch (e) {
+    console.warn('purgeAllAuditLogsFromFirebase notice:', e.message);
   }
 }
 
@@ -3311,7 +3354,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       purgedEmployeeIds,
       purgedEmployeeCodes,
       purgedUserIds,
-      purgedUsernames
+      purgedUsernames,
+      purgedAuditLogIds
     } = await loadPurgedTombstones();
 
     // 1. Prune Companies Map against tombstones & deleted status
@@ -3407,6 +3451,14 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         (empCode && purgedEmployeeCodes.has(empCode))
       ) {
         attendanceMap.delete(key);
+      }
+    }
+
+    // 5. Prune Audit Logs against tombstones & deleted status
+    for (const [docKey, l] of Array.from(auditLogsMap.entries())) {
+      const rawId = String(l?.id || docKey);
+      if (purgedAuditLogIds.has(rawId)) {
+        auditLogsMap.delete(docKey);
       }
     }
 
@@ -4906,6 +4958,7 @@ module.exports = {
   loadPurgedTombstones,
   deleteFromFirebase,
   syncCompanyReports,
+  purgeAllAuditLogsFromFirebase,
   syncAllDatabaseToFirebase,
   fetchAllFromFirebaseAndRestoreToDb,
   resetFirebaseConfig,
