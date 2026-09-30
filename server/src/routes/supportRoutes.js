@@ -1466,6 +1466,26 @@ router.get('/remote/company/:companyId/full-data', verifyAuth, requireSupportLev
   const shifts = db.prepare('SELECT id, name, start_time, end_time, working_hours, status FROM shifts WHERE company_id = ?').all(companyId);
   const geofences = db.prepare('SELECT id, location_name, latitude, longitude, radius, status FROM geofences WHERE company_id = ?').all(companyId);
 
+  const correctionRequests = db.prepare(`
+    SELECT cr.*, e.full_name as employee_name, e.employee_id as employee_code
+    FROM attendance_correction_requests cr
+    JOIN employees e ON cr.employee_id = e.id
+    WHERE cr.company_id = ?
+    ORDER BY cr.created_at DESC LIMIT 60
+  `).all(companyId);
+
+  let tickets = [];
+  try {
+    tickets = db.prepare(`
+      SELECT sr.id, sr.employee_id, sr.request_type, sr.title, sr.description, sr.status, sr.created_at,
+             e.full_name as employee_name, e.employee_id as employee_code
+      FROM service_requests sr
+      LEFT JOIN employees e ON sr.employee_id = e.id
+      WHERE sr.company_id = ?
+      ORDER BY sr.created_at DESC LIMIT 60
+    `).all(companyId);
+  } catch (e) {}
+
   res.json({
     success: true,
     company,
@@ -1478,7 +1498,9 @@ router.get('/remote/company/:companyId/full-data', verifyAuth, requireSupportLev
     recentAttendance,
     attendanceLogs: recentAttendance,
     shifts,
-    geofences
+    geofences,
+    correctionRequests,
+    tickets
   });
 });
 
@@ -1548,6 +1570,14 @@ router.get('/remote/employee/:employeeId/full-data', verifyAuth, requireSupportL
     ORDER BY created_at DESC
   `).all(employeeId);
 
+  const correctionRequests = db.prepare(`
+    SELECT * FROM attendance_correction_requests
+    WHERE employee_id = ?
+    ORDER BY created_at DESC LIMIT 45
+  `).all(employeeId);
+
+  const assignedManager = emp.manager_id ? db.prepare('SELECT id, full_name, mobile, email, designation FROM employees WHERE id = ?').get(emp.manager_id) : null;
+
   res.json({
     success: true,
     employee: emp,
@@ -1556,8 +1586,10 @@ router.get('/remote/employee/:employeeId/full-data', verifyAuth, requireSupportL
     leaveRequests,
     attendanceHistory: attendanceRecords,
     attendanceRecords,
+    correctionRequests,
     device,
-    tickets
+    tickets,
+    assignedManager
   });
 });
 
@@ -1641,6 +1673,47 @@ router.post('/remote/leave/apply', verifyAuth, requireSupportLevel(2), (req, res
         link: '/leaves'
       });
     } catch (e) {}
+
+    if (status === 'pending') {
+      const notifyUserIds = new Set();
+      if (emp.manager_id) {
+        const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
+        if (mgrUser && mgrUser.user_id) notifyUserIds.add(mgrUser.user_id);
+      }
+      try {
+        const mappings = db.prepare('SELECT manager_id FROM employee_mappings WHERE employee_id = ?').all(emp.id);
+        for (const m of mappings) {
+          if (m.manager_id) {
+            const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.manager_id);
+            if (u && u.user_id) notifyUserIds.add(u.user_id);
+          }
+        }
+      } catch (e) {}
+
+      if (notifyUserIds.size === 0 || emp.reports_to_admin) {
+        const admins = db.prepare(`
+          SELECT u.id FROM users u
+          JOIN roles r ON u.role_id = r.id
+          WHERE u.company_id = ? AND r.name IN ('company_admin', 'admin')
+        `).all(emp.company_id);
+        for (const a of admins) {
+          notifyUserIds.add(a.id);
+        }
+      }
+
+      for (const uid of notifyUserIds) {
+        try {
+          createNotification({
+            userId: uid,
+            companyId: emp.company_id,
+            title: 'Leave Request Pending Approval',
+            message: `New ${lt.name} request (${days} days: ${start_date} to ${end_date}) submitted for ${emp.full_name} via Support on user request.`,
+            type: 'info',
+            link: '/leaves'
+          });
+        } catch (e) {}
+      }
+    }
 
     return newReqId;
   });
@@ -1946,6 +2019,262 @@ router.delete('/remote/attendance/:id', verifyAuth, requireSupportLevel(2), (req
   } catch (e) {}
 
   res.json({ success: true, message: 'Attendance record permanently removed as requested.' });
+});
+
+// Remote Submit Attendance Correction on behalf of Employee
+router.post('/remote/attendance-correction/submit', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const { employee_id, date, punch_in_time, punch_out_time, requested_status, correction_type, reason, auto_approve } = req.body;
+  if (!employee_id || !date || !reason) {
+    return res.status(400).json({ error: 'employee_id, date, and mandatory audit reason are required.' });
+  }
+
+  const emp = db.prepare('SELECT id, company_id, user_id, full_name, employee_id as employee_code, manager_id, reports_to_admin FROM employees WHERE id = ?').get(employee_id);
+  if (!emp) return res.status(404).json({ error: 'Employee not found.' });
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const currentAtt = db.prepare('SELECT * FROM attendance_records WHERE employee_id = ? AND date = ?').get(emp.id, date);
+  const currentStatus = currentAtt?.status || 'Absent';
+  const currentIn = currentAtt?.punch_in_time || null;
+  const currentOut = currentAtt?.punch_out_time || null;
+
+  const mode = correction_type || 'both';
+  const reqIn = (mode === 'out') ? currentIn : (punch_in_time || currentIn);
+  const reqOut = (mode === 'in') ? currentOut : (punch_out_time || currentOut);
+  const finalStatus = requested_status || (reqIn ? 'Present' : currentStatus);
+
+  if (auto_approve) {
+    // Directly apply to attendance_records
+    let totalHours = 8.5;
+    if (reqIn && reqOut) {
+      const [h1, m1, s1 = 0] = reqIn.split(':').map(Number);
+      const [h2, m2, s2 = 0] = reqOut.split(':').map(Number);
+      const diffSec = (h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1);
+      if (diffSec > 0) totalHours = Math.round((diffSec / 3600) * 100) / 100;
+    }
+
+    let recId;
+    if (currentAtt) {
+      db.prepare(`
+        UPDATE attendance_records
+        SET punch_in_time = ?, punch_out_time = ?, status = ?, total_hours = ?, is_edited = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(reqIn, reqOut, finalStatus, totalHours, currentAtt.id);
+      recId = currentAtt.id;
+    } else {
+      const ins = db.prepare(`
+        INSERT INTO attendance_records (company_id, employee_id, date, punch_in_time, punch_out_time, status, total_hours, is_edited)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      `).run(emp.company_id, emp.id, date, reqIn, reqOut, finalStatus, totalHours);
+      recId = ins.lastInsertRowid;
+    }
+
+    // Insert approved correction request record
+    db.prepare(`
+      INSERT INTO attendance_correction_requests (
+        company_id, employee_id, date, current_status, current_punch_in, current_punch_out,
+        requested_punch_in, requested_punch_out, requested_status, reason, status, correction_type,
+        reviewed_by, review_notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, 'Directly approved by Support')
+    `).run(
+      emp.company_id, emp.id, date, currentStatus, currentIn, currentOut,
+      reqIn, reqOut, finalStatus, reason.trim(), mode, req.user.id
+    );
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_ATTENDANCE_CORRECTION_AUTO_APPROVED',
+      targetEntity: 'attendance_records',
+      targetId: recId,
+      companyId: emp.company_id,
+      newValues: { employee: emp.full_name, date, status: finalStatus, punch_in: reqIn, punch_out: reqOut },
+      reason: `Attendance correction directly approved by Support for ${emp.full_name}: ${reason}`
+    });
+
+    try {
+      const freshAtt = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(recId);
+      if (freshAtt) syncAttendancePunch(freshAtt).catch(() => {});
+    } catch (e) {}
+
+    return res.json({ success: true, message: `Attendance correction directly applied and approved for ${emp.full_name} on ${date}.` });
+  } else {
+    // Send to assigned mapping rule (Manager/Admin) for approval
+    const crIns = db.prepare(`
+      INSERT INTO attendance_correction_requests (
+        company_id, employee_id, date, current_status, current_punch_in, current_punch_out,
+        requested_punch_in, requested_punch_out, requested_status, reason, status, correction_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(
+      emp.company_id, emp.id, date, currentStatus, currentIn, currentOut,
+      reqIn, reqOut, finalStatus, reason.trim(), mode
+    );
+
+    const notifyUserIds = new Set();
+    if (emp.manager_id) {
+      const mgrUser = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(emp.manager_id);
+      if (mgrUser && mgrUser.user_id) notifyUserIds.add(mgrUser.user_id);
+    }
+    try {
+      const mappings = db.prepare('SELECT manager_id FROM employee_mappings WHERE employee_id = ?').all(emp.id);
+      for (const m of mappings) {
+        if (m.manager_id) {
+          const u = db.prepare('SELECT user_id FROM employees WHERE id = ?').get(m.manager_id);
+          if (u && u.user_id) notifyUserIds.add(u.user_id);
+        }
+      }
+    } catch (e) {}
+
+    if (notifyUserIds.size === 0 || emp.reports_to_admin) {
+      const admins = db.prepare(`
+        SELECT u.id FROM users u
+        JOIN roles r ON u.role_id = r.id
+        WHERE u.company_id = ? AND r.name IN ('company_admin', 'admin')
+      `).all(emp.company_id);
+      for (const a of admins) {
+        notifyUserIds.add(a.id);
+      }
+    }
+
+    for (const uid of notifyUserIds) {
+      try {
+        createNotification({
+          userId: uid,
+          companyId: emp.company_id,
+          title: 'Attendance Correction Submitted for Review',
+          message: `Attendance correction for ${emp.full_name} (${date}) has been submitted via Support Team and is pending your supervisor approval.`,
+          type: 'info',
+          link: '/attendance'
+        });
+      } catch (e) {}
+    }
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_ATTENDANCE_CORRECTION_SUBMITTED_TO_MAPPING',
+      targetEntity: 'attendance_correction_requests',
+      targetId: crIns.lastInsertRowid,
+      companyId: emp.company_id,
+      newValues: { employee: emp.full_name, date, requestedStatus: finalStatus, reason },
+      reason: `Correction submitted on behalf of ${emp.full_name} routed to assigned supervisor mapping for approval`
+    });
+
+    return res.json({ success: true, message: `Attendance correction for ${emp.full_name} on ${date} submitted and routed to assigned supervisor for approval.` });
+  }
+});
+
+// Remote Review Attendance Correction Request (Approve / Reject)
+router.put('/remote/attendance-correction/:id/review', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const crId = parseInt(req.params.id, 10);
+  const { status, review_notes } = req.body;
+
+  if (!['approved', 'rejected'].includes(status)) {
+    return res.status(400).json({ error: 'Status must be approved or rejected.' });
+  }
+
+  const cr = db.prepare('SELECT * FROM attendance_correction_requests WHERE id = ?').get(crId);
+  if (!cr) return res.status(404).json({ error: 'Correction request not found.' });
+
+  if (!isCompanyAuthorized(req.user, cr.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE attendance_correction_requests
+      SET status = ?, reviewed_by = ?, review_notes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(status, req.user.id, review_notes || 'Reviewed by Support Authority', crId);
+
+    if (status === 'approved') {
+      const pIn = cr.requested_punch_in || null;
+      const pOut = cr.requested_punch_out || null;
+      let hours = 8.5;
+      if (pIn && pOut) {
+        const [h1, m1, s1 = 0] = pIn.split(':').map(Number);
+        const [h2, m2, s2 = 0] = pOut.split(':').map(Number);
+        const diffSec = (h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1);
+        if (diffSec > 0) hours = Math.round((diffSec / 3600) * 100) / 100;
+      }
+      const finalStatus = cr.requested_status || 'Present';
+
+      const existing = db.prepare('SELECT id FROM attendance_records WHERE employee_id = ? AND date = ?').get(cr.employee_id, cr.date);
+      let recordId;
+      if (existing) {
+        db.prepare(`
+          UPDATE attendance_records
+          SET punch_in_time = ?, punch_out_time = ?, status = ?, total_hours = ?, is_edited = 1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `).run(pIn, pOut, finalStatus, hours, existing.id);
+        recordId = existing.id;
+      } else {
+        const ins = db.prepare(`
+          INSERT INTO attendance_records (company_id, employee_id, date, punch_in_time, punch_out_time, status, total_hours, is_edited)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        `).run(cr.company_id, cr.employee_id, cr.date, pIn, pOut, finalStatus, hours);
+        recordId = ins.lastInsertRowid;
+      }
+
+      try {
+        const freshAtt = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(recordId);
+        if (freshAtt) syncAttendancePunch(freshAtt).catch(() => {});
+      } catch (e) {}
+    }
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: `REMOTE_CORRECTION_${status.toUpperCase()}`,
+      targetEntity: 'attendance_correction_requests',
+      targetId: crId,
+      companyId: cr.company_id,
+      newValues: { status, review_notes },
+      reason: review_notes || `Attendance correction request #${crId} ${status} by Support Authority`
+    });
+  });
+
+  tx();
+  res.json({ success: true, message: `Correction request #${crId} ${status} successfully.` });
+});
+
+// Remote Permanently Delete Attendance Correction Request
+router.delete('/remote/attendance-correction/:id', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const crId = parseInt(req.params.id, 10);
+  const cr = db.prepare('SELECT * FROM attendance_correction_requests WHERE id = ?').get(crId);
+  if (!cr) return res.status(404).json({ error: 'Correction request not found.' });
+
+  if (!isCompanyAuthorized(req.user, cr.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  db.prepare('DELETE FROM attendance_correction_requests WHERE id = ?').run(crId);
+
+  logAudit({
+    userId: req.user.id,
+    userName: req.user.username,
+    role: req.user.role_name,
+    panel: 'Level 4 Remote Access Console',
+    action: 'REMOTE_CORRECTION_DELETED',
+    targetEntity: 'attendance_correction_requests',
+    targetId: crId,
+    companyId: cr.company_id,
+    reason: 'Attendance correction request permanently deleted by Support Team as per request'
+  });
+
+  try {
+    deleteFromFirebase('attendance_correction_requests', crId).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: 'Attendance correction request permanently removed.' });
 });
 
 // Remote Update Personnel Profile

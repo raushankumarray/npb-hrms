@@ -282,7 +282,36 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [remoteSimulatePortal, setRemoteSimulatePortal] = useState(false);
 
   // --- REMOTE MANAGED CONSOLE (COMPANY / MANAGER / EMPLOYEE) ---
-  const [remotePerspective, setRemotePerspective] = useState('company'); // 'company' | 'manager' | 'employee'
+  const [remotePerspective, setRemotePerspective] = useState('employee'); // Default to employee perspective
+  // Sub-Page Navigation Tabs for each Perspective
+  const [remoteEmpTab, setRemoteEmpTab] = useState('dashboard'); // 'dashboard' | 'calendar' | 'attendance-logs' | 'corrections' | 'leaves' | 'tickets' | 'profile'
+  const [remoteMgrTab, setRemoteMgrTab] = useState('dashboard'); // 'dashboard' | 'team' | 'attendance-logs' | 'corrections' | 'leaves' | 'my-attendance' | 'tickets' | 'profile'
+  const [remoteCompTab, setRemoteCompTab] = useState('dashboard'); // 'dashboard' | 'directory' | 'attendance' | 'corrections' | 'leaves' | 'shifts-geofences' | 'tickets' | 'settings'
+
+  // Ticket Modal & Password Reset States
+  const [remoteShowTicketModal, setRemoteShowTicketModal] = useState(false);
+  const [remoteTicketForm, setRemoteTicketForm] = useState({
+    employee_id: '',
+    request_type: 'general_support',
+    title: '',
+    description: ''
+  });
+  const [remoteNewPassword, setRemoteNewPassword] = useState('');
+  const [remoteCompSearch, setRemoteCompSearch] = useState('');
+  const [remoteAttDateFilter, setRemoteAttDateFilter] = useState('');
+
+  // Attendance Correction Modal State
+  const [remoteShowCorrectionModal, setRemoteShowCorrectionModal] = useState(false);
+  const [remoteCorrectionForm, setRemoteCorrectionForm] = useState({
+    employee_id: '',
+    date: new Date().toISOString().split('T')[0],
+    correction_type: 'both',
+    punch_in_time: '09:30:00',
+    punch_out_time: '18:30:00',
+    requested_status: 'Present',
+    reason: '',
+    flow: 'route_to_mapping' // 'route_to_mapping' | 'auto_approve'
+  }); // 'company' | 'manager' | 'employee'
   const [remoteCompanyData, setRemoteCompanyData] = useState(null);
   const [remoteCompanyLoading, setRemoteCompanyLoading] = useState(false);
   const [remoteSelectedEmpId, setRemoteSelectedEmpId] = useState(null);
@@ -846,6 +875,174 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
     }
   };
 
+  // Attendance Correction Handlers
+  const openRemoteCorrectionModal = (empId) => {
+    const targetEmpId = empId || remoteSelectedEmpId || remoteCompanyData?.employees?.[0]?.id;
+    setRemoteCorrectionForm({
+      employee_id: targetEmpId || '',
+      date: new Date().toISOString().split('T')[0],
+      correction_type: 'both',
+      punch_in_time: '09:30:00',
+      punch_out_time: '18:30:00',
+      requested_status: 'Present',
+      reason: 'Biometric punch sync error, correction requested via Support',
+      flow: 'route_to_mapping'
+    });
+    setRemoteShowCorrectionModal(true);
+  };
+
+  const handleRemoteSubmitCorrection = async (e) => {
+    e.preventDefault();
+    if (!remoteCorrectionForm.employee_id || !remoteCorrectionForm.date || !remoteCorrectionForm.reason.trim()) {
+      setError('Employee, Date, and Reason are required.');
+      return;
+    }
+    setRemoteActionExecuting(true);
+    try {
+      const res = await apiRequest('/support/remote/attendance-correction/submit', {
+        method: 'POST',
+        body: {
+          ...remoteCorrectionForm,
+          auto_approve: remoteCorrectionForm.flow === 'auto_approve'
+        }
+      });
+      setSuccess(res.message || 'Attendance correction submitted successfully.');
+      setRemoteShowCorrectionModal(false);
+      if (remoteSelectedEmpId) fetchRemoteEmployeeData(remoteSelectedEmpId);
+      if (remoteCompanyData?.company?.id) fetchRemoteCompanyData(remoteCompanyData.company.id);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to submit attendance correction.');
+    } finally {
+      setRemoteActionExecuting(false);
+    }
+  };
+
+  const handleRemoteReviewCorrection = async (crId, status, review_notes = '') => {
+    setRemoteActionExecuting(true);
+    try {
+      const res = await apiRequest(`/support/remote/attendance-correction/${crId}/review`, {
+        method: 'PUT',
+        body: { status, review_notes }
+      });
+      setSuccess(res.message || `Correction request #${crId} ${status} successfully.`);
+      if (remoteSelectedEmpId) fetchRemoteEmployeeData(remoteSelectedEmpId);
+      if (remoteCompanyData?.company?.id) fetchRemoteCompanyData(remoteCompanyData.company.id);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to review correction request.');
+    } finally {
+      setRemoteActionExecuting(false);
+    }
+  };
+
+  const handleRemoteDeleteCorrection = async (crId) => {
+    if (!window.confirm(`Permanently delete attendance correction request #${crId}? This cannot be undone.`)) {
+      return;
+    }
+    setRemoteActionExecuting(true);
+    try {
+      const res = await apiRequest(`/support/remote/attendance-correction/${crId}`, {
+        method: 'DELETE'
+      });
+      setSuccess(res.message || 'Correction request permanently deleted.');
+      if (remoteSelectedEmpId) fetchRemoteEmployeeData(remoteSelectedEmpId);
+      if (remoteCompanyData?.company?.id) fetchRemoteCompanyData(remoteCompanyData.company.id);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to delete correction request.');
+    } finally {
+      setRemoteActionExecuting(false);
+    }
+  };
+
+  const handleRemoteDeleteTicket = async (ticketId) => {
+    if (!window.confirm(`Permanently delete ticket #${ticketId}? All message history will be destroyed.`)) {
+      return;
+    }
+    setRemoteActionExecuting(true);
+    try {
+      const res = await apiRequest(`/tickets/service-requests/${ticketId}`, { method: 'DELETE' });
+      setSuccess(res.message || `Ticket #${ticketId} permanently deleted.`);
+      if (remoteSelectedEmpId) fetchRemoteEmployeeData(remoteSelectedEmpId);
+      if (remoteCompanyData?.company?.id) fetchRemoteCompanyData(remoteCompanyData.company.id);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to delete ticket.');
+    } finally {
+      setRemoteActionExecuting(false);
+    }
+  };
+
+  // Ticket creation on behalf
+  const openRemoteTicketModal = (empId) => {
+    const targetEmpId = empId || remoteSelectedEmpId || remoteCompanyData?.employees?.[0]?.id;
+    setRemoteTicketForm({
+      employee_id: targetEmpId || '',
+      request_type: 'general_support',
+      title: '',
+      description: 'Support ticket logged on user request via Remote Access Console'
+    });
+    setRemoteShowTicketModal(true);
+  };
+
+  const handleRemoteSubmitTicket = async (e) => {
+    e.preventDefault();
+    if (!remoteTicketForm.employee_id || !remoteTicketForm.title.trim()) {
+      setError('Employee and Ticket Title are required.');
+      return;
+    }
+    const targetEmp = (remoteCompanyData?.employees || []).find(emp => String(emp.id) === String(remoteTicketForm.employee_id)) || remoteEmployeeData?.employee;
+    const cid = targetEmp?.company_id || remoteCompanyData?.company?.id;
+    setRemoteActionExecuting(true);
+    try {
+      await apiRequest('/tickets/service-request', {
+        method: 'POST',
+        body: {
+          company_id: cid,
+          employee_id: remoteTicketForm.employee_id,
+          request_type: remoteTicketForm.request_type,
+          title: remoteTicketForm.title.trim(),
+          description: remoteTicketForm.description.trim() || 'Logged via Support Remote Console'
+        }
+      });
+      setSuccess('Service request ticket created successfully.');
+      setRemoteShowTicketModal(false);
+      if (remoteSelectedEmpId) fetchRemoteEmployeeData(remoteSelectedEmpId);
+      if (remoteCompanyData?.company?.id) fetchRemoteCompanyData(remoteCompanyData.company.id);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to create service ticket.');
+    } finally {
+      setRemoteActionExecuting(false);
+    }
+  };
+
+  const handleRemoteResetPassword = async (userId, userName) => {
+    if (!remoteNewPassword.trim()) {
+      setError('Please specify a new password.');
+      return;
+    }
+    if (!window.confirm(`Reset login password for "${userName}"?`)) return;
+    setRemoteActionExecuting(true);
+    try {
+      await apiRequest(`/support/update-user-profile/${userId}`, {
+        method: 'PUT',
+        body: {
+          password: remoteNewPassword.trim(),
+          reason: 'Password reset by Support Authority via Remote Access Console'
+        }
+      });
+      setSuccess(`Password for ${userName} reset successfully.`);
+      setRemoteNewPassword('');
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to reset password.');
+    } finally {
+      setRemoteActionExecuting(false);
+    }
+  };
+
   const handleRemoteSelectEmployee = (empId) => {
     setRemoteSelectedEmpId(empId);
     fetchRemoteEmployeeData(empId);
@@ -862,7 +1059,8 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       end_date: new Date().toISOString().split('T')[0],
       total_days: 1,
       reason: 'Applied via Support Authority on user request',
-      auto_approve: true
+      flow: 'route_to_mapping',
+      auto_approve: false
     });
     setRemoteShowLeaveModal(true);
   };
@@ -877,7 +1075,10 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
     try {
       const res = await apiRequest('/support/remote/leave/apply', {
         method: 'POST',
-        body: remoteLeaveForm
+        body: {
+          ...remoteLeaveForm,
+          auto_approve: remoteLeaveForm.flow === 'auto_approve' || remoteLeaveForm.auto_approve === true
+        }
       });
       setSuccess(res.message || 'Leave applied successfully by Support.');
       setRemoteShowLeaveModal(false);
@@ -3126,6 +3327,9 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
             {/* ========================================================================= */}
       {/* MULTI-PERSPECTIVE REMOTE ACCESS CONSOLE (COMPANY / MANAGER / EMPLOYEE) */}
       {/* ========================================================================= */}
+      {/* ========================================================================= */}
+      {/* MULTI-PERSPECTIVE REMOTE ACCESS CONSOLE (COMPANY / MANAGER / EMPLOYEE) */}
+      {/* ========================================================================= */}
       {activeTab === 'remote-access' && (
         <div>
           {pLevel < 2 ? (
@@ -3143,7 +3347,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
               </div>
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {/* TOP HEADER: PERSPECTIVE SWITCHER & COMPANY SELECTOR */}
               <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
@@ -3158,7 +3362,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                       </span>
                     </h3>
                     <p className="text-[11px] text-slate-400">
-                      Full multi-perspective access to assigned Companies, Managers, and Employees with operational intervention
+                      Full multi-perspective operational management for Employees, Managers, and Companies
                     </p>
                   </div>
                 </div>
@@ -3167,15 +3371,15 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
                   <button
                     type="button"
-                    onClick={() => setRemotePerspective('company')}
+                    onClick={() => setRemotePerspective('employee')}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-                      remotePerspective === 'company'
+                      remotePerspective === 'employee'
                         ? 'bg-purple-600 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
                     }`}
                   >
-                    <Building2 className="w-3.5 h-3.5" />
-                    <span>Company View</span>
+                    <User className="w-3.5 h-3.5" />
+                    <span>Employee View</span>
                   </button>
                   <button
                     type="button"
@@ -3191,15 +3395,15 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setRemotePerspective('employee')}
+                    onClick={() => setRemotePerspective('company')}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
-                      remotePerspective === 'employee'
+                      remotePerspective === 'company'
                         ? 'bg-purple-600 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
                     }`}
                   >
-                    <User className="w-3.5 h-3.5" />
-                    <span>Employee View</span>
+                    <Building2 className="w-3.5 h-3.5" />
+                    <span>Company View</span>
                   </button>
                 </div>
 
@@ -3242,636 +3446,14 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 </div>
               )}
 
-              {/* PERSPECTIVE 1: COMPANY ADMIN VIEW */}
-              {!remoteCompanyLoading && remotePerspective === 'company' && remoteCompanyData && (
-                <div className="space-y-6">
-                  {/* COMPANY OVERVIEW BANNER */}
-                  <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-purple-950 text-white rounded-2xl p-6 shadow-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h2 className="text-xl font-bold tracking-tight">
-                            {remoteCompanyData.company?.legal_name || remoteCompanyData.company?.name || 'Company Portal'}
-                          </h2>
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                            {remoteCompanyData.company?.status || 'Active'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-purple-200/80 mt-1">
-                          Company Code: <span className="font-mono font-bold text-white">{remoteCompanyData.company?.company_code}</span> •
-                          Admin: <span className="font-bold text-white">{remoteCompanyData.admin?.full_name || remoteCompanyData.admin?.username || 'N/A'}</span> ({remoteCompanyData.admin?.email || 'No email'}) •
-                          Timezone: <span className="text-white">{remoteCompanyData.company?.timezone || 'Asia/Kolkata'}</span>
-                        </p>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openRemoteApplyLeaveModal()}
-                          className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                          <span>Apply Leave via Support</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openRemotePunchModal()}
-                          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
-                        >
-                          <Clock className="w-3.5 h-3.5" />
-                          <span>Record / Correct Punch</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* STATS STRIP */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-5 border-t border-white/10 text-xs">
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                        <span className="text-[11px] text-purple-200 uppercase font-semibold">Total Personnel</span>
-                        <p className="text-xl font-bold mt-1">{remoteCompanyData.employees?.length || 0}</p>
-                      </div>
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                        <span className="text-[11px] text-purple-200 uppercase font-semibold">Managers</span>
-                        <p className="text-xl font-bold mt-1">{remoteCompanyData.managers?.length || 0}</p>
-                      </div>
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                        <span className="text-[11px] text-purple-200 uppercase font-semibold">Configured Shifts</span>
-                        <p className="text-xl font-bold mt-1">{remoteCompanyData.shifts?.length || 0}</p>
-                      </div>
-                      <div className="bg-white/5 rounded-xl p-3 border border-white/5">
-                        <span className="text-[11px] text-purple-200 uppercase font-semibold">Geofence Zones</span>
-                        <p className="text-xl font-bold mt-1">{remoteCompanyData.geofences?.length || 0}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* PERSONNEL DIRECTORY TABLE */}
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                      <div>
-                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Company Personnel Directory</h4>
-                        <p className="text-[11px] text-slate-400">All registered employees, managers, and administrative accounts</p>
-                      </div>
-                      <span className="text-xs font-bold text-purple-700 bg-purple-50 px-2.5 py-1 rounded-xl">
-                        {remoteCompanyData.employees?.length || 0} Staff Members
-                      </span>
-                    </div>
-
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs text-left">
-                        <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                          <tr>
-                            <th className="p-3">Staff / Code</th>
-                            <th className="p-3">Role</th>
-                            <th className="p-3">Department & Designation</th>
-                            <th className="p-3">Contact</th>
-                            <th className="p-3">Status</th>
-                            <th className="p-3 text-right">Operational Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {(remoteCompanyData.employees || []).map(emp => (
-                            <tr key={emp.id} className="hover:bg-purple-50/30 transition-colors">
-                              <td className="p-3">
-                                <div className="font-bold text-slate-900">{emp.full_name || emp.fullName || emp.username}</div>
-                                <div className="text-[10px] text-slate-400 font-mono">
-                                  {emp.employee_code || `ID: ${emp.id}`} • @{emp.username || 'user'}
-                                </div>
-                              </td>
-                              <td className="p-3">
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                  emp.role === 'manager' || emp.role_name === 'Manager'
-                                    ? 'bg-purple-100 text-purple-700'
-                                    : 'bg-slate-100 text-slate-700'
-                                }`}>
-                                  {emp.role || emp.role_name || 'employee'}
-                                </span>
-                              </td>
-                              <td className="p-3 text-slate-600">
-                                <div>{emp.department || 'General'}</div>
-                                <div className="text-[10px] text-slate-400">{emp.designation || '-'}</div>
-                              </td>
-                              <td className="p-3 text-slate-600 font-mono text-[11px]">
-                                <div>{emp.mobile || '-'}</div>
-                                <div className="text-[10px] text-slate-400">{emp.email || '-'}</div>
-                              </td>
-                              <td className="p-3">
-                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  emp.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
-                                }`}>
-                                  {emp.status}
-                                </span>
-                              </td>
-                              <td className="p-3 text-right">
-                                <div className="flex items-center justify-end gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      handleRemoteSelectEmployee(emp.id);
-                                      setRemotePerspective('employee');
-                                    }}
-                                    className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold rounded-lg text-[11px] transition-colors flex items-center gap-1"
-                                    title="Open live employee console"
-                                  >
-                                    <User className="w-3 h-3" />
-                                    <span>Inspect</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openRemoteApplyLeaveModal(emp.id)}
-                                    className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg text-[11px] transition-colors"
-                                    title="Apply leave on behalf"
-                                  >
-                                    Apply Leave
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openRemotePunchModal(emp.id)}
-                                    className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-[11px] transition-colors"
-                                    title="Mark or correct punch"
-                                  >
-                                    Punch
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openRemoteEditProfileModal(emp)}
-                                    className="p-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
-                                    title="Edit employee profile"
-                                  >
-                                    <Edit3 className="w-3 h-3" />
-                                  </button>
-                                  {pLevel >= 4 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemoteConfirmDeleteEmployee(emp.id, emp.full_name || emp.username)}
-                                      className="p-1 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-colors"
-                                      title="Permanently delete account (Zero recovery)"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* COMPANY LEAVE REQUESTS */}
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                      <div>
-                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Company Leave Requests Desk</h4>
-                        <p className="text-[11px] text-slate-400">Review, approve, reject, or permanently delete leave requests across the company</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openRemoteApplyLeaveModal()}
-                        className="px-3 py-1.5 bg-purple-50 text-purple-700 font-bold rounded-xl text-xs hover:bg-purple-100 transition-colors flex items-center gap-1"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Apply Leave for Staff</span>
-                      </button>
-                    </div>
-
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs text-left">
-                        <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                          <tr>
-                            <th className="p-3">Staff / Code</th>
-                            <th className="p-3">Leave Type</th>
-                            <th className="p-3">Dates & Days</th>
-                            <th className="p-3">Reason</th>
-                            <th className="p-3">Status</th>
-                            <th className="p-3 text-right">Support Action</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {(remoteCompanyData.leaveRequests || []).slice(0, 20).map(lr => (
-                            <tr key={lr.id} className="hover:bg-slate-50/50">
-                              <td className="p-3">
-                                <div className="font-bold text-slate-900">{lr.employee_name || `Emp #${lr.employee_id}`}</div>
-                                <div className="text-[10px] text-slate-400 font-mono">{lr.employee_code || `ID: ${lr.employee_id}`}</div>
-                              </td>
-                              <td className="p-3 font-semibold text-purple-700">{lr.leave_type_name || lr.leave_type_code || 'Leave'}</td>
-                              <td className="p-3 text-slate-600">
-                                <div>{lr.start_date} to {lr.end_date}</div>
-                                <div className="text-[10px] text-slate-400 font-bold">{lr.total_days} day(s)</div>
-                              </td>
-                              <td className="p-3 text-slate-600 max-w-xs truncate" title={lr.reason}>
-                                {lr.reason || '-'}
-                              </td>
-                              <td className="p-3">
-                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                  lr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                                  lr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
-                                  'bg-amber-100 text-amber-700'
-                                }`}>
-                                  {lr.status}
-                                </span>
-                              </td>
-                              <td className="p-3 text-right">
-                                <div className="flex items-center justify-end gap-1.5">
-                                  {lr.status === 'pending' && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'approved')}
-                                        className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px] transition-colors"
-                                      >
-                                        Approve
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'rejected')}
-                                        className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px] transition-colors"
-                                      >
-                                        Reject
-                                      </button>
-                                    </>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoteDeleteLeave(lr.id)}
-                                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
-                                    title="Delete leave request (refunds days if approved)"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                          {(remoteCompanyData.leaveRequests || []).length === 0 && (
-                            <tr>
-                              <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
-                                No leave requests recorded for this company.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  {/* COMPANY ATTENDANCE RECENT LOGS */}
-                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                      <div>
-                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Company Attendance Live Feed</h4>
-                        <p className="text-[11px] text-slate-400">Realtime punch logs and attendance states across all personnel</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openRemotePunchModal()}
-                        className="px-3 py-1.5 bg-emerald-50 text-emerald-700 font-bold rounded-xl text-xs hover:bg-emerald-100 transition-colors flex items-center gap-1"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Record Manual Punch</span>
-                      </button>
-                    </div>
-
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs text-left">
-                        <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                          <tr>
-                            <th className="p-3">Staff / Code</th>
-                            <th className="p-3">Date</th>
-                            <th className="p-3">Punch In</th>
-                            <th className="p-3">Punch Out</th>
-                            <th className="p-3">Hours</th>
-                            <th className="p-3">Status</th>
-                            <th className="p-3 text-right">Support Action</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {(remoteCompanyData.attendanceLogs || []).slice(0, 20).map(att => (
-                            <tr key={att.id} className="hover:bg-slate-50/50">
-                              <td className="p-3 font-semibold text-slate-900">
-                                {att.employee_name || `Emp #${att.employee_id}`}
-                              </td>
-                              <td className="p-3 font-mono text-slate-700">{att.date}</td>
-                              <td className="p-3 font-mono text-emerald-700">{att.punch_in_time || '-'}</td>
-                              <td className="p-3 font-mono text-sky-700">{att.punch_out_time || '-'}</td>
-                              <td className="p-3 font-bold text-slate-800">{att.total_hours || att.working_hours || '-'} hrs</td>
-                              <td className="p-3">
-                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  att.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
-                                  att.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
-                                  'bg-rose-100 text-rose-700'
-                                }`}>
-                                  {att.status || 'Present'}
-                                </span>
-                              </td>
-                              <td className="p-3 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoteDeleteAttendance(att.id)}
-                                  className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
-                                  title="Delete punch record"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                          {(remoteCompanyData.attendanceLogs || []).length === 0 && (
-                            <tr>
-                              <td colSpan="7" className="p-8 text-center text-slate-400 text-xs">
-                                No attendance records logged today.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* PERSPECTIVE 2: MANAGER VIEW */}
-              {!remoteCompanyLoading && remotePerspective === 'manager' && remoteCompanyData && (
-                <div className="space-y-6">
-                  {/* MANAGER PICKER & PROFILE */}
-                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <h4 className="text-sm font-bold text-slate-900">Manager Operational Perspective</h4>
-                        <p className="text-[11px] text-slate-400">
-                          Select a department manager to view and manage their direct team, leaves, and attendance
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-slate-500">Select Manager:</span>
-                        <select
-                          value={remoteSelectedMgrId || ''}
-                          onChange={(e) => setRemoteSelectedMgrId(e.target.value)}
-                          className="text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
-                        >
-                          {(remoteCompanyData.managers || []).map(m => (
-                            <option key={m.id} value={m.id}>
-                              {m.full_name || m.fullName || m.username} ({m.department || 'Manager'})
-                            </option>
-                          ))}
-                          {(remoteCompanyData.managers || []).length === 0 && (
-                            <option value="">No managers in this company</option>
-                          )}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* ACTIVE MANAGER CARD */}
-                    {(() => {
-                      const activeMgr = (remoteCompanyData.managers || []).find(m => String(m.id) === String(remoteSelectedMgrId)) || remoteCompanyData.managers?.[0];
-                      if (!activeMgr) {
-                        return (
-                          <div className="p-6 bg-slate-50 rounded-xl text-center text-xs text-slate-500">
-                            No manager account found in this company.
-                          </div>
-                        );
-                      }
-                      const mgrTeam = (remoteCompanyData.employees || []).filter(e => String(e.manager_id || e.managerId) === String(activeMgr.id));
-                      const mgrLeaves = (remoteCompanyData.leaveRequests || []).filter(lr => mgrTeam.some(tm => String(tm.id) === String(lr.employee_id)));
-
-                      return (
-                        <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 border border-purple-100 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-                          <div className="flex items-center gap-3">
-                            <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white font-black text-base flex items-center justify-center shadow-xs">
-                              {(activeMgr.full_name || activeMgr.username || 'M')[0].toUpperCase()}
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <span className="font-bold text-slate-900 text-sm">{activeMgr.full_name || activeMgr.username}</span>
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-200 text-purple-800">
-                                  Manager
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-600 mt-0.5">
-                                Dept: <span className="font-semibold text-slate-800">{activeMgr.department || 'General'}</span> •
-                                Designation: <span className="font-semibold text-slate-800">{activeMgr.designation || 'Team Lead'}</span> •
-                                Mobile: <span className="font-mono">{activeMgr.mobile || 'N/A'}</span>
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleRemoteSelectEmployee(activeMgr.id);
-                                setRemotePerspective('employee');
-                              }}
-                              className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-                            >
-                              <User className="w-3.5 h-3.5" />
-                              <span>Switch to Manager's Personal View</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openRemoteApplyLeaveModal(activeMgr.id)}
-                              className="px-3.5 py-1.5 bg-white border border-purple-200 text-purple-700 hover:bg-purple-50 rounded-xl text-xs font-bold transition-all"
-                            >
-                              Apply Leave for Manager
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* MANAGED TEAM DIRECTORY */}
-                  {(() => {
-                    const activeMgr = (remoteCompanyData.managers || []).find(m => String(m.id) === String(remoteSelectedMgrId)) || remoteCompanyData.managers?.[0];
-                    if (!activeMgr) return null;
-                    const mgrTeam = (remoteCompanyData.employees || []).filter(e => String(e.manager_id || e.managerId) === String(activeMgr.id));
-                    const mgrLeaves = (remoteCompanyData.leaveRequests || []).filter(lr => mgrTeam.some(tm => String(tm.id) === String(lr.employee_id)));
-
-                    return (
-                      <>
-                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                            <div>
-                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                                Direct Reporting Team ({mgrTeam.length})
-                              </h4>
-                              <p className="text-[11px] text-slate-400">Staff members reporting directly to this manager</p>
-                            </div>
-                          </div>
-
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-xs text-left">
-                              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                                <tr>
-                                  <th className="p-3">Employee</th>
-                                  <th className="p-3">Designation</th>
-                                  <th className="p-3">Mobile</th>
-                                  <th className="p-3">Status</th>
-                                  <th className="p-3 text-right">Support Action</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100">
-                                {mgrTeam.map(tm => (
-                                  <tr key={tm.id} className="hover:bg-slate-50/50">
-                                    <td className="p-3">
-                                      <div className="font-bold text-slate-900">{tm.full_name || tm.fullName || tm.username}</div>
-                                      <div className="text-[10px] text-slate-400 font-mono">{tm.employee_code || `ID: ${tm.id}`}</div>
-                                    </td>
-                                    <td className="p-3 text-slate-600">{tm.designation || '-'}</td>
-                                    <td className="p-3 font-mono text-slate-700">{tm.mobile || '-'}</td>
-                                    <td className="p-3">
-                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                        tm.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
-                                      }`}>
-                                        {tm.status}
-                                      </span>
-                                    </td>
-                                    <td className="p-3 text-right">
-                                      <div className="flex items-center justify-end gap-1.5">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            handleRemoteSelectEmployee(tm.id);
-                                            setRemotePerspective('employee');
-                                          }}
-                                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold rounded-lg text-[11px]"
-                                        >
-                                          Inspect
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => openRemoteApplyLeaveModal(tm.id)}
-                                          className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg text-[11px]"
-                                        >
-                                          Apply Leave
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => openRemotePunchModal(tm.id)}
-                                          className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-[11px]"
-                                        >
-                                          Punch
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                                {mgrTeam.length === 0 && (
-                                  <tr>
-                                    <td colSpan="5" className="p-8 text-center text-slate-400 text-xs">
-                                      No direct reporting employees assigned to this manager.
-                                    </td>
-                                  </tr>
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-
-                        {/* TEAM LEAVE APPROVALS */}
-                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                            <div>
-                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                                Manager's Team Leave Approvals Desk
-                              </h4>
-                              <p className="text-[11px] text-slate-400">
-                                Approve or reject leaves on behalf of this manager when they are unavailable or facing system issues
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-xs text-left">
-                              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                                <tr>
-                                  <th className="p-3">Team Member</th>
-                                  <th className="p-3">Leave Type</th>
-                                  <th className="p-3">Dates & Days</th>
-                                  <th className="p-3">Reason</th>
-                                  <th className="p-3">Status</th>
-                                  <th className="p-3 text-right">Support Action</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-100">
-                                {mgrLeaves.map(lr => (
-                                  <tr key={lr.id} className="hover:bg-slate-50/50">
-                                    <td className="p-3 font-semibold text-slate-900">
-                                      {lr.employee_name || `Emp #${lr.employee_id}`}
-                                    </td>
-                                    <td className="p-3 font-semibold text-purple-700">
-                                      {lr.leave_type_name || lr.leave_type_code || 'Leave'}
-                                    </td>
-                                    <td className="p-3 text-slate-600">
-                                      {lr.start_date} to {lr.end_date} ({lr.total_days} d)
-                                    </td>
-                                    <td className="p-3 text-slate-600 max-w-xs truncate">{lr.reason}</td>
-                                    <td className="p-3">
-                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                        lr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                                        lr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
-                                        'bg-amber-100 text-amber-700'
-                                      }`}>
-                                        {lr.status}
-                                      </span>
-                                    </td>
-                                    <td className="p-3 text-right">
-                                      <div className="flex items-center justify-end gap-1.5">
-                                        {lr.status === 'pending' && (
-                                          <>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'approved', `Approved by Support on behalf of Manager (${activeMgr.full_name})`)}
-                                              className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
-                                            >
-                                              Approve
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'rejected', `Rejected by Support on behalf of Manager (${activeMgr.full_name})`)}
-                                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
-                                            >
-                                              Reject
-                                            </button>
-                                          </>
-                                        )}
-                                        <button
-                                          type="button"
-                                          onClick={() => handleRemoteDeleteLeave(lr.id)}
-                                          className="p-1 text-slate-400 hover:text-rose-600"
-                                          title="Delete leave"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                                {mgrLeaves.length === 0 && (
-                                  <tr>
-                                    <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
-                                      No leave requests submitted by this manager's team.
-                                    </td>
-                                  </tr>
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              )}
-
-              {/* PERSPECTIVE 3: EMPLOYEE VIEW */}
+              {/* ========================================================================= */}
+              {/* PERSPECTIVE 1: EMPLOYEE PERSPECTIVE */}
+              {/* ========================================================================= */}
               {!remoteCompanyLoading && remotePerspective === 'employee' && (
-                <div className="space-y-6">
-                  {/* EMPLOYEE SELECTOR BAR */}
-                  <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-center gap-2">
+                <div className="space-y-4">
+                  {/* EMPLOYEE PICKER BAR */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-sm flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
                       <span className="text-xs font-bold text-slate-600">Select Employee:</span>
                       <select
                         value={remoteSelectedEmpId || ''}
@@ -3886,92 +3468,888 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                       </select>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openRemoteCorrectionModal(remoteSelectedEmpId)}
+                        className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                        title="Submit Attendance Correction"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Correction</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => openRemoteApplyLeaveModal(remoteSelectedEmpId)}
-                        className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                        className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                        title="Apply Leave on Behalf"
                       >
-                        <FileText className="w-3.5 h-3.5" />
-                        <span>Apply Leave On Behalf</span>
+                        <FileText className="w-3.5 h-3.5 text-purple-600" />
+                        <span>Apply Leave</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => openRemotePunchModal(remoteSelectedEmpId)}
-                        className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                        title="Mark or Correct Attendance Punch"
                       >
-                        <Clock className="w-3.5 h-3.5" />
-                        <span>Mark / Correct Punch</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openRemoteAdjustBalanceModal(remoteSelectedEmpId)}
-                        className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
-                      >
-                        <Sliders className="w-3.5 h-3.5" />
-                        <span>Adjust Balance</span>
+                        <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Punch</span>
                       </button>
                     </div>
+                  </div>
+
+                  {/* EMPLOYEE SUB-NAV TAB BAR (ALL 7 USER REQUESTED PAGES) */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-1.5 shadow-sm flex flex-wrap items-center gap-1 overflow-x-auto">
+                    {[
+                      { id: 'dashboard', label: 'Dashboard', icon: Layers },
+                      { id: 'calendar', label: 'My Calendar & Attendance', icon: Calendar },
+                      { id: 'attendance-logs', label: 'Attendance Logs', icon: Clock },
+                      {
+                        id: 'corrections',
+                        label: 'Attendance Correction',
+                        icon: CheckSquare,
+                        badge: (remoteEmployeeData?.correctionRequests || []).filter(c => c.status === 'pending').length
+                      },
+                      {
+                        id: 'leaves',
+                        label: 'Leave & Balances',
+                        icon: Award,
+                        badge: (remoteEmployeeData?.leaveRequests || []).filter(l => l.status === 'pending').length
+                      },
+                      {
+                        id: 'tickets',
+                        label: 'Helpdesk & Tickets',
+                        icon: MessageSquare,
+                        badge: (remoteEmployeeData?.tickets || []).filter(t => t.status === 'open' || t.status === 'in_progress').length
+                      },
+                      { id: 'profile', label: 'My Profile & Security', icon: Shield }
+                    ].map(tab => {
+                      const Icon = tab.icon;
+                      const isActive = remoteEmpTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setRemoteEmpTab(tab.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                            isActive
+                              ? 'bg-purple-600 text-white shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                          <span>{tab.label}</span>
+                          {Boolean(tab.badge) && (
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                              isActive ? 'bg-white text-purple-700' : 'bg-rose-100 text-rose-700'
+                            }`}>
+                              {tab.badge}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
 
                   {remoteEmployeeLoading && (
                     <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-400 text-xs shadow-sm flex items-center justify-center gap-2">
                       <RefreshCw className="w-4 h-4 animate-spin text-purple-600" />
-                      <span>Loading employee live data profile...</span>
+                      <span>Loading employee live data stream...</span>
                     </div>
                   )}
 
                   {!remoteEmployeeLoading && remoteEmployeeData?.employee && (
-                    <div className="space-y-6">
-                      {/* EMPLOYEE PROFILE HEADER CARD */}
-                      <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-                        <div className="flex flex-wrap items-start justify-between gap-4">
-                          <div className="flex items-center gap-4">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white flex items-center justify-center font-black text-xl shadow-sm">
-                              {(remoteEmployeeData.employee.full_name || remoteEmployeeData.employee.username)[0].toUpperCase()}
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h3 className="text-base font-bold text-slate-900">
-                                  {remoteEmployeeData.employee.full_name || remoteEmployeeData.employee.username}
-                                </h3>
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-100 text-purple-800">
-                                  {remoteEmployeeData.employee.role || 'Employee'}
-                                </span>
-                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                  remoteEmployeeData.employee.status === 'active' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                                }`}>
-                                  {remoteEmployeeData.employee.status}
-                                </span>
+                    <div className="space-y-4">
+                      {/* SUB-PAGE 1: DASHBOARD */}
+                      {remoteEmpTab === 'dashboard' && (
+                        <div className="space-y-4">
+                          {/* SUMMARY BANNER */}
+                          <div className="bg-gradient-to-r from-purple-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-5 shadow-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-4">
+                              <div className="flex items-center gap-3.5">
+                                <div className="w-14 h-14 rounded-2xl bg-purple-600 text-white flex items-center justify-center font-black text-xl shadow-inner border border-purple-400/30">
+                                  {(remoteEmployeeData.employee.full_name || remoteEmployeeData.employee.username)[0].toUpperCase()}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <h3 className="text-base font-bold text-white">
+                                      {remoteEmployeeData.employee.full_name || remoteEmployeeData.employee.username}
+                                    </h3>
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-500/30 text-purple-200 border border-purple-400/30">
+                                      {remoteEmployeeData.employee.role || 'Staff'}
+                                    </span>
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                      remoteEmployeeData.employee.status === 'active' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                                    }`}>
+                                      {remoteEmployeeData.employee.status}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-purple-200/80 mt-1">
+                                    Code: <span className="font-mono font-bold text-white">{remoteEmployeeData.employee.employee_code || `ID:${remoteEmployeeData.employee.id}`}</span> •
+                                    Dept: <span className="font-semibold text-white">{remoteEmployeeData.employee.department || 'General'}</span> •
+                                    Designation: <span className="font-semibold text-white">{remoteEmployeeData.employee.designation || '-'}</span>
+                                  </p>
+                                </div>
                               </div>
-                              <p className="text-xs text-slate-500 mt-1">
-                                Code: <span className="font-mono font-bold text-slate-800">{remoteEmployeeData.employee.employee_code || `ID: ${remoteEmployeeData.employee.id}`}</span> •
-                                Dept: <span className="font-medium text-slate-800">{remoteEmployeeData.employee.department || 'General'}</span> •
-                                Designation: <span className="font-medium text-slate-800">{remoteEmployeeData.employee.designation || '-'}</span>
-                              </p>
-                              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 mt-2 font-mono">
-                                <span>📱 {remoteEmployeeData.employee.mobile || 'No mobile'}</span>
-                                <span>✉️ {remoteEmployeeData.employee.email || 'No email'}</span>
-                                <span>🏢 {remoteEmployeeData.employee.company_name || remoteCompanyData?.company?.legal_name}</span>
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => openRemotePunchModal(remoteEmployeeData.employee.id)}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                                >
+                                  <Clock className="w-3.5 h-3.5" />
+                                  <span>Record Punch</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openRemoteApplyLeaveModal(remoteEmployeeData.employee.id)}
+                                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                  <span>Apply Leave</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* QUICK METRICS CARDS */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-white/10 text-xs">
+                              <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                                <span className="text-[11px] text-purple-200 uppercase font-semibold">Present (Logged)</span>
+                                <p className="text-xl font-bold mt-1 text-emerald-400">
+                                  {(remoteEmployeeData.attendanceHistory || []).filter(a => a.status === 'Present').length} days
+                                </p>
+                              </div>
+                              <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                                <span className="text-[11px] text-purple-200 uppercase font-semibold">Leaves Taken</span>
+                                <p className="text-xl font-bold mt-1 text-amber-300">
+                                  {(remoteEmployeeData.leaveRequests || [])
+                                    .filter(l => l.status === 'approved')
+                                    .reduce((acc, cur) => acc + (parseFloat(cur.total_days) || 0), 0)} days
+                                </p>
+                              </div>
+                              <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                                <span className="text-[11px] text-purple-200 uppercase font-semibold">CL Balance</span>
+                                <p className="text-xl font-bold mt-1 text-purple-300">
+                                  {(() => {
+                                    const cl = (remoteEmployeeData.currentBalances || []).find(b => (b.leave_type_code || '').toUpperCase() === 'CL');
+                                    return cl ? `${Number(cl.balance || 0).toFixed(1)} / 12` : 'N/A';
+                                  })()}
+                                </p>
+                              </div>
+                              <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                                <span className="text-[11px] text-purple-200 uppercase font-semibold">Pending Requests</span>
+                                <p className="text-xl font-bold mt-1 text-sky-300">
+                                  {((remoteEmployeeData.correctionRequests || []).filter(c => c.status === 'pending').length) +
+                                   ((remoteEmployeeData.leaveRequests || []).filter(l => l.status === 'pending').length)} pending
+                                </p>
                               </div>
                             </div>
                           </div>
 
-                          {/* DEVICE BINDING STATUS & ACTION BUTTONS */}
-                          <div className="flex flex-col items-end gap-2">
-                            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 flex items-center gap-2">
-                              <Laptop className="w-4 h-4 text-purple-600" />
-                              {remoteEmployeeData.device ? (
-                                <div>
-                                  <span className="font-bold text-slate-900">Device Bound: </span>
-                                  <span className="font-mono text-[11px] text-purple-700">{remoteEmployeeData.device.mac_address || remoteEmployeeData.device.device_id || 'Bound'}</span>
-                                </div>
-                              ) : (
-                                <span className="text-slate-400">No Device Bound (Unlocked)</span>
-                              )}
+                          {/* TODAY'S PUNCH STATUS & SUPERVISOR INFO */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                            <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-3">
+                              <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                                <Clock className="w-4 h-4 text-purple-600" />
+                                <span>Today's Attendance Status</span>
+                              </h4>
+                              {(() => {
+                                const todayStr = new Date().toISOString().split('T')[0];
+                                const todayAtt = (remoteEmployeeData.attendanceHistory || []).find(a => a.date === todayStr);
+                                if (!todayAtt) {
+                                  return (
+                                    <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 space-y-2">
+                                      <p className="font-semibold">No punch recorded for today ({todayStr}).</p>
+                                      <button
+                                        type="button"
+                                        onClick={() => openRemotePunchModal(remoteEmployeeData.employee.id)}
+                                        className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-xs"
+                                      >
+                                        Mark Today's Punch
+                                      </button>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <span className="font-bold text-emerald-900">Status: {todayAtt.status}</span>
+                                      <span className="font-bold text-emerald-800">{todayAtt.total_hours || 0} hrs</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2 text-slate-600 font-mono text-[11px]">
+                                      <div>In: <span className="font-bold text-slate-900">{todayAtt.punch_in_time || '-'}</span></div>
+                                      <div>Out: <span className="font-bold text-slate-900">{todayAtt.punch_out_time || '-'}</span></div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                             </div>
 
-                            <div className="flex items-center gap-1.5">
+                            <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-3">
+                              <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                                <Briefcase className="w-4 h-4 text-indigo-600" />
+                                <span>Assigned Hierarchy & Work Policy</span>
+                              </h4>
+                              <div className="space-y-1.5 text-slate-600">
+                                <div>
+                                  <span className="font-semibold text-slate-800">Assigned Supervisor / Manager: </span>
+                                  {remoteEmployeeData.assignedManager ? (
+                                    <span className="font-bold text-purple-700">
+                                      {remoteEmployeeData.assignedManager.full_name} ({remoteEmployeeData.assignedManager.designation || 'Manager'})
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500 italic">Direct to Company Admin</span>
+                                  )}
+                                </div>
+                                <div>
+                                  <span className="font-semibold text-slate-800">Assigned Shift: </span>
+                                  <span className="font-mono text-slate-900">
+                                    {remoteEmployeeData.employee.shift_name || 'Standard Shift'} ({remoteEmployeeData.employee.shift_start || '09:00'} - {remoteEmployeeData.employee.shift_end || '18:00'})
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="font-semibold text-slate-800">Geofence Location: </span>
+                                  <span className="text-slate-900">{remoteEmployeeData.employee.geofence_name || 'Main Workplace (Universal)'}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* RECENT ATTENDANCE PUNCHES PREVIEW */}
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-3.5 border-b border-slate-100 flex items-center justify-between">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Recent Punch Logs</h4>
+                              <button
+                                type="button"
+                                onClick={() => setRemoteEmpTab('attendance-logs')}
+                                className="text-xs font-bold text-purple-600 hover:text-purple-800"
+                              >
+                                View All ({remoteEmployeeData.attendanceHistory?.length || 0})
+                              </button>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-2.5">Date</th>
+                                    <th className="p-2.5">In</th>
+                                    <th className="p-2.5">Out</th>
+                                    <th className="p-2.5">Hours</th>
+                                    <th className="p-2.5">Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {(remoteEmployeeData.attendanceHistory || []).slice(0, 5).map(att => (
+                                    <tr key={att.id} className="hover:bg-slate-50/50">
+                                      <td className="p-2.5 font-mono font-bold text-slate-800">{att.date}</td>
+                                      <td className="p-2.5 font-mono text-emerald-700">{att.punch_in_time || '-'}</td>
+                                      <td className="p-2.5 font-mono text-sky-700">{att.punch_out_time || '-'}</td>
+                                      <td className="p-2.5 font-bold text-slate-800">{att.total_hours || att.working_hours || '-'} hrs</td>
+                                      <td className="p-2.5">
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                          att.status === 'Present' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                        }`}>
+                                          {att.status || 'Present'}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SUB-PAGE 2: MY CALENDAR & ATTENDANCE */}
+                      {remoteEmpTab === 'calendar' && (
+                        <div className="space-y-4">
+                          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                              <div>
+                                <h4 className="text-sm font-bold text-slate-900">Attendance Calendar</h4>
+                                <p className="text-[11px] text-slate-400">
+                                  Daily punch timings, holidays, leaves, and total working hours
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => openRemotePunchModal(remoteEmployeeData.employee.id)}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                                >
+                                  <Clock className="w-3.5 h-3.5" />
+                                  <span>Record Punch</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openRemoteCorrectionModal(remoteEmployeeData.employee.id)}
+                                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                                >
+                                  <CheckSquare className="w-3.5 h-3.5" />
+                                  <span>Submit Correction</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            <UnifiedCalendar
+                              companyId={remoteCompanyData?.company?.id}
+                              employeeId={remoteSelectedEmpId}
+                              role="employee"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SUB-PAGE 3: ATTENDANCE LOGS */}
+                      {remoteEmpTab === 'attendance-logs' && (
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
+                          <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Attendance Timesheet & Punch Logs</h4>
+                              <p className="text-[11px] text-slate-400">Complete historical punch logs with instant modification and permanent deletion</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openRemotePunchModal(remoteEmployeeData.employee.id)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs flex items-center gap-1.5"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Mark / Correct Punch</span>
+                            </button>
+                          </div>
+
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs text-left">
+                              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                <tr>
+                                  <th className="p-3">Date</th>
+                                  <th className="p-3">Punch In</th>
+                                  <th className="p-3">Punch Out</th>
+                                  <th className="p-3">Total Hours</th>
+                                  <th className="p-3">Status</th>
+                                  <th className="p-3">Location / Geofence</th>
+                                  <th className="p-3 text-right">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(remoteEmployeeData.attendanceHistory || []).map(att => (
+                                  <tr key={att.id} className="hover:bg-slate-50/50">
+                                    <td className="p-3 font-mono font-bold text-slate-800">{att.date}</td>
+                                    <td className="p-3 font-mono text-emerald-700 font-semibold">{att.punch_in_time || '-'}</td>
+                                    <td className="p-3 font-mono text-sky-700 font-semibold">{att.punch_out_time || '-'}</td>
+                                    <td className="p-3 font-bold text-slate-800">{att.total_hours || att.working_hours || '-'} hrs</td>
+                                    <td className="p-3">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        att.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
+                                        att.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
+                                        'bg-rose-100 text-rose-700'
+                                      }`}>
+                                        {att.status || 'Present'}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 text-slate-500 font-mono text-[11px]">
+                                      {att.punch_in_area || att.punch_in_location || 'Office Zone'}
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      <div className="flex items-center justify-end gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setRemotePunchForm({
+                                              employee_id: remoteEmployeeData.employee.id,
+                                              date: att.date,
+                                              punch_in_time: att.punch_in_time || '09:30:00',
+                                              punch_out_time: att.punch_out_time || '18:30:00',
+                                              status: att.status || 'Present',
+                                              total_hours: att.total_hours || 9,
+                                              reason: 'Correction via Support Console'
+                                            });
+                                            setRemoteShowPunchModal(true);
+                                          }}
+                                          className="p-1 text-slate-400 hover:text-emerald-600 transition-colors"
+                                          title="Edit punch"
+                                        >
+                                          <Edit3 className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteDeleteAttendance(att.id)}
+                                          className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                                          title="Permanently delete punch record (Zero recovery)"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {(remoteEmployeeData.attendanceHistory || []).length === 0 && (
+                                  <tr>
+                                    <td colSpan="7" className="p-8 text-center text-slate-400 text-xs">
+                                      No attendance records logged for this employee.
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SUB-PAGE 4: ATTENDANCE CORRECTION */}
+                      {remoteEmpTab === 'corrections' && (
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
+                          <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Attendance Correction Desk</h4>
+                              <p className="text-[11px] text-slate-400">
+                                Review, approve, reject, delete, or submit correction with direct supervisor mapping routing
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openRemoteCorrectionModal(remoteEmployeeData.employee.id)}
+                              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs transition-all shadow-xs flex items-center gap-1.5"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Submit Correction Request</span>
+                            </button>
+                          </div>
+
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs text-left">
+                              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                <tr>
+                                  <th className="p-3">Date</th>
+                                  <th className="p-3">Type</th>
+                                  <th className="p-3">Requested In / Out</th>
+                                  <th className="p-3">Requested Status</th>
+                                  <th className="p-3">Reason / Details</th>
+                                  <th className="p-3">Status</th>
+                                  <th className="p-3 text-right">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(remoteEmployeeData.correctionRequests || []).map(cr => (
+                                  <tr key={cr.id} className="hover:bg-slate-50/50">
+                                    <td className="p-3 font-mono font-bold text-slate-800">{cr.date}</td>
+                                    <td className="p-3 font-semibold uppercase text-purple-700 text-[10px]">{cr.correction_type || 'both'}</td>
+                                    <td className="p-3 font-mono text-slate-700">
+                                      <div>In: <span className="text-emerald-700 font-bold">{cr.requested_punch_in || '-'}</span></div>
+                                      <div>Out: <span className="text-sky-700 font-bold">{cr.requested_punch_out || '-'}</span></div>
+                                    </td>
+                                    <td className="p-3 font-semibold text-slate-800">{cr.requested_status || 'Present'}</td>
+                                    <td className="p-3 text-slate-600 max-w-xs truncate" title={cr.reason}>
+                                      {cr.reason || '-'}
+                                    </td>
+                                    <td className="p-3">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                        cr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                        cr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                        'bg-amber-100 text-amber-700'
+                                      }`}>
+                                        {cr.status}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      <div className="flex items-center justify-end gap-1.5">
+                                        {cr.status === 'pending' && (
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleRemoteReviewCorrection(cr.id, 'approved', 'Direct Support Override Approval')}
+                                              className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px] transition-colors"
+                                            >
+                                              Approve
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleRemoteReviewCorrection(cr.id, 'rejected', 'Rejected by Support')}
+                                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px] transition-colors"
+                                            >
+                                              Reject
+                                            </button>
+                                          </>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteDeleteCorrection(cr.id)}
+                                          className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                                          title="Permanently delete correction request (Zero recovery)"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {(remoteEmployeeData.correctionRequests || []).length === 0 && (
+                                  <tr>
+                                    <td colSpan="7" className="p-8 text-center text-slate-400 text-xs">
+                                      No attendance correction requests recorded for this employee.
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SUB-PAGE 5: LEAVE & BALANCES */}
+                      {remoteEmpTab === 'leaves' && (
+                        <div className="space-y-4">
+                          {/* LEAVE BALANCES CARDS */}
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                                <Award className="w-4 h-4 text-purple-600" />
+                                <span>Leave Quotas & Balances</span>
+                              </h4>
+                              <button
+                                type="button"
+                                onClick={() => openRemoteAdjustBalanceModal(remoteEmployeeData.employee.id)}
+                                className="px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
+                              >
+                                <Sliders className="w-3.5 h-3.5" />
+                                <span>Adjust Quotas & Balance</span>
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                              {(remoteEmployeeData.currentBalances || []).map(bal => {
+                                const isCL = (bal.leave_type_code || '').toUpperCase() === 'CL';
+                                const isEL = (bal.leave_type_code || '').toUpperCase() === 'EL';
+                                const maxLimit = isCL ? 12 : (bal.max_days || 15);
+                                const percent = Math.min(100, Math.max(0, ((bal.balance || 0) / maxLimit) * 100));
+
+                                return (
+                                  <div
+                                    key={bal.leave_type_id}
+                                    className={`rounded-2xl border p-5 shadow-sm transition-all ${
+                                      isCL
+                                        ? 'bg-gradient-to-br from-purple-50/80 to-white border-purple-200'
+                                        : isEL
+                                        ? 'bg-gradient-to-br from-sky-50/80 to-white border-sky-200'
+                                        : 'bg-white border-slate-200'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between">
+                                      <div>
+                                        <span className="text-xs font-black uppercase tracking-wider text-slate-900">
+                                          {bal.leave_type_name || bal.leave_type_code}
+                                        </span>
+                                        <span className="block text-[10px] text-slate-500 font-semibold mt-0.5">
+                                          {isCL ? 'Casual Leave (Max 12/yr)' : isEL ? 'Earned Leave (1.25/mo)' : 'Standard Leave'}
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => openRemoteAdjustBalanceModal(remoteEmployeeData.employee.id, bal.leave_type_id)}
+                                        className="p-1.5 bg-white border border-slate-200 hover:border-purple-300 text-purple-700 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1"
+                                      >
+                                        <Sliders className="w-3 h-3" />
+                                        <span>Adjust</span>
+                                      </button>
+                                    </div>
+
+                                    <div className="mt-4 flex items-baseline justify-between">
+                                      <div>
+                                        <span className="text-3xl font-black text-slate-900">
+                                          {Number(bal.balance || 0).toFixed(2)}
+                                        </span>
+                                        <span className="text-xs font-bold text-slate-400 ml-1">days remaining</span>
+                                      </div>
+                                      <span className="text-xs font-bold text-slate-500">
+                                        Limit: {maxLimit} d
+                                      </span>
+                                    </div>
+
+                                    <div className="w-full bg-slate-100 rounded-full h-2 mt-3 overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full transition-all ${
+                                          isCL ? 'bg-purple-600' : isEL ? 'bg-sky-500' : 'bg-emerald-500'
+                                        }`}
+                                        style={{ width: `${percent}%` }}
+                                      />
+                                    </div>
+
+                                    <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-3 gap-2 text-center text-[10px]">
+                                      <div>
+                                        <span className="text-slate-400 block">Opening</span>
+                                        <span className="font-bold text-slate-700">{bal.opening_balance || 0}</span>
+                                      </div>
+                                      <div>
+                                        <span className="text-slate-400 block">Accrued</span>
+                                        <span className="font-bold text-emerald-600">+{bal.accrued || 0}</span>
+                                      </div>
+                                      <div>
+                                        <span className="text-slate-400 block">Used</span>
+                                        <span className="font-bold text-rose-600">-{bal.used || 0}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* LEAVE APPLICATIONS HISTORY */}
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                              <div>
+                                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Leave Applications History</h4>
+                                <p className="text-[11px] text-slate-400">All submitted, approved, and rejected leave requests for this employee</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => openRemoteApplyLeaveModal(remoteEmployeeData.employee.id)}
+                                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs flex items-center gap-1.5"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>Apply Leave on Behalf</span>
+                              </button>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-3">Leave Type</th>
+                                    <th className="p-3">Period</th>
+                                    <th className="p-3">Duration</th>
+                                    <th className="p-3">Reason</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {(remoteEmployeeData.leaveRequests || []).map(lr => (
+                                    <tr key={lr.id} className="hover:bg-slate-50/50">
+                                      <td className="p-3 font-bold text-purple-700">
+                                        {lr.leave_type_name || lr.leave_type_code || 'Leave'}
+                                      </td>
+                                      <td className="p-3 font-mono text-slate-700">
+                                        {lr.start_date} to {lr.end_date}
+                                      </td>
+                                      <td className="p-3 font-bold text-slate-800">{lr.total_days} day(s)</td>
+                                      <td className="p-3 text-slate-600 max-w-xs truncate">{lr.reason || '-'}</td>
+                                      <td className="p-3">
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                          lr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                          lr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                          'bg-amber-100 text-amber-700'
+                                        }`}>
+                                          {lr.status}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          {lr.status === 'pending' && (
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'approved')}
+                                                className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
+                                              >
+                                                Approve
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'rejected')}
+                                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
+                                              >
+                                                Reject
+                                              </button>
+                                            </>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleRemoteDeleteLeave(lr.id)}
+                                            className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                                            title="Permanently delete leave request (Zero recovery, refunds days)"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {(remoteEmployeeData.leaveRequests || []).length === 0 && (
+                                    <tr>
+                                      <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
+                                        No leave requests recorded for this employee.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SUB-PAGE 6: HELPDESK & TICKETS */}
+                      {remoteEmpTab === 'tickets' && (
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
+                          <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Service Requests & Helpdesk Tickets</h4>
+                              <p className="text-[11px] text-slate-400">View conversations, chat, resolve, or permanently delete tickets</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openRemoteTicketModal(remoteEmployeeData.employee.id)}
+                              className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs flex items-center gap-1.5"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Raise Ticket on Behalf</span>
+                            </button>
+                          </div>
+
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs text-left">
+                              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                <tr>
+                                  <th className="p-3">Ticket #</th>
+                                  <th className="p-3">Category</th>
+                                  <th className="p-3">Title & Details</th>
+                                  <th className="p-3">Created</th>
+                                  <th className="p-3">Status</th>
+                                  <th className="p-3 text-right">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(remoteEmployeeData.tickets || []).map(tkt => (
+                                  <tr key={tkt.id} className="hover:bg-slate-50/50">
+                                    <td className="p-3 font-mono font-bold text-purple-700">#{tkt.id}</td>
+                                    <td className="p-3 font-semibold uppercase text-slate-600 text-[10px]">{tkt.request_type || 'General'}</td>
+                                    <td className="p-3">
+                                      <div className="font-bold text-slate-900">{tkt.title}</div>
+                                      <div className="text-[11px] text-slate-500 max-w-sm truncate">{tkt.description}</div>
+                                    </td>
+                                    <td className="p-3 font-mono text-slate-500 text-[11px]">{tkt.created_at ? new Date(tkt.created_at).toLocaleDateString() : '-'}</td>
+                                    <td className="p-3">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                        tkt.status === 'resolved' ? 'bg-emerald-100 text-emerald-700' :
+                                        tkt.status === 'closed' ? 'bg-slate-100 text-slate-600' :
+                                        'bg-amber-100 text-amber-700'
+                                      }`}>
+                                        {tkt.status}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      <div className="flex items-center justify-end gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setChatTicketId(tkt.id);
+                                            setShowChatModal(true);
+                                          }}
+                                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold rounded-lg text-xs transition-colors flex items-center gap-1"
+                                        >
+                                          <MessageSquare className="w-3 h-3" />
+                                          <span>Chat</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteDeleteTicket(tkt.id)}
+                                          className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                                          title="Permanently delete ticket (Zero recovery)"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {(remoteEmployeeData.tickets || []).length === 0 && (
+                                  <tr>
+                                    <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
+                                      No service tickets logged for this employee.
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* SUB-PAGE 7: MY PROFILE & SECURITY */}
+                      {remoteEmpTab === 'profile' && (
+                        <div className="space-y-4">
+                          {/* DETAILS GRID */}
+                          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4 text-xs">
+                            <div className="flex items-center justify-between border-b pb-3">
+                              <h4 className="font-bold text-slate-900 uppercase tracking-wider text-xs flex items-center gap-2">
+                                <User className="w-4 h-4 text-purple-600" />
+                                <span>Employee Account & Contact Information</span>
+                              </h4>
+                              <button
+                                type="button"
+                                onClick={() => openRemoteEditProfileModal(remoteEmployeeData.employee)}
+                                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl transition-colors flex items-center gap-1.5"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>Edit Profile</span>
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                              <div>
+                                <span className="text-slate-400 block font-medium">Full Name</span>
+                                <span className="font-bold text-slate-900 text-sm">{remoteEmployeeData.employee.full_name}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Employee Code</span>
+                                <span className="font-mono font-bold text-slate-800">{remoteEmployeeData.employee.employee_code || `ID:${remoteEmployeeData.employee.id}`}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Username</span>
+                                <span className="font-mono text-purple-700 font-bold">@{remoteEmployeeData.employee.username}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Mobile Phone</span>
+                                <span className="font-mono font-semibold text-slate-800">{remoteEmployeeData.employee.mobile || 'Not set'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Email Address</span>
+                                <span className="font-mono font-semibold text-slate-800">{remoteEmployeeData.employee.email || 'Not set'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Department & Designation</span>
+                                <span className="font-semibold text-slate-900">{remoteEmployeeData.employee.department || 'General'} • {remoteEmployeeData.employee.designation || 'Staff'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Assigned Shift</span>
+                                <span className="font-semibold text-slate-900">{remoteEmployeeData.employee.shift_name || 'Standard'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Assigned Geofence</span>
+                                <span className="font-semibold text-slate-900">{remoteEmployeeData.employee.geofence_name || 'Main Office'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Account Status</span>
+                                <span className={`inline-block px-2 py-0.5 rounded-full font-bold uppercase text-[10px] mt-0.5 ${
+                                  remoteEmployeeData.employee.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                }`}>
+                                  {remoteEmployeeData.employee.status}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* HARDWARE & DEVICE LOCK */}
+                          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-3 text-xs">
+                            <div className="flex items-center justify-between border-b pb-3">
+                              <h4 className="font-bold text-slate-900 uppercase tracking-wider text-xs flex items-center gap-2">
+                                <Laptop className="w-4 h-4 text-indigo-600" />
+                                <span>Hardware MAC Lock & Registered Device</span>
+                              </h4>
                               {remoteEmployeeData.device && (
                                 <button
                                   type="button"
@@ -3979,295 +4357,1325 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                                     setSelectedDevice(remoteEmployeeData.device);
                                     setShowUnbindModal(true);
                                   }}
-                                  className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold rounded-lg text-xs transition-colors flex items-center gap-1"
+                                  className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold rounded-xl transition-colors flex items-center gap-1.5"
                                 >
                                   <Unlock className="w-3.5 h-3.5" />
-                                  <span>Deregister Device</span>
+                                  <span>Deregister Device Lock</span>
                                 </button>
                               )}
+                            </div>
+
+                            {remoteEmployeeData.device ? (
+                              <div className="p-3 bg-purple-50/60 rounded-xl border border-purple-100 flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                  <span className="font-bold text-slate-900 block">MAC Address: {remoteEmployeeData.device.mac_address || 'Registered'}</span>
+                                  <span className="text-slate-500 font-mono text-[11px]">
+                                    Device: {remoteEmployeeData.device.device_name || 'PC / Mobile'} • Status: {remoteEmployeeData.device.status}
+                                  </span>
+                                </div>
+                                <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-full font-bold text-[10px] uppercase">
+                                  Device Locked (1-to-1 Bound)
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="p-4 bg-slate-50 rounded-xl text-center text-slate-400">
+                                No device is currently locked to this employee account. Login allowed from any authorized browser.
+                              </div>
+                            )}
+                          </div>
+
+                          {/* RESET PASSWORD / CREDENTIALS */}
+                          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-3 text-xs">
+                            <h4 className="font-bold text-slate-900 uppercase tracking-wider text-xs flex items-center gap-2 border-b pb-3">
+                              <Key className="w-4 h-4 text-purple-600" />
+                              <span>Reset Employee Login Password</span>
+                            </h4>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <input
+                                type="text"
+                                placeholder="Enter new password"
+                                value={remoteNewPassword}
+                                onChange={(e) => setRemoteNewPassword(e.target.value)}
+                                className="p-2 border border-slate-200 rounded-xl text-xs max-w-sm focus:outline-none focus:ring-1 focus:ring-purple-500"
+                              />
                               <button
                                 type="button"
-                                onClick={() => openRemoteEditProfileModal(remoteEmployeeData.employee)}
-                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs transition-colors flex items-center gap-1"
+                                onClick={() => handleRemoteResetPassword(remoteEmployeeData.employee.user_id, remoteEmployeeData.employee.full_name)}
+                                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl transition-all shadow-xs"
                               >
-                                <Edit3 className="w-3.5 h-3.5" />
-                                <span>Edit Profile</span>
+                                Update Password
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* DANGER ZONE: PERMANENT DELETION */}
+                          {pLevel >= 4 && (
+                            <div className="bg-rose-50/50 rounded-2xl border border-rose-200 p-5 shadow-sm space-y-3 text-xs">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <h4 className="font-bold text-rose-900 uppercase tracking-wider text-xs flex items-center gap-2">
+                                    <Trash2 className="w-4 h-4 text-rose-600" />
+                                    <span>Danger Zone: Permanent Account Deletion</span>
+                                  </h4>
+                                  <p className="text-[11px] text-rose-700 mt-0.5">
+                                    Permanently wipes this employee from SQLite, Firestore, and Realtime Database with zero recovery.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoteConfirmDeleteEmployee(remoteEmployeeData.employee.id, remoteEmployeeData.employee.full_name || remoteEmployeeData.employee.username)}
+                                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl transition-all shadow-xs flex items-center gap-1.5"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Permanently Delete Employee</span>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ========================================================================= */}
+              {/* PERSPECTIVE 2: MANAGER PERSPECTIVE */}
+              {/* ========================================================================= */}
+              {!remoteCompanyLoading && remotePerspective === 'manager' && remoteCompanyData && (
+                <div className="space-y-4">
+                  {/* MANAGER SELECTOR */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-sm flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xs font-bold text-slate-600">Select Manager:</span>
+                      <select
+                        value={remoteSelectedMgrId || ''}
+                        onChange={(e) => setRemoteSelectedMgrId(e.target.value)}
+                        className="text-xs font-bold text-slate-900 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-purple-500 cursor-pointer"
+                      >
+                        {(remoteCompanyData.managers || []).map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.full_name || m.fullName || m.username} ({m.department || 'Manager'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* MANAGER SUB-NAV TABS */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      {[
+                        { id: 'dashboard', label: 'Dashboard', icon: Layers },
+                        { id: 'team', label: 'My Team', icon: Users },
+                        { id: 'attendance-logs', label: 'Team Attendance', icon: Clock },
+                        { id: 'corrections', label: 'Correction Reviews', icon: CheckSquare },
+                        { id: 'leaves', label: 'Leave Approvals', icon: Award },
+                        { id: 'my-attendance', label: 'Personal Calendar', icon: Calendar },
+                        { id: 'tickets', label: 'Helpdesk', icon: MessageSquare },
+                        { id: 'profile', label: 'Profile', icon: Shield }
+                      ].map(tab => {
+                        const Icon = tab.icon;
+                        const isActive = remoteMgrTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setRemoteMgrTab(tab.id)}
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 transition-all ${
+                              isActive
+                                ? 'bg-purple-600 text-white shadow-xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Icon className="w-3.5 h-3.5" />
+                            <span>{tab.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const activeMgr = (remoteCompanyData.managers || []).find(m => String(m.id) === String(remoteSelectedMgrId)) || remoteCompanyData.managers?.[0];
+                    if (!activeMgr) {
+                      return (
+                        <div className="p-8 bg-white rounded-2xl border text-center text-xs text-slate-500">
+                          No manager account found in this company.
+                        </div>
+                      );
+                    }
+                    const mgrTeam = (remoteCompanyData.employees || []).filter(e => String(e.manager_id || e.managerId) === String(activeMgr.id));
+                    const mgrLeaves = (remoteCompanyData.leaveRequests || []).filter(lr => mgrTeam.some(tm => String(tm.id) === String(lr.employee_id)));
+                    const mgrCorrections = (remoteCompanyData.correctionRequests || []).filter(cr => mgrTeam.some(tm => String(tm.id) === String(cr.employee_id)));
+                    const mgrAttLogs = (remoteCompanyData.attendanceLogs || []).filter(att => mgrTeam.some(tm => String(tm.id) === String(att.employee_id)));
+
+                    return (
+                      <div className="space-y-4">
+                        {/* MANAGER TAB 1: DASHBOARD */}
+                        {remoteMgrTab === 'dashboard' && (
+                          <div className="space-y-4">
+                            <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 border border-purple-100 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+                              <div className="flex items-center gap-3.5">
+                                <div className="w-14 h-14 rounded-2xl bg-purple-600 text-white font-black text-xl flex items-center justify-center shadow-xs">
+                                  {(activeMgr.full_name || activeMgr.username || 'M')[0].toUpperCase()}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-slate-900 text-base">{activeMgr.full_name || activeMgr.username}</span>
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-200 text-purple-800">
+                                      Manager
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-slate-600 mt-1">
+                                    Dept: <span className="font-semibold text-slate-800">{activeMgr.department || 'General'}</span> •
+                                    Designation: <span className="font-semibold text-slate-800">{activeMgr.designation || 'Team Lead'}</span> •
+                                    Mobile: <span className="font-mono">{activeMgr.mobile || 'N/A'}</span>
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleRemoteSelectEmployee(activeMgr.id);
+                                    setRemotePerspective('employee');
+                                  }}
+                                  className="px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                                >
+                                  <User className="w-3.5 h-3.5" />
+                                  <span>Inspect as Employee View</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openRemoteApplyLeaveModal(activeMgr.id)}
+                                  className="px-3.5 py-2 bg-white border border-purple-200 text-purple-700 hover:bg-purple-50 rounded-xl text-xs font-bold transition-all"
+                                >
+                                  Apply Leave for Manager
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* STAT STRIP */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                              <div className="bg-white rounded-2xl border p-4 shadow-sm">
+                                <span className="text-slate-400 font-bold uppercase text-[10px]">Direct Reports</span>
+                                <p className="text-2xl font-black text-slate-900 mt-1">{mgrTeam.length}</p>
+                              </div>
+                              <div className="bg-white rounded-2xl border p-4 shadow-sm">
+                                <span className="text-slate-400 font-bold uppercase text-[10px]">Team Pending Leaves</span>
+                                <p className="text-2xl font-black text-amber-600 mt-1">
+                                  {mgrLeaves.filter(l => l.status === 'pending').length}
+                                </p>
+                              </div>
+                              <div className="bg-white rounded-2xl border p-4 shadow-sm">
+                                <span className="text-slate-400 font-bold uppercase text-[10px]">Team Pending Corrections</span>
+                                <p className="text-2xl font-black text-purple-600 mt-1">
+                                  {mgrCorrections.filter(c => c.status === 'pending').length}
+                                </p>
+                              </div>
+                              <div className="bg-white rounded-2xl border p-4 shadow-sm">
+                                <span className="text-slate-400 font-bold uppercase text-[10px]">Team Punches Logged</span>
+                                <p className="text-2xl font-black text-emerald-600 mt-1">{mgrAttLogs.length}</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 2: MY TEAM */}
+                        {remoteMgrTab === 'team' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                                Direct Reporting Team ({mgrTeam.length})
+                              </h4>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-3">Staff / Code</th>
+                                    <th className="p-3">Designation</th>
+                                    <th className="p-3">Mobile</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Support Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {mgrTeam.map(tm => (
+                                    <tr key={tm.id} className="hover:bg-slate-50/50">
+                                      <td className="p-3">
+                                        <div className="font-bold text-slate-900">{tm.full_name || tm.fullName || tm.username}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">{tm.employee_code || `ID:${tm.id}`}</div>
+                                      </td>
+                                      <td className="p-3 text-slate-600">{tm.designation || '-'}</td>
+                                      <td className="p-3 font-mono text-slate-700">{tm.mobile || '-'}</td>
+                                      <td className="p-3">
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                          tm.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                        }`}>
+                                          {tm.status}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              handleRemoteSelectEmployee(tm.id);
+                                              setRemotePerspective('employee');
+                                            }}
+                                            className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold rounded-lg text-xs"
+                                          >
+                                            Inspect
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => openRemoteApplyLeaveModal(tm.id)}
+                                            className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg text-xs"
+                                          >
+                                            Apply Leave
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => openRemotePunchModal(tm.id)}
+                                            className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-xs"
+                                          >
+                                            Punch
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {mgrTeam.length === 0 && (
+                                    <tr>
+                                      <td colSpan="5" className="p-8 text-center text-slate-400 text-xs">
+                                        No direct reporting team members assigned to this manager.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 3: TEAM ATTENDANCE */}
+                        {remoteMgrTab === 'attendance-logs' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                                Team Attendance Punches & Logs
+                              </h4>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-3">Staff</th>
+                                    <th className="p-3">Date</th>
+                                    <th className="p-3">In</th>
+                                    <th className="p-3">Out</th>
+                                    <th className="p-3">Hours</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Action</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {mgrAttLogs.map(att => (
+                                    <tr key={att.id} className="hover:bg-slate-50/50">
+                                      <td className="p-3 font-bold text-slate-900">{att.employee_name}</td>
+                                      <td className="p-3 font-mono text-slate-700">{att.date}</td>
+                                      <td className="p-3 font-mono text-emerald-700">{att.punch_in_time || '-'}</td>
+                                      <td className="p-3 font-mono text-sky-700">{att.punch_out_time || '-'}</td>
+                                      <td className="p-3 font-bold text-slate-800">{att.total_hours || '-'} hrs</td>
+                                      <td className="p-3">
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                          att.status === 'Present' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                        }`}>
+                                          {att.status}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteDeleteAttendance(att.id)}
+                                          className="p-1 text-slate-400 hover:text-rose-600"
+                                          title="Permanently delete punch (Zero recovery)"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {mgrAttLogs.length === 0 && (
+                                    <tr>
+                                      <td colSpan="7" className="p-8 text-center text-slate-400 text-xs">
+                                        No attendance records found for this manager's team.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 4: CORRECTIONS */}
+                        {remoteMgrTab === 'corrections' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                                Team Attendance Correction Requests
+                              </h4>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-3">Staff</th>
+                                    <th className="p-3">Date</th>
+                                    <th className="p-3">Requested In/Out</th>
+                                    <th className="p-3">Reason</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {mgrCorrections.map(cr => (
+                                    <tr key={cr.id} className="hover:bg-slate-50/50">
+                                      <td className="p-3 font-bold text-slate-900">{cr.employee_name}</td>
+                                      <td className="p-3 font-mono text-slate-700">{cr.date}</td>
+                                      <td className="p-3 font-mono text-slate-600">
+                                        In: {cr.requested_punch_in || '-'} | Out: {cr.requested_punch_out || '-'}
+                                      </td>
+                                      <td className="p-3 text-slate-600 max-w-xs truncate">{cr.reason}</td>
+                                      <td className="p-3">
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                          cr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                          cr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                          'bg-amber-100 text-amber-700'
+                                        }`}>
+                                          {cr.status}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          {cr.status === 'pending' && (
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoteReviewCorrection(cr.id, 'approved', `Approved on behalf of Manager (${activeMgr.full_name})`)}
+                                                className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
+                                              >
+                                                Approve
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoteReviewCorrection(cr.id, 'rejected', `Rejected on behalf of Manager (${activeMgr.full_name})`)}
+                                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
+                                              >
+                                                Reject
+                                              </button>
+                                            </>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleRemoteDeleteCorrection(cr.id)}
+                                            className="p-1 text-slate-400 hover:text-rose-600"
+                                            title="Permanently delete correction (Zero recovery)"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {mgrCorrections.length === 0 && (
+                                    <tr>
+                                      <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
+                                        No correction requests submitted by this manager's team.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 5: LEAVES */}
+                        {remoteMgrTab === 'leaves' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                                Manager's Team Leave Approvals Desk
+                              </h4>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-3">Team Member</th>
+                                    <th className="p-3">Leave Type</th>
+                                    <th className="p-3">Dates & Days</th>
+                                    <th className="p-3">Reason</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Support Action</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {mgrLeaves.map(lr => (
+                                    <tr key={lr.id} className="hover:bg-slate-50/50">
+                                      <td className="p-3 font-semibold text-slate-900">{lr.employee_name}</td>
+                                      <td className="p-3 font-semibold text-purple-700">{lr.leave_type_name || 'Leave'}</td>
+                                      <td className="p-3 text-slate-600">{lr.start_date} to {lr.end_date} ({lr.total_days} d)</td>
+                                      <td className="p-3 text-slate-600 max-w-xs truncate">{lr.reason}</td>
+                                      <td className="p-3">
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                          lr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                          lr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                          'bg-amber-100 text-amber-700'
+                                        }`}>
+                                          {lr.status}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          {lr.status === 'pending' && (
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'approved', `Approved on behalf of Manager (${activeMgr.full_name})`)}
+                                                className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
+                                              >
+                                                Approve
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'rejected', `Rejected on behalf of Manager (${activeMgr.full_name})`)}
+                                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
+                                              >
+                                                Reject
+                                              </button>
+                                            </>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleRemoteDeleteLeave(lr.id)}
+                                            className="p-1 text-slate-400 hover:text-rose-600"
+                                            title="Permanently delete leave (Zero recovery, refunds days)"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {mgrLeaves.length === 0 && (
+                                    <tr>
+                                      <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
+                                        No leave requests submitted by this manager's team.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 6: PERSONAL ATTENDANCE & CALENDAR */}
+                        {remoteMgrTab === 'my-attendance' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm space-y-4">
+                            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                              Manager's Personal Attendance Calendar ({activeMgr.full_name})
+                            </h4>
+                            <UnifiedCalendar
+                              companyId={remoteCompanyData?.company?.id}
+                              employeeId={activeMgr.id}
+                              role="manager"
+                            />
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 7: TICKETS */}
+                        {remoteMgrTab === 'tickets' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                              <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Manager / Team Service Tickets</h4>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                                  <tr>
+                                    <th className="p-3">Ticket #</th>
+                                    <th className="p-3">Staff</th>
+                                    <th className="p-3">Title</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {(remoteCompanyData.tickets || [])
+                                    .filter(t => t.employee_id === activeMgr.id || mgrTeam.some(tm => tm.id === t.employee_id))
+                                    .map(tkt => (
+                                      <tr key={tkt.id} className="hover:bg-slate-50/50">
+                                        <td className="p-3 font-mono font-bold text-purple-700">#{tkt.id}</td>
+                                        <td className="p-3 font-bold text-slate-900">{tkt.employee_name || 'Staff'}</td>
+                                        <td className="p-3 text-slate-700">{tkt.title}</td>
+                                        <td className="p-3">
+                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-100 text-amber-700">
+                                            {tkt.status}
+                                          </span>
+                                        </td>
+                                        <td className="p-3 text-right">
+                                          <div className="flex items-center justify-end gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                setChatTicketId(tkt.id);
+                                                setShowChatModal(true);
+                                              }}
+                                              className="px-2.5 py-1 bg-purple-50 text-purple-700 font-bold rounded-lg text-xs"
+                                            >
+                                              Chat
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleRemoteDeleteTicket(tkt.id)}
+                                              className="p-1 text-slate-400 hover:text-rose-600"
+                                              title="Permanently delete ticket"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* MANAGER TAB 8: PROFILE */}
+                        {remoteMgrTab === 'profile' && (
+                          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4 text-xs">
+                            <h4 className="font-bold text-slate-900 uppercase tracking-wider text-xs">Manager Profile & Admin Operations</h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                              <div>
+                                <span className="text-slate-400 block font-medium">Full Name</span>
+                                <span className="font-bold text-slate-900 text-sm">{activeMgr.full_name}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Department</span>
+                                <span className="font-bold text-slate-900">{activeMgr.department}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium">Mobile</span>
+                                <span className="font-mono font-bold text-slate-900">{activeMgr.mobile}</span>
+                              </div>
+                            </div>
+                            <div className="pt-3 border-t flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openRemoteEditProfileModal(activeMgr)}
+                                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl transition-colors"
+                              >
+                                Edit Profile
                               </button>
                               {pLevel >= 4 && (
                                 <button
                                   type="button"
-                                  onClick={() => handleRemoteConfirmDeleteEmployee(remoteEmployeeData.employee.id, remoteEmployeeData.employee.full_name || remoteEmployeeData.employee.username)}
-                                  className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-lg text-xs transition-colors flex items-center gap-1"
-                                  title="Zero-recovery permanent delete"
+                                  onClick={() => handleRemoteConfirmDeleteEmployee(activeMgr.id, activeMgr.full_name)}
+                                  className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded-xl transition-colors"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  <span>Delete Account</span>
+                                  Permanently Delete Manager Account
                                 </button>
                               )}
                             </div>
                           </div>
-                        </div>
+                        )}
                       </div>
+                    );
+                  })()}
+                </div>
+              )}
 
-                      {/* VISUAL LEAVE BALANCES CARDS (CL, EL & OTHERS) */}
-                      <div>
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-                            <Award className="w-4 h-4 text-purple-600" />
-                            <span>Leave Quotas & Real-Time Balances</span>
-                          </h4>
-                          <span className="text-[11px] text-slate-400">
-                            Auto-deducted on leave approval • Monthly EL 1.25 accrual & 12 CL yearly cap
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {(remoteEmployeeData.currentBalances || []).map(bal => {
-                            const isCL = (bal.leave_type_code || '').toUpperCase() === 'CL';
-                            const isEL = (bal.leave_type_code || '').toUpperCase() === 'EL';
-                            const maxLimit = isCL ? 12 : (bal.max_days || 15);
-                            const percent = Math.min(100, Math.max(0, ((bal.balance || 0) / maxLimit) * 100));
-
-                            return (
-                              <div
-                                key={bal.leave_type_id}
-                                className={`rounded-2xl border p-5 shadow-sm transition-all ${
-                                  isCL
-                                    ? 'bg-gradient-to-br from-purple-50/80 to-white border-purple-200'
-                                    : isEL
-                                    ? 'bg-gradient-to-br from-sky-50/80 to-white border-sky-200'
-                                    : 'bg-white border-slate-200'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div>
-                                    <span className="text-xs font-black uppercase tracking-wider text-slate-900">
-                                      {bal.leave_type_name || bal.leave_type_code}
-                                    </span>
-                                    <span className="block text-[10px] text-slate-500 font-semibold mt-0.5">
-                                      {isCL ? 'Casual Leave (Max 12/yr)' : isEL ? 'Earned Leave (1.25/mo)' : 'Standard Leave'}
-                                    </span>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => openRemoteAdjustBalanceModal(remoteEmployeeData.employee.id, bal.leave_type_id)}
-                                    className="p-1.5 bg-white border border-slate-200 hover:border-purple-300 text-purple-700 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1"
-                                    title="Adjust balance"
-                                  >
-                                    <Sliders className="w-3 h-3" />
-                                    <span>Adjust</span>
-                                  </button>
-                                </div>
-
-                                <div className="mt-4 flex items-baseline justify-between">
-                                  <div>
-                                    <span className="text-3xl font-black text-slate-900">
-                                      {Number(bal.balance || 0).toFixed(2)}
-                                    </span>
-                                    <span className="text-xs font-bold text-slate-400 ml-1">days remaining</span>
-                                  </div>
-                                  <span className="text-xs font-bold text-slate-500">
-                                    Limit: {maxLimit} d
-                                  </span>
-                                </div>
-
-                                {/* Progress Bar */}
-                                <div className="w-full bg-slate-100 rounded-full h-2 mt-3 overflow-hidden">
-                                  <div
-                                    className={`h-full rounded-full transition-all ${
-                                      isCL ? 'bg-purple-600' : isEL ? 'bg-sky-500' : 'bg-emerald-500'
-                                    }`}
-                                    style={{ width: `${percent}%` }}
-                                  />
-                                </div>
-
-                                <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-3 gap-2 text-center text-[10px]">
-                                  <div>
-                                    <span className="text-slate-400 block">Opening</span>
-                                    <span className="font-bold text-slate-700">{bal.opening_balance || 0}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-400 block">Accrued</span>
-                                    <span className="font-bold text-emerald-600">+{bal.accrued || 0}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-400 block">Used</span>
-                                    <span className="font-bold text-rose-600">-{bal.used || 0}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-
-                          {(remoteEmployeeData.currentBalances || []).length === 0 && (
-                            <div className="col-span-full p-6 bg-slate-50 rounded-2xl border border-dashed border-slate-200 text-center text-xs text-slate-500">
-                              No leave balances registered yet for this employee. Use "Adjust Balance" to allocate CL or EL.
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* EMPLOYEE LEAVE REQUESTS HISTORY */}
-                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                          <div>
-                            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Leave Applications History</h4>
-                            <p className="text-[11px] text-slate-400">All submitted, approved, and rejected leave requests for this employee</p>
-                          </div>
+              {/* ========================================================================= */}
+              {/* PERSPECTIVE 3: COMPANY ADMIN PERSPECTIVE */}
+              {/* ========================================================================= */}
+              {!remoteCompanyLoading && remotePerspective === 'company' && remoteCompanyData && (
+                <div className="space-y-4">
+                  {/* COMPANY SUB-NAV TABS */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-2 shadow-sm flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {[
+                        { id: 'dashboard', label: 'Dashboard', icon: Layers },
+                        { id: 'directory', label: 'Personnel Directory', icon: Users },
+                        { id: 'attendance', label: 'Attendance Records', icon: Clock },
+                        {
+                          id: 'corrections',
+                          label: 'Attendance Corrections',
+                          icon: CheckSquare,
+                          badge: (remoteCompanyData.correctionRequests || []).filter(c => c.status === 'pending').length
+                        },
+                        {
+                          id: 'leaves',
+                          label: 'Leave Management',
+                          icon: Award,
+                          badge: (remoteCompanyData.leaveRequests || []).filter(l => l.status === 'pending').length
+                        },
+                        { id: 'shifts-geofences', label: 'Shifts & Geofences', icon: MapPin },
+                        { id: 'tickets', label: 'Company Tickets', icon: MessageSquare },
+                        { id: 'settings', label: 'Company Settings', icon: Building2 }
+                      ].map(tab => {
+                        const Icon = tab.icon;
+                        const isActive = remoteCompTab === tab.id;
+                        return (
                           <button
+                            key={tab.id}
                             type="button"
-                            onClick={() => openRemoteApplyLeaveModal(remoteEmployeeData.employee.id)}
-                            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs flex items-center gap-1.5"
+                            onClick={() => setRemoteCompTab(tab.id)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                              isActive
+                                ? 'bg-purple-600 text-white shadow-xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                            }`}
                           >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span>Apply Leave on Behalf</span>
+                            <Icon className="w-3.5 h-3.5" />
+                            <span>{tab.label}</span>
+                            {Boolean(tab.badge) && (
+                              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                                isActive ? 'bg-white text-purple-700' : 'bg-rose-100 text-rose-700'
+                              }`}>
+                                {tab.badge}
+                              </span>
+                            )}
                           </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openRemoteApplyLeaveModal()}
+                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-xs"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Apply Leave</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openRemotePunchModal()}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-xs"
+                      >
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Record Punch</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* COMPANY TAB 1: DASHBOARD */}
+                  {remoteCompTab === 'dashboard' && (
+                    <div className="space-y-4">
+                      <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-purple-950 text-white rounded-2xl p-6 shadow-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h2 className="text-xl font-bold tracking-tight">
+                                {remoteCompanyData.company?.legal_name || remoteCompanyData.company?.name || 'Company Portal'}
+                              </h2>
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                {remoteCompanyData.company?.status || 'Active'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-purple-200/80 mt-1">
+                              Company Code: <span className="font-mono font-bold text-white">{remoteCompanyData.company?.company_code || remoteCompanyData.company?.code}</span> •
+                              Admin: <span className="font-bold text-white">{remoteCompanyData.admin?.full_name || remoteCompanyData.admin?.username || 'N/A'}</span> ({remoteCompanyData.admin?.email || 'No email'}) •
+                              Timezone: <span className="text-white">{remoteCompanyData.company?.timezone || 'Asia/Kolkata'}</span>
+                            </p>
+                          </div>
                         </div>
 
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-xs text-left">
-                            <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                              <tr>
-                                <th className="p-3">Leave Type</th>
-                                <th className="p-3">Period</th>
-                                <th className="p-3">Duration</th>
-                                <th className="p-3">Reason</th>
-                                <th className="p-3">Status</th>
-                                <th className="p-3 text-right">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {(remoteEmployeeData.leaveRequests || []).map(lr => (
-                                <tr key={lr.id} className="hover:bg-slate-50/50">
-                                  <td className="p-3 font-bold text-purple-700">
-                                    {lr.leave_type_name || lr.leave_type_code || 'Leave'}
-                                  </td>
-                                  <td className="p-3 font-mono text-slate-700">
-                                    {lr.start_date} to {lr.end_date}
-                                  </td>
-                                  <td className="p-3 font-bold text-slate-800">{lr.total_days} day(s)</td>
-                                  <td className="p-3 text-slate-600 max-w-xs truncate">{lr.reason || '-'}</td>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5 pt-5 border-t border-white/10 text-xs">
+                          <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                            <span className="text-[11px] text-purple-200 uppercase font-semibold">Total Personnel</span>
+                            <p className="text-xl font-bold mt-1">{remoteCompanyData.employees?.length || 0}</p>
+                          </div>
+                          <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                            <span className="text-[11px] text-purple-200 uppercase font-semibold">Managers</span>
+                            <p className="text-xl font-bold mt-1">{remoteCompanyData.managers?.length || 0}</p>
+                          </div>
+                          <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                            <span className="text-[11px] text-purple-200 uppercase font-semibold">Configured Shifts</span>
+                            <p className="text-xl font-bold mt-1">{remoteCompanyData.shifts?.length || 0}</p>
+                          </div>
+                          <div className="bg-white/5 rounded-xl p-3 border border-white/5">
+                            <span className="text-[11px] text-purple-200 uppercase font-semibold">Geofence Zones</span>
+                            <p className="text-xl font-bold mt-1">{remoteCompanyData.geofences?.length || 0}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 2: DIRECTORY */}
+                  {remoteCompTab === 'directory' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Company Personnel Directory</h4>
+                          <p className="text-[11px] text-slate-400">All registered employees, managers, and admin accounts</p>
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="Search personnel by name or code..."
+                          value={remoteCompSearch}
+                          onChange={(e) => setRemoteCompSearch(e.target.value)}
+                          className="p-1.5 px-3 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-purple-500 w-64"
+                        />
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                            <tr>
+                              <th className="p-3">Staff / Code</th>
+                              <th className="p-3">Role</th>
+                              <th className="p-3">Department & Designation</th>
+                              <th className="p-3">Contact</th>
+                              <th className="p-3">Status</th>
+                              <th className="p-3 text-right">Operational Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(remoteCompanyData.employees || [])
+                              .filter(emp => {
+                                if (!remoteCompSearch.trim()) return true;
+                                const s = remoteCompSearch.toLowerCase();
+                                return (
+                                  (emp.full_name || '').toLowerCase().includes(s) ||
+                                  (emp.employee_code || '').toLowerCase().includes(s) ||
+                                  (emp.department || '').toLowerCase().includes(s) ||
+                                  (emp.username || '').toLowerCase().includes(s)
+                                );
+                              })
+                              .map(emp => (
+                                <tr key={emp.id} className="hover:bg-purple-50/30 transition-colors">
                                   <td className="p-3">
-                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                      lr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                                      lr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
-                                      'bg-amber-100 text-amber-700'
+                                    <div className="font-bold text-slate-900">{emp.full_name || emp.fullName || emp.username}</div>
+                                    <div className="text-[10px] text-slate-400 font-mono">
+                                      {emp.employee_code || `ID: ${emp.id}`} • @{emp.username || 'user'}
+                                    </div>
+                                  </td>
+                                  <td className="p-3">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                      emp.role === 'manager' || emp.role_name === 'manager'
+                                        ? 'bg-purple-100 text-purple-700'
+                                        : 'bg-slate-100 text-slate-700'
                                     }`}>
-                                      {lr.status}
+                                      {emp.role || emp.role_name || 'employee'}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-slate-600">
+                                    <div>{emp.department || 'General'}</div>
+                                    <div className="text-[10px] text-slate-400">{emp.designation || '-'}</div>
+                                  </td>
+                                  <td className="p-3 text-slate-600 font-mono text-[11px]">
+                                    <div>{emp.mobile || '-'}</div>
+                                    <div className="text-[10px] text-slate-400">{emp.email || '-'}</div>
+                                  </td>
+                                  <td className="p-3">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      emp.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                                    }`}>
+                                      {emp.status}
                                     </span>
                                   </td>
                                   <td className="p-3 text-right">
                                     <div className="flex items-center justify-end gap-1.5">
-                                      {lr.status === 'pending' && (
-                                        <>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'approved')}
-                                            className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
-                                          >
-                                            Approve
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'rejected')}
-                                            className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
-                                          >
-                                            Reject
-                                          </button>
-                                        </>
-                                      )}
                                       <button
                                         type="button"
-                                        onClick={() => handleRemoteDeleteLeave(lr.id)}
-                                        className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
-                                        title="Permanently delete leave request"
+                                        onClick={() => {
+                                          handleRemoteSelectEmployee(emp.id);
+                                          setRemotePerspective('employee');
+                                        }}
+                                        className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold rounded-lg text-[11px] transition-colors flex items-center gap-1"
                                       >
-                                        <Trash2 className="w-3.5 h-3.5" />
+                                        <User className="w-3 h-3" />
+                                        <span>Inspect</span>
                                       </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openRemoteApplyLeaveModal(emp.id)}
+                                        className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg text-[11px]"
+                                      >
+                                        Leave
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openRemotePunchModal(emp.id)}
+                                        className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-[11px]"
+                                      >
+                                        Punch
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openRemoteEditProfileModal(emp)}
+                                        className="p-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg"
+                                      >
+                                        <Edit3 className="w-3 h-3" />
+                                      </button>
+                                      {pLevel >= 4 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteConfirmDeleteEmployee(emp.id, emp.full_name || emp.username)}
+                                          className="p-1 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg"
+                                          title="Permanently delete account (Zero recovery)"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      )}
                                     </div>
                                   </td>
                                 </tr>
                               ))}
-                              {(remoteEmployeeData.leaveRequests || []).length === 0 && (
-                                <tr>
-                                  <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
-                                    No leave requests recorded for this employee.
-                                  </td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 3: ATTENDANCE RECORDS */}
+                  {remoteCompTab === 'attendance' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Company Attendance Live Feed</h4>
+                          <p className="text-[11px] text-slate-400">Punch logs and timesheet across all company personnel</p>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => openRemotePunchModal()}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Record Manual Punch</span>
+                        </button>
                       </div>
 
-                      {/* EMPLOYEE ATTENDANCE LOGS HISTORY */}
-                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                          <div>
-                            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Attendance Punches & Timesheet</h4>
-                            <p className="text-[11px] text-slate-400">Punch in/out timestamps, working hours, and corrections</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => openRemotePunchModal(remoteEmployeeData.employee.id)}
-                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs flex items-center gap-1.5"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span>Mark / Correct Punch</span>
-                          </button>
-                        </div>
-
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-xs text-left">
-                            <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                              <tr>
-                                <th className="p-3">Date</th>
-                                <th className="p-3">Punch In</th>
-                                <th className="p-3">Punch Out</th>
-                                <th className="p-3">Total Hours</th>
-                                <th className="p-3">Status</th>
-                                <th className="p-3 text-right">Support Action</th>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                            <tr>
+                              <th className="p-3">Staff / Code</th>
+                              <th className="p-3">Date</th>
+                              <th className="p-3">In</th>
+                              <th className="p-3">Out</th>
+                              <th className="p-3">Hours</th>
+                              <th className="p-3">Status</th>
+                              <th className="p-3 text-right">Support Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(remoteCompanyData.attendanceLogs || []).map(att => (
+                              <tr key={att.id} className="hover:bg-slate-50/50">
+                                <td className="p-3 font-semibold text-slate-900">{att.employee_name}</td>
+                                <td className="p-3 font-mono text-slate-700">{att.date}</td>
+                                <td className="p-3 font-mono text-emerald-700">{att.punch_in_time || '-'}</td>
+                                <td className="p-3 font-mono text-sky-700">{att.punch_out_time || '-'}</td>
+                                <td className="p-3 font-bold text-slate-800">{att.total_hours || '-'} hrs</td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    att.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
+                                    att.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
+                                    'bg-rose-100 text-rose-700'
+                                  }`}>
+                                    {att.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoteDeleteAttendance(att.id)}
+                                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                                    title="Permanently delete punch record (Zero recovery)"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
                               </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {(remoteEmployeeData.attendanceHistory || []).map(att => (
-                                <tr key={att.id} className="hover:bg-slate-50/50">
-                                  <td className="p-3 font-mono font-bold text-slate-800">{att.date}</td>
-                                  <td className="p-3 font-mono text-emerald-700">{att.punch_in_time || '-'}</td>
-                                  <td className="p-3 font-mono text-sky-700">{att.punch_out_time || '-'}</td>
-                                  <td className="p-3 font-bold text-slate-800">{att.total_hours || att.working_hours || '-'} hrs</td>
-                                  <td className="p-3">
-                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                      att.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
-                                      att.status === 'Half Day' ? 'bg-amber-100 text-amber-700' :
-                                      'bg-rose-100 text-rose-700'
-                                    }`}>
-                                      {att.status || 'Present'}
-                                    </span>
-                                  </td>
-                                  <td className="p-3 text-right">
+                            ))}
+                            {(remoteCompanyData.attendanceLogs || []).length === 0 && (
+                              <tr>
+                                <td colSpan="7" className="p-8 text-center text-slate-400 text-xs">
+                                  No attendance logs recorded today.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 4: CORRECTIONS */}
+                  {remoteCompTab === 'corrections' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Attendance Corrections Desk</h4>
+                          <p className="text-[11px] text-slate-400">Review, approve, reject, or permanently delete correction requests</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openRemoteCorrectionModal()}
+                          className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Submit Correction for Staff</span>
+                        </button>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                            <tr>
+                              <th className="p-3">Staff / Code</th>
+                              <th className="p-3">Date</th>
+                              <th className="p-3">Requested In / Out</th>
+                              <th className="p-3">Reason</th>
+                              <th className="p-3">Status</th>
+                              <th className="p-3 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(remoteCompanyData.correctionRequests || []).map(cr => (
+                              <tr key={cr.id} className="hover:bg-slate-50/50">
+                                <td className="p-3 font-semibold text-slate-900">{cr.employee_name}</td>
+                                <td className="p-3 font-mono text-slate-700">{cr.date}</td>
+                                <td className="p-3 font-mono text-slate-600">
+                                  In: {cr.requested_punch_in || '-'} | Out: {cr.requested_punch_out || '-'}
+                                </td>
+                                <td className="p-3 text-slate-600 max-w-xs truncate">{cr.reason}</td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                    cr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                    cr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                    'bg-amber-100 text-amber-700'
+                                  }`}>
+                                    {cr.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    {cr.status === 'pending' && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteReviewCorrection(cr.id, 'approved', 'Approved by Support on Company Desk')}
+                                          className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
+                                        >
+                                          Approve
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteReviewCorrection(cr.id, 'rejected', 'Rejected by Support')}
+                                          className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
+                                        >
+                                          Reject
+                                        </button>
+                                      </>
+                                    )}
                                     <button
                                       type="button"
-                                      onClick={() => handleRemoteDeleteAttendance(att.id)}
-                                      className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
-                                      title="Delete punch record"
+                                      onClick={() => handleRemoteDeleteCorrection(cr.id)}
+                                      className="p-1 text-slate-400 hover:text-rose-600"
+                                      title="Permanently delete correction request"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
-                                  </td>
-                                </tr>
-                              ))}
-                              {(remoteEmployeeData.attendanceHistory || []).length === 0 && (
-                                <tr>
-                                  <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
-                                    No attendance records found for this employee.
-                                  </td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                            {(remoteCompanyData.correctionRequests || []).length === 0 && (
+                              <tr>
+                                <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
+                                  No correction requests recorded for this company.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 5: LEAVES */}
+                  {remoteCompTab === 'leaves' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Company Leave Requests Desk</h4>
+                          <p className="text-[11px] text-slate-400">Review, approve, reject, or permanently delete leaves across the company</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openRemoteApplyLeaveModal()}
+                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 shadow-xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Apply Leave for Staff</span>
+                        </button>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                            <tr>
+                              <th className="p-3">Staff / Code</th>
+                              <th className="p-3">Leave Type</th>
+                              <th className="p-3">Dates & Days</th>
+                              <th className="p-3">Reason</th>
+                              <th className="p-3">Status</th>
+                              <th className="p-3 text-right">Support Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(remoteCompanyData.leaveRequests || []).map(lr => (
+                              <tr key={lr.id} className="hover:bg-slate-50/50">
+                                <td className="p-3 font-semibold text-slate-900">{lr.employee_name}</td>
+                                <td className="p-3 font-semibold text-purple-700">{lr.leave_type_name || 'Leave'}</td>
+                                <td className="p-3 text-slate-600">{lr.start_date} to {lr.end_date} ({lr.total_days} d)</td>
+                                <td className="p-3 text-slate-600 max-w-xs truncate">{lr.reason}</td>
+                                <td className="p-3">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                    lr.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                                    lr.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
+                                    'bg-amber-100 text-amber-700'
+                                  }`}>
+                                    {lr.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    {lr.status === 'pending' && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'approved')}
+                                          className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded text-[10px]"
+                                        >
+                                          Approve
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoteUpdateLeaveStatus(lr.id, 'rejected')}
+                                          className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded text-[10px]"
+                                        >
+                                          Reject
+                                        </button>
+                                      </>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoteDeleteLeave(lr.id)}
+                                      className="p-1 text-slate-400 hover:text-rose-600"
+                                      title="Permanently delete leave request (Zero recovery, refunds days)"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                            {(remoteCompanyData.leaveRequests || []).length === 0 && (
+                              <tr>
+                                <td colSpan="6" className="p-8 text-center text-slate-400 text-xs">
+                                  No leave requests recorded for this company.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 6: SHIFTS & GEOFENCES */}
+                  {remoteCompTab === 'shifts-geofences' && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      {/* SHIFTS */}
+                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                          <Clock className="w-4 h-4 text-purple-600" />
+                          <span>Configured Shifts ({(remoteCompanyData.shifts || []).length})</span>
+                        </h4>
+                        <div className="space-y-2">
+                          {(remoteCompanyData.shifts || []).map(s => (
+                            <div key={s.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+                              <div>
+                                <span className="font-bold text-slate-900">{s.name}</span>
+                                <span className="text-slate-500 font-mono block text-[11px]">
+                                  {s.start_time} - {s.end_time} ({s.working_hours || 8.5} hrs)
+                                </span>
+                              </div>
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">
+                                {s.status || 'Active'}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                       </div>
+
+                      {/* GEOFENCES */}
+                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                          <MapPin className="w-4 h-4 text-emerald-600" />
+                          <span>Geofence Attendance Zones ({(remoteCompanyData.geofences || []).length})</span>
+                        </h4>
+                        <div className="space-y-2">
+                          {(remoteCompanyData.geofences || []).map(g => (
+                            <div key={g.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
+                              <div>
+                                <span className="font-bold text-slate-900">{g.location_name}</span>
+                                <span className="text-slate-500 font-mono block text-[11px]">
+                                  Radius: {g.radius}m • Lat: {g.latitude?.toFixed(4)}, Lng: {g.longitude?.toFixed(4)}
+                                </span>
+                              </div>
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] uppercase">
+                                {g.status || 'Active'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 7: TICKETS */}
+                  {remoteCompTab === 'tickets' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">All Company Tickets & Inquiries</h4>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                            <tr>
+                              <th className="p-3">Ticket #</th>
+                              <th className="p-3">Staff</th>
+                              <th className="p-3">Title</th>
+                              <th className="p-3">Status</th>
+                              <th className="p-3 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(remoteCompanyData.tickets || []).map(tkt => (
+                              <tr key={tkt.id} className="hover:bg-slate-50/50">
+                                <td className="p-3 font-mono font-bold text-purple-700">#{tkt.id}</td>
+                                <td className="p-3 font-bold text-slate-900">{tkt.employee_name || 'Personnel'}</td>
+                                <td className="p-3 text-slate-700">{tkt.title}</td>
+                                <td className="p-3">
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-amber-100 text-amber-700">
+                                    {tkt.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setChatTicketId(tkt.id);
+                                        setShowChatModal(true);
+                                      }}
+                                      className="px-2.5 py-1 bg-purple-50 text-purple-700 font-bold rounded-lg text-xs"
+                                    >
+                                      Chat
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoteDeleteTicket(tkt.id)}
+                                      className="p-1 text-slate-400 hover:text-rose-600"
+                                      title="Permanently delete ticket"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                            {(remoteCompanyData.tickets || []).length === 0 && (
+                              <tr>
+                                <td colSpan="5" className="p-8 text-center text-slate-400 text-xs">
+                                  No service tickets filed for this company.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* COMPANY TAB 8: SETTINGS */}
+                  {remoteCompTab === 'settings' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4 text-xs">
+                      <h4 className="font-bold text-slate-900 uppercase tracking-wider text-xs">Company System Profile & Configuration</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <div>
+                          <span className="text-slate-400 block font-medium">Legal Name</span>
+                          <span className="font-bold text-slate-900 text-sm">{remoteCompanyData.company?.legal_name || remoteCompanyData.company?.name}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block font-medium">Company Code</span>
+                          <span className="font-mono font-bold text-slate-900">{remoteCompanyData.company?.company_code || remoteCompanyData.company?.code}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block font-medium">Admin User</span>
+                          <span className="font-bold text-purple-700">@{remoteCompanyData.admin?.username || 'admin'}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block font-medium">Contact Email</span>
+                          <span className="font-mono text-slate-800">{remoteCompanyData.company?.email || 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block font-medium">Phone</span>
+                          <span className="font-mono text-slate-800">{remoteCompanyData.company?.phone || 'N/A'}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block font-medium">Timezone</span>
+                          <span className="text-slate-800">{remoteCompanyData.company?.timezone || 'Asia/Kolkata'}</span>
+                        </div>
+                      </div>
+
+                      {pLevel >= 4 && (
+                        <div className="mt-6 pt-5 border-t border-rose-200 bg-rose-50/50 p-4 rounded-xl space-y-2">
+                          <h5 className="font-bold text-rose-900">Danger Zone: Permanent Company Wipe</h5>
+                          <p className="text-[11px] text-rose-700">
+                            Permanent deletion of this entire company including all staff, attendance history, leave quotas, and device locks across SQLite, Firestore, and Realtime Database.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`PERMANENT COMPANY WIPE WARNING:\nAre you sure you want to permanently erase "${remoteCompanyData.company?.legal_name || remoteCompanyData.company?.name}"?\nZero data will be recoverable.`)) {
+                                apiRequest(`/companies/${remoteCompanyData.company.id}`, { method: 'DELETE' })
+                                  .then(res => {
+                                    setSuccess(res.message || 'Company permanently wiped.');
+                                    fetchData();
+                                  })
+                                  .catch(err => setError(err.message));
+                              }
+                            }}
+                            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl transition-all shadow-xs"
+                          >
+                            Permanently Wipe Company Data
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -5252,9 +6660,13 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* REMOTE ACTION MODALS */}
       {/* ========================================================================= */}
       {/* 1. APPLY LEAVE ON BEHALF MODAL */}
+      {/* ========================================================================= */}
+      {/* REMOTE ACTION MODALS */}
+      {/* ========================================================================= */}
+      {/* 1. APPLY LEAVE ON BEHALF MODAL */}
       {remoteShowLeaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b pb-3">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-purple-600" />
@@ -5355,18 +6767,58 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                 />
               </div>
 
-              {/* Auto Approve Checkbox */}
-              <div className="p-3 bg-purple-50/60 border border-purple-100 rounded-xl flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="auto_approve_cb"
-                  checked={remoteLeaveForm.auto_approve}
-                  onChange={(e) => setRemoteLeaveForm({ ...remoteLeaveForm, auto_approve: e.target.checked })}
-                  className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500 cursor-pointer"
-                />
-                <label htmlFor="auto_approve_cb" className="text-slate-800 font-semibold cursor-pointer">
-                  Auto-approve immediately and deduct days from balance (Default)
+              {/* WORKFLOW / ROUTING OPTIONS */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                <label className="font-black text-slate-800 text-[11px] uppercase tracking-wider block">
+                  Approval & Execution Routing Rule <span className="text-rose-500">*</span>
                 </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-all ${
+                    remoteLeaveForm.flow === 'route_to_mapping'
+                      ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-400'
+                      : 'bg-white border-slate-200 hover:bg-slate-100'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="leave_flow_opt"
+                      value="route_to_mapping"
+                      checked={remoteLeaveForm.flow === 'route_to_mapping'}
+                      onChange={() => setRemoteLeaveForm({ ...remoteLeaveForm, flow: 'route_to_mapping', auto_approve: false })}
+                      className="mt-0.5 text-purple-600 focus:ring-purple-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1">
+                        <span>📩 Route to Supervisor</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Submits leave as Pending and notifies assigned manager/approver mapping rule.
+                      </p>
+                    </div>
+                  </label>
+
+                  <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-all ${
+                    remoteLeaveForm.flow === 'auto_approve'
+                      ? 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-400'
+                      : 'bg-white border-slate-200 hover:bg-slate-100'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="leave_flow_opt"
+                      value="auto_approve"
+                      checked={remoteLeaveForm.flow === 'auto_approve'}
+                      onChange={() => setRemoteLeaveForm({ ...remoteLeaveForm, flow: 'auto_approve', auto_approve: true })}
+                      className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1">
+                        <span>🚀 Direct Auto-Approval</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Immediately marks as Approved, deducts days from CL/EL balance, and dual-syncs to cloud.
+                      </p>
+                    </div>
+                  </label>
+                </div>
               </div>
 
               {/* Actions */}
@@ -5384,6 +6836,285 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                   className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold rounded-xl shadow-sm hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50"
                 >
                   {remoteActionExecuting ? 'Submitting...' : 'Apply Leave'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 1.1 ATTENDANCE CORRECTION MODAL */}
+      {remoteShowCorrectionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-5 h-5 text-amber-500" />
+                <h3 className="text-sm font-bold text-slate-900">Submit Attendance Correction on Behalf</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRemoteShowCorrectionModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleRemoteSubmitCorrection} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Target Personnel <span className="text-rose-500">*</span></label>
+                <select
+                  value={remoteCorrectionForm.employee_id}
+                  onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, employee_id: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-semibold"
+                  required
+                >
+                  <option value="">-- Choose Employee / Manager --</option>
+                  {(remoteCompanyData?.employees || []).map(e => (
+                    <option key={e.id} value={e.id}>
+                      {e.full_name || e.fullName || e.username} ({e.employee_code || `ID:${e.id}`}) • {e.role || 'Staff'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Attendance Date <span className="text-rose-500">*</span></label>
+                  <input
+                    type="date"
+                    value={remoteCorrectionForm.date}
+                    onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, date: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-xl font-mono"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Correction Type</label>
+                  <select
+                    value={remoteCorrectionForm.correction_type}
+                    onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, correction_type: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-xl bg-white font-semibold"
+                  >
+                    <option value="both">Both Punch In & Out</option>
+                    <option value="in">Punch In Only</option>
+                    <option value="out">Punch Out Only</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Corrected Punch In Time</label>
+                  <input
+                    type="time"
+                    step="1"
+                    value={remoteCorrectionForm.punch_in_time}
+                    onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, punch_in_time: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-xl font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Corrected Punch Out Time</label>
+                  <input
+                    type="time"
+                    step="1"
+                    value={remoteCorrectionForm.punch_out_time}
+                    onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, punch_out_time: e.target.value })}
+                    className="w-full p-2 border border-slate-200 rounded-xl font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Requested Attendance Status</label>
+                <select
+                  value={remoteCorrectionForm.requested_status}
+                  onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, requested_status: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded-xl bg-white font-semibold"
+                >
+                  <option value="Present">Present (Full Day)</option>
+                  <option value="Half Day">Half Day</option>
+                  <option value="Absent">Absent</option>
+                  <option value="Weekly Off">Weekly Off</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Mandatory Audit Reason / Issue Details <span className="text-rose-500">*</span></label>
+                <textarea
+                  rows={2}
+                  value={remoteCorrectionForm.reason}
+                  onChange={(e) => setRemoteCorrectionForm({ ...remoteCorrectionForm, reason: e.target.value })}
+                  placeholder="e.g. Employee experienced biometric punch synchronization timeout on arrival"
+                  className="w-full p-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500"
+                  required
+                />
+              </div>
+
+              {/* WORKFLOW / ROUTING OPTIONS */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                <label className="font-black text-slate-800 text-[11px] uppercase tracking-wider block">
+                  Approval & Execution Routing Rule <span className="text-rose-500">*</span>
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-all ${
+                    remoteCorrectionForm.flow === 'route_to_mapping'
+                      ? 'bg-amber-50 border-amber-300 ring-1 ring-amber-400'
+                      : 'bg-white border-slate-200 hover:bg-slate-100'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="correction_flow"
+                      value="route_to_mapping"
+                      checked={remoteCorrectionForm.flow === 'route_to_mapping'}
+                      onChange={() => setRemoteCorrectionForm({ ...remoteCorrectionForm, flow: 'route_to_mapping' })}
+                      className="mt-0.5 text-amber-600 focus:ring-amber-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1">
+                        <span>📩 Route to Supervisor</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Sends request to assigned manager mapping rule for review & approval.
+                      </p>
+                    </div>
+                  </label>
+
+                  <label className={`flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition-all ${
+                    remoteCorrectionForm.flow === 'auto_approve'
+                      ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-400'
+                      : 'bg-white border-slate-200 hover:bg-slate-100'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="correction_flow"
+                      value="auto_approve"
+                      checked={remoteCorrectionForm.flow === 'auto_approve'}
+                      onChange={() => setRemoteCorrectionForm({ ...remoteCorrectionForm, flow: 'auto_approve' })}
+                      className="mt-0.5 text-purple-600 focus:ring-purple-500"
+                    />
+                    <div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1">
+                        <span>🚀 Direct Auto-Approval</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Immediately writes to attendance records, marks is_edited=1, and dual-syncs to cloud realtime.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setRemoteShowCorrectionModal(false)}
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={remoteActionExecuting}
+                  className="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold rounded-xl shadow-sm hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+                >
+                  {remoteActionExecuting ? 'Submitting...' : 'Submit Attendance Correction'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 1.2 RAISE TICKET ON BEHALF MODAL */}
+      {remoteShowTicketModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-purple-600" />
+                <h3 className="text-sm font-bold text-slate-900">Raise Service Ticket on Behalf</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRemoteShowTicketModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleRemoteSubmitTicket} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Target Personnel <span className="text-rose-500">*</span></label>
+                <select
+                  value={remoteTicketForm.employee_id}
+                  onChange={(e) => setRemoteTicketForm({ ...remoteTicketForm, employee_id: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white font-semibold"
+                  required
+                >
+                  <option value="">-- Choose Employee / Manager --</option>
+                  {(remoteCompanyData?.employees || []).map(e => (
+                    <option key={e.id} value={e.id}>
+                      {e.full_name || e.fullName || e.username} ({e.employee_code || `ID:${e.id}`})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Category / Issue Type</label>
+                <select
+                  value={remoteTicketForm.request_type}
+                  onChange={(e) => setRemoteTicketForm({ ...remoteTicketForm, request_type: e.target.value })}
+                  className="w-full p-2 border border-slate-200 rounded-xl bg-white font-semibold"
+                >
+                  <option value="general_support">General Support / Inquiries</option>
+                  <option value="attendance_correction">Attendance / Biometric Issue</option>
+                  <option value="leave_error">Leave Portal / Balance Problem</option>
+                  <option value="account_problem">Login / Hardware Binding Issue</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Subject / Title <span className="text-rose-500">*</span></label>
+                <input
+                  type="text"
+                  value={remoteTicketForm.title}
+                  onChange={(e) => setRemoteTicketForm({ ...remoteTicketForm, title: e.target.value })}
+                  placeholder="e.g. Unable to punch out due to GPS error"
+                  className="w-full p-2 border border-slate-200 rounded-xl focus:ring-1 focus:ring-purple-500 font-semibold"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Description / Details</label>
+                <textarea
+                  rows={3}
+                  value={remoteTicketForm.description}
+                  onChange={(e) => setRemoteTicketForm({ ...remoteTicketForm, description: e.target.value })}
+                  placeholder="Provide technical specifics or user explanation..."
+                  className="w-full p-2 border border-slate-200 rounded-xl focus:ring-1 focus:ring-purple-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setRemoteShowTicketModal(false)}
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={remoteActionExecuting}
+                  className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold rounded-xl shadow-sm hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50"
+                >
+                  {remoteActionExecuting ? 'Creating...' : 'Open Ticket'}
                 </button>
               </div>
             </form>
