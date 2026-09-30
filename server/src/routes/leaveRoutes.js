@@ -4,7 +4,19 @@ const db = require('../db');
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
-const { deleteFromFirebase } = require('../services/firebase');
+const {
+  deleteFromFirebase,
+  syncLeaveBalance,
+  syncLeaveType,
+  syncLeaveTransaction,
+  restoreEmployeeLeaveBalancesFromFirebase
+} = require('../services/firebase');
+const {
+  ensureCompanyLeaveTypes,
+  autoCreditEmployeeLeaves,
+  getEmployeeCreditedCLInYear,
+  getEmployeeCreditedELInMonth
+} = require('../services/leaveService');
 
 // List Leave Types for Company (Strictly Casual Leave [12/yr] and Earned Leave [1.25/mo])
 router.get('/types', verifyAuth, (req, res) => {
@@ -229,6 +241,90 @@ router.get('/summary', verifyAuth, (req, res) => {
   });
 });
 
+// Get Company All Staff Leave Balances (Company Admin, Manager, Super Admin)
+router.get('/company-balances', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin']), (req, res) => {
+  const companyId = getTenantCompanyId(req);
+  if (!companyId) return res.json({ employees: [], transactions: [] });
+
+  const currentYear = new Date().getFullYear();
+  const { clType, elType } = ensureCompanyLeaveTypes(companyId);
+
+  // Active staff
+  const employees = db.prepare(`
+    SELECT e.id, e.employee_id as employee_code, e.full_name, e.department, e.designation, e.city,
+           u.role_id, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.company_id = ? AND e.status = 'active' AND e.is_deleted = 0
+    ORDER BY e.full_name ASC
+  `).all(companyId);
+
+  // Balances
+  const balances = db.prepare(`
+    SELECT lb.*, lt.name as leave_type_name
+    FROM leave_balances lb
+    JOIN leave_types lt ON lb.leave_type_id = lt.id
+    WHERE lt.company_id = ? AND lb.year = ?
+  `).all(companyId, currentYear);
+
+  const balanceMap = {};
+  for (const b of balances) {
+    if (!balanceMap[b.employee_id]) balanceMap[b.employee_id] = {};
+    const nameLower = (b.leave_type_name || '').toLowerCase();
+    const isCL = nameLower.includes('casual') || b.leave_type_name === 'CL';
+    const isEL = nameLower.includes('earned') || b.leave_type_name === 'EL';
+    if (isCL) balanceMap[b.employee_id].cl = b;
+    if (isEL) balanceMap[b.employee_id].el = b;
+  }
+
+  const staffBalances = employees.map(emp => {
+    const cl = balanceMap[emp.id]?.cl || { balance: 0, opening_balance: 0, accrued: 0, used: 0 };
+    const el = balanceMap[emp.id]?.el || { balance: 0, opening_balance: 0, accrued: 0, used: 0 };
+    const clCredited = Number(cl.opening_balance || 0) + Number(cl.accrued || 0);
+    const elCredited = Number(el.accrued || 0);
+    const totalCredited = clCredited + elCredited;
+    const totalUsed = Number(cl.used || 0) + Number(el.used || 0);
+    const totalAvailable = Number(cl.balance || 0) + Number(el.balance || 0);
+
+    return {
+      ...emp,
+      cl_balance: Number(cl.balance || 0),
+      cl_credited: clCredited,
+      cl_used: Number(cl.used || 0),
+      cl_id: clType?.id,
+      el_balance: Number(el.balance || 0),
+      el_credited: elCredited,
+      el_used: Number(el.used || 0),
+      el_id: elType?.id,
+      total_credited: Math.round(totalCredited * 100) / 100,
+      total_used: Math.round(totalUsed * 100) / 100,
+      total_available: Math.round(totalAvailable * 100) / 100,
+      last_updated: cl.updated_at || el.updated_at || null
+    };
+  });
+
+  // Recent transactions
+  const transactions = db.prepare(`
+    SELECT lt.*, ltype.name as leave_type_name, e.full_name as employee_name, e.employee_id as employee_code,
+           u.username as created_by_name
+    FROM leave_transactions lt
+    JOIN leave_types ltype ON lt.leave_type_id = ltype.id
+    JOIN employees e ON lt.employee_id = e.id
+    LEFT JOIN users u ON lt.created_by = u.id
+    WHERE ltype.company_id = ?
+    ORDER BY lt.created_at DESC
+    LIMIT 60
+  `).all(companyId);
+
+  res.json({
+    employees: staffBalances,
+    transactions,
+    current_year: currentYear
+  });
+});
+
+
 // Configure / Add Leave Type (Company Admin, Super Admin)
 router.post('/types', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
@@ -312,19 +408,25 @@ router.delete('/types/:id', verifyAuth, requireRole(['company_admin', 'super_adm
 });
 
 // Get Leave Balances for an Employee (or logged in employee)
-router.get('/balances', verifyAuth, (req, res) => {
+// Automatically restores credited leaves from Firebase Firestore/RTDB if available
+router.get('/balances', verifyAuth, async (req, res) => {
   let empId = req.query.employee_id || (req.user.role_name === 'employee' ? req.user.employee_id : null) || req.user.employee_id;
 
   if (!empId) {
     return res.status(400).json({ error: 'employee_id is required.' });
   }
 
-  const { checkAndRunMonthlyAccrual, autoCreditEmployeeLeaves } = require('../services/leaveService');
-  checkAndRunMonthlyAccrual();
-
   const currentYear = new Date().getFullYear();
+  const emp = db.prepare('SELECT id, company_id FROM employees WHERE id = ?').get(empId);
 
-  // Clean up Paid Leave
+  // Auto-restore leave balances from Firebase if connected
+  if (emp && restoreEmployeeLeaveBalancesFromFirebase) {
+    try {
+      await restoreEmployeeLeaveBalancesFromFirebase(emp.id, emp.company_id);
+    } catch (e) {}
+  }
+
+  // Clean up residual Paid Leave
   db.prepare(`
     DELETE FROM leave_balances WHERE employee_id = ? AND leave_type_id IN (
       SELECT id FROM leave_types WHERE name LIKE '%Paid Leave%'
@@ -339,32 +441,29 @@ router.get('/balances', verifyAuth, (req, res) => {
     ORDER BY lt.id ASC
   `).all(empId, currentYear);
 
-  // If no balances found, auto-credit CL and EL for this employee
-  if (balances.length === 0) {
-    const emp = db.prepare('SELECT id, company_id FROM employees WHERE id = ?').get(empId);
-    if (emp) {
-      autoCreditEmployeeLeaves(emp.id, emp.company_id, req.user.id);
-      balances = db.prepare(`
-        SELECT lb.*, lt.name as leave_type_name, lt.default_yearly_quota, lt.monthly_accrual_rate, lt.is_carry_forward
-        FROM leave_balances lb
-        JOIN leave_types lt ON lb.leave_type_id = lt.id
-        WHERE lb.employee_id = ? AND lb.year = ? AND lt.name NOT LIKE '%Paid Leave%'
-        ORDER BY lt.id ASC
-      `).all(empId, currentYear);
-    }
+  // If no balances found, initialize zero-balance records (0 CL, 0 EL: NO auto-credits)
+  if (balances.length === 0 && emp) {
+    autoCreditEmployeeLeaves(emp.id, emp.company_id, req.user.id);
+    balances = db.prepare(`
+      SELECT lb.*, lt.name as leave_type_name, lt.default_yearly_quota, lt.monthly_accrual_rate, lt.is_carry_forward
+      FROM leave_balances lb
+      JOIN leave_types lt ON lb.leave_type_id = lt.id
+      WHERE lb.employee_id = ? AND lb.year = ? AND lt.name NOT LIKE '%Paid Leave%'
+      ORDER BY lt.id ASC
+    `).all(empId, currentYear);
   }
 
-  // Fetch month-wise Earned Leave accrual history for employee
-  const accrualLogs = db.prepare(`
+  // Fetch transaction and adjustment history for employee
+  const history = db.prepare(`
     SELECT lt.*, ltype.name as leave_type_name
     FROM leave_transactions lt
     JOIN leave_types ltype ON lt.leave_type_id = ltype.id
-    WHERE lt.employee_id = ? AND lt.transaction_type = 'accrual'
+    WHERE lt.employee_id = ?
     ORDER BY lt.created_at DESC
-    LIMIT 24
+    LIMIT 30
   `).all(empId);
 
-  res.json({ balances, accrualHistory: accrualLogs });
+  res.json({ balances, accrualHistory: history, history });
 });
 
 // Trigger Monthly Earned Leave Accrual on Demand
@@ -951,9 +1050,13 @@ router.post('/accrual/monthly', verifyAuth, requireRole(['company_admin', 'super
 });
 
 // Manual Leave Credit (Company Admin, Super Admin)
+// Strictly enforced rules:
+// 1. CL (Casual Leave): Maximum up to 12 leaves per calendar year
+// 2. EL (Earned Leave): Maximum up to 1.25 leaves per month
+// Dual-syncs to Firebase Firestore and RTDB immediately
 router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
-  const { employee_id, leave_type_id, days, reason, apply_to_all, cadence = 'month' } = req.body;
+  const { employee_id, leave_type_id, days, reason, apply_to_all, month, year } = req.body;
   const numDays = parseFloat(days);
 
   if (isNaN(numDays) || numDays <= 0) {
@@ -964,33 +1067,79 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     return res.status(400).json({ error: 'Leave type selection is required.' });
   }
 
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ error: 'A mandatory reason is required for manual leave crediting.' });
+  }
+
   const leaveType = db.prepare('SELECT * FROM leave_types WHERE id = ? AND company_id = ?').get(leave_type_id, companyId);
   if (!leaveType) {
     return res.status(404).json({ error: 'Selected leave type not found.' });
   }
 
+  const isCasualLeave = leaveType.code === 'CL' || leaveType.name.toLowerCase().includes('casual');
   const isEarnedLeave = leaveType.code === 'EL' || leaveType.name.toLowerCase().includes('earned');
 
-  // Strict statutory rule: EL earned month-wise cannot exceed 1.25 days per month
-  if (isEarnedLeave && cadence === 'month' && numDays > 1.25) {
-    return res.status(400).json({ error: 'Earned Leave (EL) cannot exceed the statutory limit of 1.25 days per month.' });
-  }
+  const now = new Date();
+  const targetYear = year ? parseInt(year, 10) : now.getFullYear();
+  const targetMonth = month ? parseInt(month, 10) : (now.getMonth() + 1);
 
-  const currentYear = new Date().getFullYear();
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const monthName = monthNames[targetMonth - 1] || (`Month ${targetMonth}`);
+
   let targetEmployees = [];
-
   if (apply_to_all) {
-    targetEmployees = db.prepare('SELECT id, full_name FROM employees WHERE company_id = ? AND status = \'active\' AND is_deleted = 0').all(companyId);
+    targetEmployees = db.prepare('SELECT id, full_name, employee_id as employee_code FROM employees WHERE company_id = ? AND status = \'active\' AND is_deleted = 0').all(companyId);
   } else {
     if (!employee_id) {
       return res.status(400).json({ error: 'Please select an employee or check "Apply to all employees".' });
     }
-    const single = db.prepare('SELECT id, full_name FROM employees WHERE id = ? AND company_id = ?').get(employee_id, companyId);
+    const single = db.prepare('SELECT id, full_name, employee_id as employee_code FROM employees WHERE id = ? AND company_id = ?').get(employee_id, companyId);
     if (!single) return res.status(404).json({ error: 'Employee not found.' });
     targetEmployees = [single];
   }
 
-  const transaction = db.transaction(() => {
+  if (targetEmployees.length === 0) {
+    return res.status(400).json({ error: 'No active employees found to credit leaves.' });
+  }
+
+  // 1. Strict Validation: Casual Leave (CL) cannot exceed 12 days per calendar year
+  if (isCasualLeave) {
+    if (numDays > 12.0) {
+      return res.status(400).json({ error: 'Casual Leave (CL) quota cannot exceed the maximum statutory limit of 12 days per year.' });
+    }
+    for (const emp of targetEmployees) {
+      const alreadyCredited = getEmployeeCreditedCLInYear(emp.id, leaveType.id, targetYear);
+      if (alreadyCredited + numDays > 12.001) {
+        const remaining = Math.max(0, 12.0 - alreadyCredited);
+        return res.status(400).json({
+          error: `Casual Leave (CL) annual cap of 12 days exceeded for ${emp.full_name}. Already credited in ${targetYear}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+        });
+      }
+    }
+  }
+
+  // 2. Strict Validation: Earned Leave (EL) cannot exceed 1.25 days per month
+  if (isEarnedLeave) {
+    if (numDays > 1.25) {
+      return res.status(400).json({ error: 'Earned Leave (EL) quota cannot exceed the statutory limit of 1.25 days per month.' });
+    }
+    for (const emp of targetEmployees) {
+      const alreadyMonthCredited = getEmployeeCreditedELInMonth(emp.id, leaveType.id, targetYear, targetMonth);
+      if (alreadyMonthCredited + numDays > 1.2501) {
+        const remaining = Math.max(0, 1.25 - alreadyMonthCredited);
+        return res.status(400).json({
+          error: `Earned Leave (EL) monthly cap of 1.25 days exceeded for ${emp.full_name} for ${monthName} ${targetYear}. Already credited for this month: ${alreadyMonthCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+        });
+      }
+    }
+  }
+
+  const transactionList = [];
+
+  const dbTx = db.transaction(() => {
     const upsertBalance = db.prepare(`
       INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
       VALUES (?, ?, ?, 0, ?, 0, ?)
@@ -1002,15 +1151,29 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
 
     const insertTx = db.prepare(`
       INSERT INTO leave_transactions (
-        employee_id, leave_type_id, transaction_type, amount, balance_after, reason, created_by
-      ) VALUES (?, ?, 'adjustment', ?, (SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?), ?, ?)
+        employee_id, leave_type_id, transaction_type, amount, balance_after, reason, created_by, period_month, period_year
+      ) VALUES (?, ?, 'adjustment', ?, ?, ?, ?, ?, ?)
     `);
 
-    const auditReason = reason || `Manual ${cadence}-wise credit (${numDays} days of ${leaveType.name})`;
+    const periodTag = isEarnedLeave ? `${monthName} ${targetYear}` : `${targetYear}`;
+    const auditReason = `Manual credit: +${numDays}d of ${leaveType.name} (${periodTag}) - ${reason.trim()}`;
 
     for (const emp of targetEmployees) {
-      upsertBalance.run(emp.id, leaveType.id, currentYear, numDays, numDays);
-      insertTx.run(emp.id, leaveType.id, numDays, emp.id, leaveType.id, currentYear, auditReason, req.user.id);
+      upsertBalance.run(emp.id, leaveType.id, targetYear, numDays, numDays);
+      const currentBal = db.prepare('SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+        .get(emp.id, leaveType.id, targetYear)?.balance || numDays;
+
+      const txResult = insertTx.run(
+        emp.id, leaveType.id, numDays, currentBal, auditReason, req.user.id,
+        isEarnedLeave ? targetMonth : null, targetYear
+      );
+
+      transactionList.push({
+        txId: txResult.lastInsertRowid,
+        employeeId: emp.id,
+        balanceAfter: currentBal,
+        auditReason
+      });
     }
 
     logAudit({
@@ -1021,33 +1184,42 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
       panel: 'Leave Management',
       action: 'MANUAL_LEAVE_CREDITED',
       targetEntity: 'leave_balances',
-      newValues: { days: numDays, cadence, targetCount: targetEmployees.length, reason: auditReason },
-      reason: `Manual ${cadence}-wise leave credited by ${req.user.username}`
+      newValues: {
+        leave_type: leaveType.name,
+        days: numDays,
+        target_count: targetEmployees.length,
+        period: isEarnedLeave ? `${monthName} ${targetYear}` : `${targetYear}`,
+        reason: reason.trim()
+      },
+      reason: `Manual leave credited by ${req.user.username}: +${numDays} days (${leaveType.name}) to ${targetEmployees.length} employee(s)`
     });
   });
 
-  transaction();
+  dbTx();
 
-  // Instant dual-write to Firebase for credited balances
+  // Instant dual-write to Firebase Firestore AND Realtime Database
   try {
-    const { syncLeaveBalance } = require('../services/firebase');
-    if (syncLeaveBalance && targetEmployees.length > 0) {
-      for (const emp of targetEmployees) {
-        const balRow = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
-          .get(emp.id, leaveType.id, currentYear);
-        if (balRow) syncLeaveBalance(balRow).catch(() => {});
+    for (const item of transactionList) {
+      const balRow = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+        .get(item.employeeId, leaveType.id, targetYear);
+      if (balRow && syncLeaveBalance) {
+        syncLeaveBalance(balRow).catch(() => {});
+      }
+      const txRow = db.prepare('SELECT * FROM leave_transactions WHERE id = ?').get(item.txId);
+      if (txRow && syncLeaveTransaction) {
+        syncLeaveTransaction(txRow).catch(() => {});
       }
     }
   } catch (e) {}
 
   res.json({
     success: true,
-    message: `Successfully credited +${numDays} days (${cadence}-wise) of "${leaveType.name}" to ${targetEmployees.length} employee(s).`,
+    message: `Successfully credited +${numDays} days of "${leaveType.name}" (${isEarnedLeave ? `${monthName} ${targetYear}` : targetYear}) to ${targetEmployees.length} employee(s).`,
     affectedCount: targetEmployees.length
   });
 });
 
-// Delete or Deduct Leave (Master Reset or Manual Deduct)
+// Delete or Deduct Leave (Manual Deduct or Reset to 0)
 // Role: Company Admin, Super Admin
 router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'super_admin']), (req, res) => {
   const companyId = getTenantCompanyId(req);
@@ -1090,7 +1262,9 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
     targetEmployees = [single];
   }
 
-  const transaction = db.transaction(() => {
+  const transactionList = [];
+
+  const dbTx = db.transaction(() => {
     for (const emp of targetEmployees) {
       const existingBal = db.prepare(`
         SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?
@@ -1127,11 +1301,16 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
       }
 
       // Log into leave_transactions
-      db.prepare(`
+      const txRes = db.prepare(`
         INSERT INTO leave_transactions (
-          employee_id, leave_type_id, transaction_type, amount, balance_after, reason, created_by
-        ) VALUES (?, ?, 'deduction', ?, ?, ?, ?)
-      `).run(emp.id, leaveType.id, -amountDeducted, newBalance, reason, req.user.id);
+          employee_id, leave_type_id, transaction_type, amount, balance_after, reason, created_by, period_year
+        ) VALUES (?, ?, 'deduction', ?, ?, ?, ?, ?)
+      `).run(emp.id, leaveType.id, -amountDeducted, newBalance, reason.trim(), req.user.id, currentYear);
+
+      transactionList.push({
+        txId: txRes.lastInsertRowid,
+        employeeId: emp.id
+      });
     }
 
     logAudit({
@@ -1147,16 +1326,19 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
     });
   });
 
-  transaction();
+  dbTx();
 
-  // Instant dual-write to Firebase for deducted/reset balances
+  // Instant dual-write to Firebase for deducted/reset balances and transactions
   try {
-    const { syncLeaveBalance } = require('../services/firebase');
-    if (syncLeaveBalance && targetEmployees.length > 0) {
-      for (const emp of targetEmployees) {
-        const balRow = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
-          .get(emp.id, leaveType.id, currentYear);
-        if (balRow) syncLeaveBalance(balRow).catch(() => {});
+    for (const item of transactionList) {
+      const balRow = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+        .get(item.employeeId, leaveType.id, currentYear);
+      if (balRow && syncLeaveBalance) {
+        syncLeaveBalance(balRow).catch(() => {});
+      }
+      const txRow = db.prepare('SELECT * FROM leave_transactions WHERE id = ?').get(item.txId);
+      if (txRow && syncLeaveTransaction) {
+        syncLeaveTransaction(txRow).catch(() => {});
       }
     }
   } catch (e) {}

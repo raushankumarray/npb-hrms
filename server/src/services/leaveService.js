@@ -66,11 +66,9 @@ function ensureCompanyLeaveTypes(companyId) {
 }
 
 /**
- * Auto-credit both CL and EL leaves for an employee/manager upon creation or onboarding.
- * - CL: Full yearly quota (default 12.0 days) credited as opening balance
- * - EL: Monthly rate (default 1.25 days) auto-credited upon creation
- * - Transactions recorded in leave_transactions
- * - Balances synchronized to Firebase
+ * Initializes leave balance records for an employee/manager upon creation or onboarding.
+ * Strictly initializes with 0.0 balance: NO auto-crediting of 12 CL or 1.25 EL.
+ * Leaves can ONLY be credited via the manual leave crediting feature.
  */
 function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId = null) {
   if (!employeeId) return { success: false, error: 'Employee ID required' };
@@ -84,80 +82,27 @@ function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId 
   const { clType, elType } = ensureCompanyLeaveTypes(companyId);
   const currentYear = new Date().getFullYear();
 
-  const insertBalance = db.prepare(`
+  const insertZeroBalance = db.prepare(`
     INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(employee_id, leave_type_id, year) DO UPDATE SET
-      opening_balance = CASE WHEN excluded.opening_balance > 0 THEN excluded.opening_balance ELSE opening_balance END,
-      accrued = CASE WHEN excluded.accrued > 0 THEN excluded.accrued ELSE accrued END,
-      balance = (CASE WHEN excluded.opening_balance > 0 THEN excluded.opening_balance ELSE opening_balance END) +
-                (CASE WHEN excluded.accrued > 0 THEN excluded.accrued ELSE accrued END) - used,
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
-  const insertTransaction = db.prepare(`
-    INSERT INTO leave_transactions (
-      employee_id, leave_type_id, transaction_type, amount, balance_after, reason, created_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, 0.0, 0.0, 0.0, 0.0)
+    ON CONFLICT(employee_id, leave_type_id, year) DO NOTHING
   `);
 
   let clBalRow = null;
   let elBalRow = null;
 
   const transaction = db.transaction(() => {
-    // 1. Casual Leave (CL) Credit
+    // 1. Casual Leave (CL) - Initialize at 0 if not present
     if (clType) {
-      const quota = Number(clType.default_yearly_quota || 12.0);
-      const existingCl = db.prepare(`
-        SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?
-      `).get(employeeId, clType.id, currentYear);
-
-      if (!existingCl) {
-        insertBalance.run(employeeId, clType.id, currentYear, quota, 0, 0, quota);
-        insertTransaction.run(
-          employeeId, clType.id, 'opening', quota, quota,
-          'Auto-credited upon account creation (Casual Leave)', createdByUserId || null
-        );
-      } else if (existingCl.opening_balance === 0 && existingCl.balance === 0 && existingCl.used === 0) {
-        db.prepare(`
-          UPDATE leave_balances SET opening_balance = ?, balance = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `).run(quota, quota, existingCl.id);
-        insertTransaction.run(
-          employeeId, clType.id, 'opening', quota, quota,
-          'Auto-credited upon account creation (Casual Leave)', createdByUserId || null
-        );
-      }
-
+      insertZeroBalance.run(employeeId, clType.id, currentYear);
       clBalRow = db.prepare(`
         SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?
       `).get(employeeId, clType.id, currentYear);
     }
 
-    // 2. Earned Leave (EL) Credit
+    // 2. Earned Leave (EL) - Initialize at 0 if not present
     if (elType) {
-      const elRate = Number(elType.monthly_accrual_rate || 1.25);
-      const existingEl = db.prepare(`
-        SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?
-      `).get(employeeId, elType.id, currentYear);
-
-      if (!existingEl) {
-        insertBalance.run(employeeId, elType.id, currentYear, 0, elRate, 0, elRate);
-        insertTransaction.run(
-          employeeId, elType.id, 'accrual', elRate, elRate,
-          'Auto-credited upon account creation (Earned Leave)', createdByUserId || null
-        );
-      } else if (existingEl.accrued === 0 && existingEl.balance === 0 && existingEl.used === 0) {
-        db.prepare(`
-          UPDATE leave_balances SET accrued = ?, balance = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `).run(elRate, elRate, existingEl.id);
-        insertTransaction.run(
-          employeeId, elType.id, 'accrual', elRate, elRate,
-          'Auto-credited upon account creation (Earned Leave)', createdByUserId || null
-        );
-      }
-
+      insertZeroBalance.run(employeeId, elType.id, currentYear);
       elBalRow = db.prepare(`
         SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?
       `).get(employeeId, elType.id, currentYear);
@@ -166,7 +111,7 @@ function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId 
 
   transaction();
 
-  // Dual-write / sync to Firebase
+  // Dual-write / sync initialized 0-balance to Firebase if needed
   try {
     const { syncLeaveBalance } = require('./firebase');
     if (syncLeaveBalance) {
@@ -180,6 +125,67 @@ function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId 
     clBalance: clBalRow,
     elBalance: elBalRow
   };
+}
+
+/**
+ * Helper: Computes total Casual Leave (CL) credited to an employee in a given calendar year.
+ * Rule: Maximum 12.0 CL per calendar year.
+ */
+function getEmployeeCreditedCLInYear(employeeId, leaveTypeId, year = null) {
+  const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
+
+  // Sum all positive adjustments, opening credits, and accruals for this year
+  const txSum = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0.0) as total
+    FROM leave_transactions
+    WHERE employee_id = ? AND leave_type_id = ? AND amount > 0
+      AND (period_year = ? OR strftime('%Y', created_at) = ?)
+  `).get(employeeId, leaveTypeId, targetYear, String(targetYear));
+
+  // Also verify against current leave_balances opening_balance + accrued for this year
+  const balRow = db.prepare(`
+    SELECT opening_balance, accrued
+    FROM leave_balances
+    WHERE employee_id = ? AND leave_type_id = ? AND year = ?
+  `).get(employeeId, leaveTypeId, targetYear);
+
+  const balCredited = balRow ? (Number(balRow.opening_balance || 0) + Number(balRow.accrued || 0)) : 0;
+  return Math.max(Number(txSum?.total || 0), balCredited);
+}
+
+/**
+ * Helper: Computes total Earned Leave (EL) credited to an employee for a specific month and year.
+ * Rule: Maximum 1.25 EL per month.
+ */
+function getEmployeeCreditedELInMonth(employeeId, leaveTypeId, year = null, month = null) {
+  const now = new Date();
+  const targetYear = year ? parseInt(year, 10) : now.getFullYear();
+  const targetMonth = month ? parseInt(month, 10) : (now.getMonth() + 1);
+
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  const monthName = monthNames[targetMonth - 1] || (`Month ${targetMonth}`);
+  const padMonth = String(targetMonth).padStart(2, '0');
+
+  const txSum = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0.0) as total
+    FROM leave_transactions
+    WHERE employee_id = ? AND leave_type_id = ? AND amount > 0
+      AND (
+        (period_month = ? AND period_year = ?)
+        OR reason LIKE ?
+        OR reason LIKE ?
+      )
+  `).get(
+    employeeId, leaveTypeId,
+    targetMonth, targetYear,
+    `%${monthName} ${targetYear}%`,
+    `%${targetYear}-${padMonth}%`
+  );
+
+  return Number(txSum?.total || 0);
 }
 
 /**
@@ -318,43 +324,20 @@ function accrueMonthlyEarnedLeave(targetYear = null, targetMonth = null, applied
 }
 
 /**
- * Checks if the current month has already been accrued. If not, runs accrual.
+ * Background auto-accrual check.
+ * Strictly disabled per user specification: Leaves can ONLY be manually credited.
  */
-let lastCheckMonthYear = '';
 function checkAndRunMonthlyAccrual() {
-  try {
-    const now = new Date();
-    const currentKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
-    if (lastCheckMonthYear === currentKey) return;
-
-    // Check if any company still needs current month accrual
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-
-    const companiesNeedingAccrual = db.prepare(`
-      SELECT c.id FROM companies c
-      WHERE c.status = 'active'
-        AND c.id NOT IN (
-          SELECT company_id FROM leave_accrual_logs
-          WHERE year = ? AND month = ?
-        )
-    `).all(year, month);
-
-    if (companiesNeedingAccrual.length > 0) {
-      console.log(`[LeaveService] Running monthly EL accrual for ${currentKey} across ${companiesNeedingAccrual.length} company(ies)...`);
-      const res = accrueMonthlyEarnedLeave(year, month);
-      console.log(`[LeaveService] Monthly EL accrual completed. Employees credited: ${res.totalEmployeesAccrued}`);
-    }
-
-    lastCheckMonthYear = currentKey;
-  } catch (err) {
-    console.warn('[LeaveService] checkAndRunMonthlyAccrual notice:', err.message);
-  }
+  // Disabled: Automated background leaf additions are prohibited.
+  // Company Admins manually credit leaves.
+  return;
 }
 
 module.exports = {
   ensureCompanyLeaveTypes,
   autoCreditEmployeeLeaves,
+  getEmployeeCreditedCLInYear,
+  getEmployeeCreditedELInMonth,
   accrueMonthlyEarnedLeave,
   checkAndRunMonthlyAccrual
 };

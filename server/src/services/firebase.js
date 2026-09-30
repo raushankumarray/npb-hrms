@@ -962,12 +962,169 @@ async function syncLeaveBalance(balance, leaveTypeIdParam = null) {
       await realtimeDb.ref(`leave_balances/${empId}/${ltId}_${yr}`).set(payload);
       if (compId) {
         await realtimeDb.ref(`companies/${compId}/leave_balances/${empId}/${ltId}_${yr}`).set(payload);
+        await realtimeDb.ref(`companies/${compId}/employees/${empId}/leave_balances/${ltId}_${yr}`).set(payload);
       }
     }
     return true;
   } catch (err) {
     console.warn('Firebase syncLeaveBalance error:', err.message);
     return false;
+  }
+}
+
+async function syncLeaveTransaction(tx) {
+  if (!firebaseStatus.connected || !tx) return null;
+  try {
+    const txId = String(tx.id || `${tx.employee_id || tx.employeeId}_${Date.now()}`);
+    const compId = tx.company_id || tx.companyId;
+    const empId = tx.employee_id || tx.employeeId;
+    const ltId = tx.leave_type_id || tx.leaveTypeId;
+    const payload = {
+      id: txId,
+      companyId: compId,
+      company_id: compId,
+      employeeId: empId,
+      employee_id: empId,
+      leaveTypeId: ltId,
+      leave_type_id: ltId,
+      transactionType: tx.transaction_type || tx.transactionType || 'adjustment',
+      amount: Number(tx.amount || 0),
+      balanceAfter: Number(tx.balance_after || tx.balanceAfter || 0),
+      reason: tx.reason || '',
+      periodMonth: tx.period_month || tx.periodMonth || null,
+      periodYear: tx.period_year || tx.periodYear || null,
+      createdBy: tx.created_by || tx.createdBy || null,
+      createdAt: tx.created_at || new Date().toISOString(),
+      syncedAt: new Date().toISOString()
+    };
+    if (firestoreDb) {
+      await firestoreDb.collection('leave_transactions').doc(txId).set(payload, { merge: true });
+      if (compId) {
+        await firestoreDb.collection('companies').doc(String(compId)).collection('leave_transactions').doc(txId).set(payload, { merge: true });
+      }
+    }
+    if (realtimeDb) {
+      await realtimeDb.ref(`leave_transactions/${txId}`).set(payload);
+      if (compId) {
+        await realtimeDb.ref(`companies/${compId}/leave_transactions/${txId}`).set(payload);
+        if (empId) {
+          await realtimeDb.ref(`companies/${compId}/employees/${empId}/leave_transactions/${txId}`).set(payload);
+        }
+      }
+    }
+    return true;
+  } catch (err) {
+    console.warn('Firebase syncLeaveTransaction error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * On-demand auto-restore of leave balances for an employee/manager from Firebase into local SQLite.
+ * Restores balances from Firestore or RTDB if they exist in Firebase.
+ */
+async function restoreEmployeeLeaveBalancesFromFirebase(employeeId, companyId = null) {
+  if (!firebaseStatus.connected || !employeeId) return [];
+  try {
+    const empId = Number(employeeId);
+    if (!companyId) {
+      const emp = db.prepare('SELECT company_id FROM employees WHERE id = ?').get(empId);
+      if (emp) companyId = emp.company_id;
+    }
+    const currentYear = new Date().getFullYear();
+    const restored = [];
+
+    // 1. Try Firestore first
+    if (firestoreDb) {
+      const queries = [
+        firestoreDb.collection('leave_balances').where('employeeId', '==', empId).get().catch(() => null),
+        firestoreDb.collection('leave_balances').where('employee_id', '==', empId).get().catch(() => null)
+      ];
+      if (companyId) {
+        queries.push(
+          firestoreDb.collection('companies').doc(String(companyId)).collection('leave_balances').where('employeeId', '==', empId).get().catch(() => null)
+        );
+      }
+
+      const snaps = await Promise.all(queries);
+      const seen = new Set();
+      for (const snap of snaps) {
+        if (!snap || snap.empty) continue;
+        snap.forEach(doc => {
+          const data = doc.data();
+          const ltId = Number(data.leaveTypeId || data.leave_type_id);
+          const yr = Number(data.year || currentYear);
+          const key = `${empId}_${ltId}_${yr}`;
+          if (ltId && !seen.has(key)) {
+            seen.add(key);
+            const opening = Number(data.openingBalance ?? data.opening_balance ?? 0);
+            const accrued = Number(data.accrued ?? 0);
+            const used = Number(data.used ?? 0);
+            const balance = Number(data.balance !== undefined ? data.balance : (opening + accrued - used));
+
+            db.prepare(`
+              INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(employee_id, leave_type_id, year) DO UPDATE SET
+                opening_balance = excluded.opening_balance,
+                accrued = excluded.accrued,
+                used = excluded.used,
+                balance = excluded.balance,
+                updated_at = CURRENT_TIMESTAMP
+            `).run(empId, ltId, yr, opening, accrued, used, balance);
+
+            restored.push({ employee_id: empId, leave_type_id: ltId, year: yr, balance, opening_balance: opening, accrued, used });
+          }
+        });
+      }
+    }
+
+    // 2. If nothing found in Firestore, check Realtime DB
+    if (restored.length === 0 && realtimeDb) {
+      const paths = [
+        `leave_balances/${empId}`,
+        companyId ? `companies/${companyId}/leave_balances/${empId}` : null,
+        companyId ? `companies/${companyId}/employees/${empId}/leave_balances` : null
+      ].filter(Boolean);
+
+      for (const p of paths) {
+        try {
+          const snapshot = await realtimeDb.ref(p).once('value');
+          const val = snapshot.val();
+          if (val && typeof val === 'object') {
+            for (const [subKey, data] of Object.entries(val)) {
+              if (!data) continue;
+              const ltId = Number(data.leaveTypeId || data.leave_type_id || (subKey.includes('_') ? subKey.split('_')[0] : subKey));
+              const yr = Number(data.year || (subKey.includes('_') ? subKey.split('_')[1] : currentYear));
+              if (ltId) {
+                const opening = Number(data.openingBalance ?? data.opening_balance ?? 0);
+                const accrued = Number(data.accrued ?? 0);
+                const used = Number(data.used ?? 0);
+                const balance = Number(data.balance !== undefined ? data.balance : (opening + accrued - used));
+
+                db.prepare(`
+                  INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance)
+                  VALUES (?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(employee_id, leave_type_id, year) DO UPDATE SET
+                    opening_balance = excluded.opening_balance,
+                    accrued = excluded.accrued,
+                    used = excluded.used,
+                    balance = excluded.balance,
+                    updated_at = CURRENT_TIMESTAMP
+                `).run(empId, ltId, yr, opening, accrued, used, balance);
+
+                restored.push({ employee_id: empId, leave_type_id: ltId, year: yr, balance, opening_balance: opening, accrued, used });
+              }
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    return restored;
+  } catch (err) {
+    console.warn('Firebase restoreEmployeeLeaveBalances notice:', err.message);
+    return [];
   }
 }
 
@@ -1171,6 +1328,9 @@ async function syncGeofence(geofence) {
     }
     if (realtimeDb) {
       await realtimeDb.ref(`geofences/${compId}/${geofence.id}`).set(payload);
+      if (compId) {
+        await realtimeDb.ref(`companies/${compId}/geofences/${geofence.id}`).set(payload);
+      }
     }
     return true;
   } catch (err) {
@@ -1871,6 +2031,7 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
         await realtimeDb.ref(`geofences/${strId}`).remove().catch(() => {});
         if (compId) {
           await realtimeDb.ref(`geofences/${compId}/${strId}`).remove().catch(() => {});
+          await realtimeDb.ref(`companies/${compId}/geofences/${strId}`).remove().catch(() => {});
         }
         await realtimeDb.ref(`geofence_assignments/${strId}`).remove().catch(() => {});
       }
@@ -4287,6 +4448,8 @@ module.exports = {
   deleteEmployeeMapping,
   syncLeaveType,
   syncLeaveBalance,
+  syncLeaveTransaction,
+  restoreEmployeeLeaveBalancesFromFirebase,
   syncLeaveRequest,
   syncHoliday,
   syncWeeklyOff,

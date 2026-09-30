@@ -111,6 +111,15 @@ try {
   console.warn('Migration error for attendance_correction_requests:', e.message);
 }
 
+// Add period_month and period_year to leave_transactions for strict month-wise EL and year-wise CL validation
+try {
+  db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_month INTEGER").run();
+} catch (e) {}
+try {
+  db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_year INTEGER").run();
+} catch (e) {}
+
+
 // Permanent purge routine for legacy demo companies and support accounts
 try {
   const legacyComps = db.prepare(`

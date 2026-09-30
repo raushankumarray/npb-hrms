@@ -122,20 +122,29 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     employee_id: '',
     leave_type_id: '',
     cadence: 'month', // 'month' | 'year'
-    days: 1.25,
-    reason: 'Monthly Earned Leave credit',
-    apply_to_all: true
+    days: 1.0,
+    month: new Date().getMonth() + 1,
+    year: new Date().getFullYear(),
+    reason: '',
+    apply_to_all: false
   });
+  const [manualCreditSubmitting, setManualCreditSubmitting] = useState(false);
+
+  // Staff Leave Balances & Transactions state
+  const [companyStaffBalances, setCompanyStaffBalances] = useState([]);
+  const [companyLeaveTransactions, setCompanyLeaveTransactions] = useState([]);
+  const [leaveSearchQuery, setLeaveSearchQuery] = useState('');
+  const [leaveDeptFilter, setLeaveDeptFilter] = useState('all');
 
   // Delete / Deduct Leave state
   const [showDeleteLeaveModal, setShowDeleteLeaveModal] = useState(false);
   const [deleteLeaveForm, setDeleteLeaveForm] = useState({
     leave_type_id: '',
-    target_type: 'all', // 'all' | 'single'
+    target_type: 'single', // 'all' | 'single'
     employee_id: '',
     action_type: 'deduct_days', // 'deduct_days' | 'reset_zero'
     days: 1.0,
-    reason: 'Administrative leave balance adjustment'
+    reason: ''
   });
   const [deleteLeaveSubmitting, setDeleteLeaveSubmitting] = useState(false);
 
@@ -191,7 +200,6 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const [companyGeofencePolicy, setCompanyGeofencePolicy] = useState('strict');
   const [pendingPolicy, setPendingPolicy] = useState('strict');
   const [companyPolicyUpdating, setCompanyPolicyUpdating] = useState(false);
-  const [applyPolicyToAll, setApplyPolicyToAll] = useState(false);
 
   const [shiftForm, setShiftForm] = useState({
     name: '', start_time: '09:00', end_time: '18:00', grace_time_mins: 15, working_hours: 8.0
@@ -345,8 +353,11 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       if (activeTab === 'leave' || activeTab === 'settings') {
         const ltRes = await apiRequest('/leave/types');
         setLeaveTypes(ltRes.leaveTypes || []);
-        const histRes = await apiRequest('/leave/accrual/history');
-        setLeaveAccruals(histRes.logs || []);
+      }
+      if (activeTab === 'leave') {
+        const compBalRes = await apiRequest('/leave/company-balances');
+        setCompanyStaffBalances(compBalRes.employees || []);
+        setCompanyLeaveTransactions(compBalRes.transactions || []);
       }
     } catch (err) {
       setError(err.message);
@@ -699,18 +710,48 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const handleManualLeaveCredit = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccess('');
+    setManualCreditSubmitting(true);
 
     const selectedType = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
+    const isCL = selectedType && (selectedType.code === 'CL' || selectedType.name.toLowerCase().includes('casual'));
     const isEL = selectedType && (selectedType.code === 'EL' || selectedType.name.toLowerCase().includes('earned'));
-    if (isEL && manualLeaveForm.cadence === 'month' && parseFloat(manualLeaveForm.days) > 1.25) {
+    const numDays = parseFloat(manualLeaveForm.days) || 0;
+
+    if (numDays <= 0) {
+      setError('Please specify a valid number of days greater than 0.');
+      setManualCreditSubmitting(false);
+      return;
+    }
+
+    if (isCL && numDays > 12.0) {
+      setError('Statutory cap exceeded: Casual Leave (CL) cannot exceed 12 days per calendar year.');
+      setManualCreditSubmitting(false);
+      return;
+    }
+    if (isEL && numDays > 1.25) {
       setError('Statutory cap exceeded: Earned Leave (EL) cannot exceed 1.25 days per month.');
+      setManualCreditSubmitting(false);
+      return;
+    }
+    if (!manualLeaveForm.reason || !manualLeaveForm.reason.trim()) {
+      setError('A mandatory reason is required for manual leave crediting.');
+      setManualCreditSubmitting(false);
       return;
     }
 
     try {
       const res = await apiRequest('/leave/manual-credit', {
         method: 'POST',
-        body: manualLeaveForm
+        body: {
+          employee_id: manualLeaveForm.apply_to_all ? undefined : manualLeaveForm.employee_id,
+          leave_type_id: manualLeaveForm.leave_type_id,
+          days: numDays,
+          month: manualLeaveForm.month || (new Date().getMonth() + 1),
+          year: manualLeaveForm.year || new Date().getFullYear(),
+          reason: manualLeaveForm.reason.trim(),
+          apply_to_all: manualLeaveForm.apply_to_all
+        }
       });
       setSuccess(res.message);
       setShowManualLeaveModal(false);
@@ -718,6 +759,8 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       broadcastLeaveUpdate();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setManualCreditSubmitting(false);
     }
   };
 
@@ -726,6 +769,13 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     setError('');
     setSuccess('');
     setDeleteLeaveSubmitting(true);
+
+    if (!deleteLeaveForm.reason || !deleteLeaveForm.reason.trim()) {
+      setError('A mandatory reason is required to deduct or adjust leave.');
+      setDeleteLeaveSubmitting(false);
+      return;
+    }
+
     try {
       const res = await apiRequest('/leave/delete-or-deduct', {
         method: 'POST',
@@ -735,7 +785,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
           apply_to_all: deleteLeaveForm.target_type === 'all',
           employee_id: deleteLeaveForm.target_type === 'single' ? deleteLeaveForm.employee_id : undefined,
           days: deleteLeaveForm.action_type === 'deduct_days' ? parseFloat(deleteLeaveForm.days) : 0,
-          reason: deleteLeaveForm.reason
+          reason: deleteLeaveForm.reason.trim()
         }
       });
       setSuccess(res.message);
@@ -934,7 +984,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
     }
   };
 
-  const handleUpdateCompanyPolicy = async (newPolicy, resetAll) => {
+  const handleUpdateCompanyPolicy = async (newPolicy) => {
     setCompanyPolicyUpdating(true);
     setError('');
     try {
@@ -942,7 +992,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         method: 'PUT',
         body: {
           policy: newPolicy,
-          apply_to_all_employees: !!resetAll
+          apply_to_all_employees: false
         }
       });
       setSuccess(res.message);
@@ -1881,10 +1931,10 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         );
       })()}
 
-      {/* LEAVE MANAGEMENT & ACCRUAL TAB */}
+      {/* LEAVE MANAGEMENT TAB (Smart Manual Crediting: CL <= 12/yr, EL <= 1.25/mo) */}
       {activeTab === 'leave' && (
         <div className="space-y-6">
-          {/* Master Policy & Manual Credit Control Hub */}
+          {/* Header & Quick Actions */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
               <div>
@@ -1892,174 +1942,355 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                   <span className="p-2 bg-sky-50 text-sky-600 rounded-xl">
                     <Calendar className="w-5 h-5" />
                   </span>
-                  <h3 className="text-base font-bold text-slate-900">Master Leave Policy (CL = 12/yr, EL = 1.25/mo)</h3>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Leave Management & Manual Crediting</h3>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                        CL: Max 12.0d / Calendar Year
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        EL: Max 1.25d / Month
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                        Strictly Manual Credit Only
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-500 mt-1">
-                  Two-tier statutory leave policy: Casual Leave (12 days/year) and Earned Leave (1.25 days/month). Zero-Payroll Compliant.
+                <p className="text-xs text-slate-500 mt-2">
+                  No automated bulk leaves. Leave balances are manually credited or adjusted with strict statutory limits. All changes auto-sync to Firebase Firestore & RTDB in real time.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleRunMonthlyAccrual}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
-                  title="Auto-credit monthly +1.25 Earned Leave to all active staff"
-                >
-                  <span>⚡ Run Monthly Accrual (+1.25 EL)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowManualLeaveModal(true)}
+                  onClick={() => {
+                    setManualLeaveForm({
+                      employee_id: '',
+                      leave_type_id: leaveTypes.find(lt => lt.code === 'CL' || lt.name.toLowerCase().includes('casual'))?.id || (leaveTypes[0]?.id || ''),
+                      cadence: 'year',
+                      days: 1.0,
+                      month: new Date().getMonth() + 1,
+                      year: new Date().getFullYear(),
+                      reason: '',
+                      apply_to_all: false
+                    });
+                    setShowManualLeaveModal(true);
+                  }}
                   className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
-                  title="Manually credit custom leave quota to all staff or a specific employee"
+                  title="Credit leave to a specific employee or all staff"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Manual Leave Credit</span>
+                  <span>Manual Credit Leave (+)</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowDeleteLeaveModal(true)}
+                  onClick={() => {
+                    setDeleteLeaveForm({
+                      leave_type_id: leaveTypes[0]?.id || '',
+                      target_type: 'single',
+                      employee_id: '',
+                      action_type: 'deduct_days',
+                      days: 1.0,
+                      reason: ''
+                    });
+                    setShowDeleteLeaveModal(true);
+                  }}
                   className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
-                  title="Master reset or manually deduct leave balances"
+                  title="Deduct or adjust leave balances"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Delete / Deduct Leave</span>
+                  <span>Deduct / Adjust Leave (-)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetchData();
+                    broadcastLeaveUpdate();
+                  }}
+                  className="p-2 border border-slate-200 hover:bg-slate-50 rounded-xl text-slate-600 transition-colors"
+                  title="Refresh leave balances"
+                >
+                  <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* Master Policy Apply Box */}
-            <form onSubmit={handleMasterLeaveApply} className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div>
-                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Master Apply Policy To All Employees</h4>
-                  <p className="text-[11px] text-slate-500">
-                    Set policy defaults and batch apply to all active staff. Updates will instantly reflect in employee portals.
-                  </p>
-                </div>
-                <button
-                  type="submit"
-                  disabled={masterPolicySubmitting}
-                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
-                >
-                  {masterPolicySubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>⚡ Master Apply to All Staff ({employees.length})</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="bg-white p-3 rounded-lg border border-slate-200">
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Casual Leave (CL) Annual Quota (Days/Year)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="1"
-                      min="1"
-                      max="365"
-                      required
-                      value={masterPolicyForm.cl_quota}
-                      onChange={(e) => setMasterPolicyForm({ ...masterPolicyForm, cl_quota: e.target.value })}
-                      className="w-full p-2 text-sm font-bold text-sky-700 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500"
-                    />
-                    <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">days / year</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 mt-1 block">Default: 12 days per calendar year</span>
-                </div>
-
-                <div className="bg-white p-3 rounded-lg border border-slate-200">
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Earned Leave (EL) Accrual Rate (Days/Month)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0.25"
-                      max="30"
-                      required
-                      value={masterPolicyForm.el_monthly_rate}
-                      onChange={(e) => setMasterPolicyForm({ ...masterPolicyForm, el_monthly_rate: e.target.value })}
-                      className="w-full p-2 text-sm font-bold text-emerald-700 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                    <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">days / mo</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 mt-1 block">Default: 1.25 days per month (custom entered supported)</span>
-                </div>
-              </div>
-            </form>
-
-            {/* Leave Balance Pools */}
+            {/* Leave Pool Stat Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               <div className="p-4 rounded-xl border border-sky-200 bg-sky-50/50 space-y-1">
-                <span className="text-xs font-bold text-sky-900 uppercase">Casual Leave (CL) Balance Pool</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-sky-900 uppercase">Casual Leave (CL) Pool</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-sky-100 text-sky-700">Max 12d / yr</span>
+                </div>
                 <div className="text-2xl font-black text-sky-800">
                   {leaveSummary.cl?.total_balance || 0} <span className="text-xs font-medium text-slate-500">days available</span>
                 </div>
-                <div className="text-[11px] text-slate-600 flex items-center gap-2">
-                  <span>Yearly Quota: <strong>{leaveSummary.cl?.total_quota || 0}d</strong></span>
+                <div className="text-[11px] text-slate-600 flex items-center gap-2 pt-1">
+                  <span>Credited Quota: <strong>{leaveSummary.cl?.total_quota || 0}d</strong></span>
                   <span>•</span>
                   <span>Used: <strong className="text-rose-600">{leaveSummary.cl?.total_used || 0}d</strong></span>
                 </div>
               </div>
 
               <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-1">
-                <span className="text-xs font-bold text-emerald-900 uppercase">Earned Leave (EL) Balance Pool</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-900 uppercase">Earned Leave (EL) Pool</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">Max 1.25d / mo</span>
+                </div>
                 <div className="text-2xl font-black text-emerald-800">
                   {leaveSummary.el?.total_balance || 0} <span className="text-xs font-medium text-slate-500">days available</span>
                 </div>
-                <div className="text-[11px] text-slate-600 flex items-center gap-2">
-                  <span>Accrued: <strong>{leaveSummary.el?.total_accrued || 0}d</strong></span>
+                <div className="text-[11px] text-slate-600 flex items-center gap-2 pt-1">
+                  <span>Total Accrued: <strong>{leaveSummary.el?.total_accrued || 0}d</strong></span>
                   <span>•</span>
                   <span>Used: <strong className="text-rose-600">{leaveSummary.el?.total_used || 0}d</strong></span>
                 </div>
               </div>
 
               <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                <span className="text-xs font-bold text-slate-800 uppercase">Configured Leave Types</span>
-                <div className="text-sm font-semibold text-slate-700 space-y-0.5 pt-1">
-                  {leaveTypes.filter(lt => !lt.name.toLowerCase().includes('paid leave')).map(lt => (
-                    <div key={lt.id} className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-slate-800">{lt.name} ({lt.code})</span>
-                      <span className="text-slate-500">{lt.code === 'CL' ? `${lt.default_yearly_quota}d/yr` : `+${lt.monthly_accrual_rate || 1.25}d/mo`}</span>
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800 uppercase">Total Circulation</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
+                    {companyStaffBalances.length || employees.length} Staff
+                  </span>
+                </div>
+                <div className="text-2xl font-black text-slate-800">
+                  {Math.round(((leaveSummary.cl?.total_balance || 0) + (leaveSummary.el?.total_balance || 0)) * 100) / 100}{' '}
+                  <span className="text-xs font-medium text-slate-500">total net days</span>
+                </div>
+                <div className="text-[11px] text-slate-600 flex items-center gap-2 pt-1">
+                  <span>Active Quotas: <strong>{leaveTypes.filter(lt => !lt.name.toLowerCase().includes('paid leave')).length} types</strong></span>
+                  <span>•</span>
+                  <span>Pending Requests: <strong className="text-amber-600">{leaveSummary.pending_requests || 0}</strong></span>
                 </div>
               </div>
             </div>
 
-            {/* Accrual Logs History */}
+            {/* Smart Staff Leave Balances Hub */}
             <div className="pt-2">
-              <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Recent Monthly Accrual History</h4>
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                    Staff Leave Balances & Allocation Status
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Live balance view per employee. Click "+ Credit" or "- Deduct" to adjust individual quotas directly.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {/* Search */}
+                  <div className="relative min-w-[200px] max-w-xs">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Search employee name or ID..."
+                      value={leaveSearchQuery}
+                      onChange={(e) => setLeaveSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    />
+                  </div>
+
+                  {/* Dept Filter */}
+                  <select
+                    value={leaveDeptFilter}
+                    onChange={(e) => setLeaveDeptFilter(e.target.value)}
+                    className="px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="all">All Departments</option>
+                    {[...new Set(companyStaffBalances.map(e => e.department).filter(Boolean))].map(d => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Staff Table */}
+              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="p-3">Employee Name & Code</th>
+                      <th className="p-3">Department & Role</th>
+                      <th className="p-3">Casual Leave (CL) Balance</th>
+                      <th className="p-3">Earned Leave (EL) Balance</th>
+                      <th className="p-3">Total Used</th>
+                      <th className="p-3">Net Available</th>
+                      <th className="p-3 text-right">Instant Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(() => {
+                      const filtered = companyStaffBalances.filter(emp => {
+                        if (leaveSearchQuery.trim()) {
+                          const q = leaveSearchQuery.toLowerCase();
+                          if (!emp.full_name?.toLowerCase().includes(q) && !emp.employee_code?.toLowerCase().includes(q)) {
+                            return false;
+                          }
+                        }
+                        if (leaveDeptFilter !== 'all' && emp.department !== leaveDeptFilter) return false;
+                        return true;
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan="7" className="p-8 text-center text-slate-400">
+                              {companyStaffBalances.length === 0
+                                ? 'No employee records found. Add staff to credit leaves.'
+                                : 'No employees match the filter criteria.'}
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return filtered.map(emp => (
+                        <tr key={emp.id} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="p-3">
+                            <div className="font-bold text-slate-900">{emp.full_name}</div>
+                            <div className="text-[11px] font-mono text-slate-500">{emp.employee_code || `EMP-${emp.id}`}</div>
+                          </td>
+                          <td className="p-3 text-slate-600">
+                            <div className="font-medium text-slate-800">{emp.department || 'General'}</div>
+                            <div className="text-[10px] text-slate-400 capitalize">{emp.role_name || emp.designation || 'Staff'}</div>
+                          </td>
+                          <td className="p-3">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-black text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-100">
+                                {emp.cl_balance}d
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                (Credited: {emp.cl_credited} / 12)
+                              </span>
+                            </div>
+                          </td>
+                          <td className="p-3">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                                {emp.el_balance}d
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                (Credited: {emp.el_credited}d)
+                              </span>
+                            </div>
+                          </td>
+                          <td className="p-3 font-semibold text-rose-600">
+                            {emp.total_used} days
+                          </td>
+                          <td className="p-3">
+                            <span className="font-black text-slate-900 bg-slate-100 px-2 py-0.5 rounded">
+                              {emp.total_available} days
+                            </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setManualLeaveForm({
+                                    employee_id: emp.id,
+                                    leave_type_id: emp.cl_id || leaveTypes[0]?.id || '',
+                                    cadence: 'year',
+                                    days: 1.0,
+                                    month: new Date().getMonth() + 1,
+                                    year: new Date().getFullYear(),
+                                    reason: `Manual leave credit for ${emp.full_name}`,
+                                    apply_to_all: false
+                                  });
+                                  setShowManualLeaveModal(true);
+                                }}
+                                className="px-2 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg text-xs font-bold border border-sky-200 transition-colors"
+                                title={`Credit leave to ${emp.full_name}`}
+                              >
+                                + Credit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDeleteLeaveForm({
+                                    leave_type_id: emp.cl_id || leaveTypes[0]?.id || '',
+                                    target_type: 'single',
+                                    employee_id: emp.id,
+                                    action_type: 'deduct_days',
+                                    days: 1.0,
+                                    reason: `Manual balance deduction for ${emp.full_name}`
+                                  });
+                                  setShowDeleteLeaveModal(true);
+                                }}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-bold border border-rose-200 transition-colors"
+                                title={`Deduct leave from ${emp.full_name}`}
+                              >
+                                - Deduct
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Recent Manual Leave Credits & Transactions */}
+            <div className="pt-2">
+              <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                Recent Leave Transactions & Manual Adjustments
+              </h4>
               <div className="overflow-x-auto border border-slate-200 rounded-xl">
                 <table className="w-full text-xs text-left">
                   <thead className="bg-slate-50 text-slate-600 font-semibold">
                     <tr>
+                      <th className="p-2.5">Staff Name</th>
                       <th className="p-2.5">Leave Type</th>
-                      <th className="p-2.5">Period (Month / Year)</th>
-                      <th className="p-2.5">Credited Rate</th>
-                      <th className="p-2.5">Total Staff Credited</th>
-                      <th className="p-2.5">Executed By</th>
+                      <th className="p-2.5">Type & Amount</th>
+                      <th className="p-2.5">Balance After</th>
+                      <th className="p-2.5">Reason / Note</th>
+                      <th className="p-2.5">Credited By</th>
                       <th className="p-2.5">Timestamp</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {leaveAccruals.map(la => (
-                      <tr key={la.id} className="hover:bg-slate-50/50">
-                        <td className="p-2.5 font-bold text-slate-800">{la.leave_type_name}</td>
-                        <td className="p-2.5 font-mono text-sky-600 font-semibold">{la.month}/{la.year}</td>
-                        <td className="p-2.5 text-emerald-700 font-semibold">+{la.rate} days</td>
-                        <td className="p-2.5 text-slate-700">{la.total_employees} employees</td>
-                        <td className="p-2.5 text-slate-600">{la.applied_by_name || 'Admin'}</td>
-                        <td className="p-2.5 text-slate-400">{la.created_at}</td>
-                      </tr>
-                    ))}
-                    {leaveAccruals.length === 0 && (
+                    {companyLeaveTransactions.map(t => {
+                      const isPositive = Number(t.amount || 0) > 0;
+                      return (
+                        <tr key={t.id} className="hover:bg-slate-50/50">
+                          <td className="p-2.5 font-bold text-slate-800">
+                            {t.employee_name || `Employee #${t.employee_id}`}
+                          </td>
+                          <td className="p-2.5 font-semibold text-slate-700">
+                            {t.leave_type_name || 'Leave'}
+                          </td>
+                          <td className="p-2.5">
+                            <span className={`font-mono font-bold px-2 py-0.5 rounded text-[11px] ${
+                              isPositive
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                                : 'bg-rose-50 text-rose-700 border border-rose-100'
+                            }`}>
+                              {isPositive ? `+${t.amount}` : `${t.amount}`} days
+                            </span>
+                          </td>
+                          <td className="p-2.5 font-mono font-bold text-slate-900">
+                            {t.balance_after}d
+                          </td>
+                          <td className="p-2.5 text-slate-600 max-w-xs truncate" title={t.reason}>
+                            {t.reason || 'Manual quota adjustment'}
+                          </td>
+                          <td className="p-2.5 text-slate-600">
+                            {t.created_by_name || 'Admin'}
+                          </td>
+                          <td className="p-2.5 text-slate-400 font-mono text-[11px]">
+                            {t.created_at}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {companyLeaveTransactions.length === 0 && (
                       <tr>
-                        <td colSpan="6" className="p-4 text-center text-slate-400">
-                          No automated accruals run yet. Click "Run Monthly Accrual" to credit the monthly quota.
+                        <td colSpan="7" className="p-6 text-center text-slate-400">
+                          No manual leave credit or adjustment transactions recorded yet. Click "Manual Credit Leave (+)" to credit leaves.
                         </td>
                       </tr>
                     )}
@@ -2132,21 +2363,71 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
       {/* GEOFENCES TAB */}
       {activeTab === 'geofences' && (
         <div className="space-y-6">
-          {/* Company-Wide Geofence Mode Policy Card */}
+          {/* Smart Top KPI Stats Bar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-4 rounded-xl border border-sky-200 bg-sky-50/60 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-sky-900 uppercase">Configured Offices</span>
+                <Building2 className="w-4 h-4 text-sky-600" />
+              </div>
+              <div className="text-2xl font-black text-sky-800">
+                {geofences.length} <span className="text-xs font-medium text-slate-500">sites</span>
+              </div>
+              <p className="text-[11px] text-slate-600">Designated meter perimeter locations</p>
+            </div>
+
+            <div className="p-4 rounded-xl border border-indigo-200 bg-indigo-50/60 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-indigo-900 uppercase">Office Assigned Staff</span>
+                <MapPin className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="text-2xl font-black text-indigo-800">
+                {geofenceEmployees.filter(e => e.geofence_id && e.geofence_mode !== 'none').length}{' '}
+                <span className="text-xs font-medium text-slate-500">personnel</span>
+              </div>
+              <p className="text-[11px] text-slate-600">Restricted to office perimeter boundary</p>
+            </div>
+
+            <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-900 uppercase">Anywhere Mode Staff</span>
+                <Globe className="w-4 h-4 text-emerald-600" />
+              </div>
+              <div className="text-2xl font-black text-emerald-800">
+                {geofenceEmployees.filter(e => !e.geofence_id || e.geofence_mode === 'none').length}{' '}
+                <span className="text-xs font-medium text-slate-500">personnel</span>
+              </div>
+              <p className="text-[11px] text-slate-600">Unrestricted punching from any location</p>
+            </div>
+
+            <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/60 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-900 uppercase">Dual-Sync Database</span>
+                <ShieldCheck className="w-4 h-4 text-amber-600" />
+              </div>
+              <div className="text-sm font-black text-amber-900 flex items-center gap-1.5 pt-1">
+                <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Firestore & RTDB Active</span>
+              </div>
+              <p className="text-[11px] text-slate-600">Instant real-time update & auto-restore</p>
+            </div>
+          </div>
+
+          {/* Company-Wide Geofence Mode Policy Card (Smart, No Override Button) */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div>
                 <div className="flex items-center gap-2">
                   <Globe className="w-5 h-5 text-sky-600" />
                   <h3 className="text-sm font-bold text-slate-900">
-                    Company-Wide Geofence Mode Setting
+                    Company-Wide Default Geofence Policy
                   </h3>
                   <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                     companyGeofencePolicy === 'anywhere'
                       ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                       : 'bg-sky-100 text-sky-800 border border-sky-200'
                   }`}>
-                    {companyGeofencePolicy === 'anywhere' ? '🌐 Anywhere Punching Active' : '🏢 Office Geofence Strict Mode'}
+                    {companyGeofencePolicy === 'anywhere' ? '🌐 Anywhere Punching Active' : '🏢 Strict Office Geofence Strict Mode'}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400">
@@ -2237,21 +2518,16 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
               </div>
             </div>
 
-            {/* Actions Bar */}
+            {/* Smart Actions Bar (No override checkbox, clear explanation) */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 text-xs">
-              <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
-                <input
-                  type="checkbox"
-                  checked={applyPolicyToAll}
-                  onChange={(e) => setApplyPolicyToAll(e.target.checked)}
-                  className="rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-                <span>Also reset all existing employee profiles to "Anywhere" mode</span>
-              </label>
+              <span className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-sky-600" />
+                <span>Sets company baseline policy. Individual employee assignments in the Allocation Hub take precedence.</span>
+              </span>
 
               <button
-                onClick={() => handleUpdateCompanyPolicy(pendingPolicy, applyPolicyToAll)}
-                disabled={companyPolicyUpdating || (pendingPolicy === companyGeofencePolicy && !applyPolicyToAll)}
+                onClick={() => handleUpdateCompanyPolicy(pendingPolicy)}
+                disabled={companyPolicyUpdating || pendingPolicy === companyGeofencePolicy}
                 className="px-4 py-2 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm transition-all"
               >
                 {companyPolicyUpdating ? (
@@ -3697,199 +3973,411 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
         </div>
       )}
 
-      {/* MODAL: MANUAL LEAVE CREDIT */}
+      {/* MODAL: MANUAL LEAVE CREDIT (STATUTORY COMPLIANT, DUAL-SYNCED, NO OVERRIDE) */}
       {showManualLeaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  Manual Leave Credit (Quota Adjustment)
-                </h3>
-                <p className="text-xs text-slate-500">Credit earned leave or adjustment to staff quotas</p>
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 bg-sky-50 text-sky-600 rounded-xl">
+                  <Calendar className="w-5 h-5" />
+                </span>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Manual Statutory Leave Credit
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Strict statutory quotas: CL max 12.0/yr • EL max 1.25/mo
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowManualLeaveModal(false)}
-                className="text-slate-400 hover:text-slate-600 p-1"
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleManualLeaveCredit} className="space-y-3 text-xs">
-              {/* Cadence Selection: Month-wise vs Year-wise */}
+            {/* Real-time Dual-Sync Notice */}
+            <div className="p-3 bg-gradient-to-r from-sky-50 to-indigo-50 border border-sky-100 rounded-xl flex items-center gap-2.5 text-xs text-sky-900">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0"></span>
+              <span className="leading-relaxed">
+                <strong>Instant Dual-Sync:</strong> All credits save directly to local DB + Firebase Firestore & RTDB, and automatically restore to Employee & Manager portals.
+              </span>
+            </div>
+
+            <form onSubmit={handleManualLeaveCredit} className="space-y-4 text-xs">
+              {/* Step 1: Leave Type Selection */}
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Cadence / Period Type *</label>
-                <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-50 rounded-lg border border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setManualLeaveForm(prev => ({
-                      ...prev,
-                      cadence: 'month',
-                      days: (leaveTypes.find(lt => String(lt.id) === String(prev.leave_type_id))?.code === 'EL' ? 1.25 : 1.0)
-                    }))}
-                    className={`py-1.5 px-3 rounded-md text-xs font-bold text-center transition-all ${
-                      manualLeaveForm.cadence === 'month'
-                        ? 'bg-sky-600 text-white shadow-sm'
-                        : 'text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    Month-wise
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setManualLeaveForm(prev => ({
-                      ...prev,
-                      cadence: 'year',
-                      days: (leaveTypes.find(lt => String(lt.id) === String(prev.leave_type_id))?.code === 'CL' ? 12 : 15)
-                    }))}
-                    className={`py-1.5 px-3 rounded-md text-xs font-bold text-center transition-all ${
-                      manualLeaveForm.cadence === 'year'
-                        ? 'bg-sky-600 text-white shadow-sm'
-                        : 'text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    Year-wise
-                  </button>
+                <label className="font-bold text-slate-800 block mb-1.5 uppercase tracking-wider text-[11px]">
+                  1. Select Statutory Leave Type *
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {(() => {
+                    const clItem = leaveTypes.find(lt => lt.code === 'CL' || lt.name.toLowerCase().includes('casual')) || leaveTypes[0];
+                    const elItem = leaveTypes.find(lt => lt.code === 'EL' || lt.name.toLowerCase().includes('earned')) || leaveTypes[1];
+                    const isCLSelected = manualLeaveForm.leave_type_id === clItem?.id;
+                    const isELSelected = manualLeaveForm.leave_type_id === elItem?.id;
+
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (clItem) {
+                              setManualLeaveForm(prev => ({
+                                ...prev,
+                                leave_type_id: clItem.id,
+                                cadence: 'year',
+                                days: 1.0,
+                                reason: prev.reason || 'Annual Casual Leave (CL) quota credit'
+                              }));
+                            }
+                          }}
+                          className={`p-3 rounded-xl border-2 text-left transition-all space-y-1 ${
+                            isCLSelected
+                              ? 'border-sky-600 bg-sky-50/60 shadow-sm'
+                              : 'border-slate-200 hover:border-slate-300 bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-900 text-xs">🌴 Casual Leave (CL)</span>
+                            <input
+                              type="radio"
+                              name="modal_leave_type"
+                              checked={isCLSelected}
+                              onChange={() => {}}
+                              className="text-sky-600"
+                            />
+                          </div>
+                          <div className="text-[10px] font-semibold text-sky-700">Max 12.0 leaves / year</div>
+                          <p className="text-[10px] text-slate-500">Credited on an annual basis</p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (elItem) {
+                              setManualLeaveForm(prev => ({
+                                ...prev,
+                                leave_type_id: elItem.id,
+                                cadence: 'month',
+                                days: 1.25,
+                                reason: prev.reason || 'Monthly Earned Leave (EL) statutory accrual'
+                              }));
+                            }
+                          }}
+                          className={`p-3 rounded-xl border-2 text-left transition-all space-y-1 ${
+                            isELSelected
+                              ? 'border-emerald-600 bg-emerald-50/60 shadow-sm'
+                              : 'border-slate-200 hover:border-slate-300 bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-900 text-xs">💼 Earned Leave (EL)</span>
+                            <input
+                              type="radio"
+                              name="modal_leave_type"
+                              checked={isELSelected}
+                              onChange={() => {}}
+                              className="text-emerald-600"
+                            />
+                          </div>
+                          <div className="text-[10px] font-semibold text-emerald-700">Max 1.25 leaves / month</div>
+                          <p className="text-[10px] text-slate-500">Credited on a monthly basis</p>
+                        </button>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
 
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Leave Type *</label>
-                <select
-                  required
-                  value={manualLeaveForm.leave_type_id}
-                  onChange={(e) => {
-                    const lId = e.target.value;
-                    const sel = leaveTypes.find(lt => String(lt.id) === String(lId));
-                    const isEL = sel && (sel.code === 'EL' || sel.name.toLowerCase().includes('earned'));
-                    setManualLeaveForm({
-                      ...manualLeaveForm,
-                      leave_type_id: lId,
-                      days: isEL && manualLeaveForm.cadence === 'month' ? 1.25 : manualLeaveForm.days
-                    });
-                  }}
-                  className="w-full p-2 border rounded-lg bg-white font-medium"
-                >
-                  <option value="">Select Leave Type...</option>
-                  {leaveTypes.filter(lt => !lt.name.toLowerCase().includes('paid leave')).map(lt => (
-                    <option key={lt.id} value={lt.id}>{lt.name} ({lt.code})</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Target Beneficiaries</label>
-                <div className="flex gap-4 p-2 bg-slate-50 rounded-lg border border-slate-200">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="apply_target"
-                      checked={manualLeaveForm.apply_to_all}
-                      onChange={() => setManualLeaveForm({ ...manualLeaveForm, apply_to_all: true, employee_id: '' })}
-                      className="text-sky-600"
-                    />
-                    <span className="font-medium text-slate-800">All Company Staff ({employees.length})</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="apply_target"
-                      checked={!manualLeaveForm.apply_to_all}
-                      onChange={() => setManualLeaveForm({ ...manualLeaveForm, apply_to_all: false })}
-                      className="text-sky-600"
-                    />
-                    <span className="font-medium text-slate-800">Specific Employee</span>
-                  </label>
-                </div>
-              </div>
-
-              {!manualLeaveForm.apply_to_all && (
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Select Employee *</label>
-                  <select
-                    required={!manualLeaveForm.apply_to_all}
-                    value={manualLeaveForm.employee_id}
-                    onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, employee_id: e.target.value })}
-                    className="w-full p-2 border rounded-lg bg-white"
-                  >
-                    <option value="">Select an employee...</option>
-                    {employees.map(emp => (
-                      <option key={emp.id} value={emp.id}>{emp.full_name} ({emp.employee_id}) - {emp.department}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
+              {/* Step 2: Period & Year Selector */}
               {(() => {
-                const selLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
-                const isEL = selLT && (selLT.code === 'EL' || selLT.name.toLowerCase().includes('earned'));
-                const isMonth = manualLeaveForm.cadence === 'month';
-                const isOverCap = isEL && isMonth && parseFloat(manualLeaveForm.days) > 1.25;
+                const currentLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
+                const isCL = currentLT && (currentLT.code === 'CL' || currentLT.name.toLowerCase().includes('casual'));
+                const isEL = currentLT && (currentLT.code === 'EL' || currentLT.name.toLowerCase().includes('earned'));
+                const months = [
+                  'January', 'February', 'March', 'April', 'May', 'June',
+                  'July', 'August', 'September', 'October', 'November', 'December'
+                ];
 
                 return (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="font-semibold text-slate-700 block">Days to Credit *</label>
-                      {isEL && isMonth && (
-                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                          Max Cap: 1.25 / mo
-                        </span>
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
+                        2. Period & Statutory Cap
+                      </label>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        isCL ? 'bg-sky-100 text-sky-800 border border-sky-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                      }`}>
+                        {isCL ? 'Annual Cap: Max 12.0 CL / Year' : 'Monthly Cap: Max 1.25 EL / Month'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {isEL && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Month *</label>
+                          <select
+                            value={manualLeaveForm.month || (new Date().getMonth() + 1)}
+                            onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, month: parseInt(e.target.value, 10) })}
+                            className="w-full p-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-sky-500"
+                          >
+                            {months.map((m, idx) => (
+                              <option key={m} value={idx + 1}>{m}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div className={isCL ? 'col-span-2' : ''}>
+                        <label className="text-[10px] font-semibold text-slate-600 block mb-0.5">Calendar Year *</label>
+                        <select
+                          value={manualLeaveForm.year || new Date().getFullYear()}
+                          onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, year: parseInt(e.target.value, 10) })}
+                          className="w-full p-2 border border-slate-200 rounded-lg bg-white font-medium focus:ring-1 focus:ring-sky-500"
+                        >
+                          {[2024, 2025, 2026, 2027, 2028].map(yr => (
+                            <option key={yr} value={yr}>{yr}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Step 3: Days to Credit with Quick Pills */}
+              {(() => {
+                const currentLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
+                const isCL = currentLT && (currentLT.code === 'CL' || currentLT.name.toLowerCase().includes('casual'));
+                const isEL = currentLT && (currentLT.code === 'EL' || currentLT.name.toLowerCase().includes('earned'));
+                const maxCap = isCL ? 12.0 : 1.25;
+                const isExceeded = parseFloat(manualLeaveForm.days) > maxCap;
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                        3. Days to Credit *
+                      </label>
+                      <span className="text-[10px] font-semibold text-slate-500">
+                        Maximum limit: <strong>{maxCap} days</strong>
+                      </span>
+                    </div>
+
+                    {/* Quick Amount Pills */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {isCL ? (
+                        [0.5, 1.0, 2.0, 6.0, 12.0].map(val => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setManualLeaveForm({ ...manualLeaveForm, days: val })}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                              parseFloat(manualLeaveForm.days) === val
+                                ? 'bg-sky-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            }`}
+                          >
+                            +{val} CL
+                          </button>
+                        ))
+                      ) : (
+                        [0.25, 0.5, 1.0, 1.25].map(val => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setManualLeaveForm({ ...manualLeaveForm, days: val })}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                              parseFloat(manualLeaveForm.days) === val
+                                ? 'bg-emerald-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            }`}
+                          >
+                            +{val} EL
+                          </button>
+                        ))
                       )}
                     </div>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0.25"
-                      max={isEL && isMonth ? 1.25 : 365}
-                      required
-                      value={manualLeaveForm.days}
-                      onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, days: parseFloat(e.target.value) || 0 })}
-                      className={`w-full p-2 border rounded-lg font-mono font-bold ${
-                        isOverCap ? 'border-rose-500 text-rose-700 bg-rose-50' : 'text-sky-700'
-                      }`}
-                    />
-                    {isOverCap ? (
-                      <span className="text-[11px] text-rose-600 font-bold mt-1 block">
-                        ⚠ Warning: Statutory limit is 1.25 Earned Leave per month. Cannot add more than 1.25.
+
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step={isCL ? "0.5" : "0.05"}
+                        min="0.25"
+                        max={maxCap}
+                        required
+                        value={manualLeaveForm.days}
+                        onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, days: parseFloat(e.target.value) || 0 })}
+                        className={`w-full p-2.5 border rounded-xl font-mono text-sm font-bold transition-all ${
+                          isExceeded
+                            ? 'border-rose-500 text-rose-700 bg-rose-50/50 focus:ring-rose-500'
+                            : 'border-slate-300 text-slate-900 focus:ring-sky-500'
+                        }`}
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 font-semibold text-slate-400 text-xs">
+                        days
                       </span>
-                    ) : (
-                      <span className="text-[10px] text-slate-400 mt-1 block">
-                        {isEL && isMonth
-                          ? 'Earned Leave statutory cap: strictly 1.25 days per month'
-                          : manualLeaveForm.cadence === 'year' ? 'Annual quota credit' : 'Monthly quota credit'}
-                      </span>
+                    </div>
+
+                    {isExceeded && (
+                      <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-[11px] font-bold flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600 flex-shrink-0" />
+                        <span>
+                          Statutory Cap Exceeded: Cannot credit more than {maxCap} {isCL ? 'Casual Leave (CL) per year' : 'Earned Leave (EL) per month'}.
+                        </span>
+                      </div>
                     )}
                   </div>
                 );
               })()}
 
+              {/* Step 4: Target Beneficiaries */}
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Reason / Reference Note</label>
+                <label className="font-bold text-slate-800 block mb-1.5 uppercase tracking-wider text-[11px]">
+                  4. Target Beneficiary *
+                </label>
+                <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-50 rounded-xl border border-slate-200 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setManualLeaveForm({ ...manualLeaveForm, apply_to_all: false })}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-all ${
+                      !manualLeaveForm.apply_to_all
+                        ? 'bg-sky-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    👤 Specific Employee
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManualLeaveForm({ ...manualLeaveForm, apply_to_all: true, employee_id: '' })}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-all ${
+                      manualLeaveForm.apply_to_all
+                        ? 'bg-sky-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    👥 All Active Staff ({employees.length})
+                  </button>
+                </div>
+
+                {!manualLeaveForm.apply_to_all ? (
+                  <div className="space-y-2">
+                    <select
+                      required={!manualLeaveForm.apply_to_all}
+                      value={manualLeaveForm.employee_id}
+                      onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, employee_id: e.target.value })}
+                      className="w-full p-2 border border-slate-300 rounded-xl bg-white font-medium text-xs focus:ring-1 focus:ring-sky-500"
+                    >
+                      <option value="">Select an employee...</option>
+                      {employees.map(emp => (
+                        <option key={emp.id} value={emp.id}>
+                          {emp.full_name} ({emp.employee_id}) • {emp.department || 'Staff'}
+                        </option>
+                      ))}
+                    </select>
+
+                    {/* Live Balance Status Card for Selected Employee */}
+                    {(() => {
+                      const sel = companyStaffBalances.find(s => String(s.id) === String(manualLeaveForm.employee_id));
+                      if (!sel) return null;
+                      const currentLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
+                      const isCL = currentLT && (currentLT.code === 'CL' || currentLT.name.toLowerCase().includes('casual'));
+
+                      return (
+                        <div className="p-2.5 bg-sky-50/70 border border-sky-200 rounded-xl space-y-1 text-[11px]">
+                          <div className="flex items-center justify-between font-bold text-sky-900">
+                            <span>{sel.full_name} ({sel.employee_code})</span>
+                            <span>Net Balance: {sel.total_available}d</span>
+                          </div>
+                          <div className="flex items-center gap-3 text-slate-600">
+                            <span>
+                              CL: <strong>{sel.cl_balance}d</strong> (Credited: {sel.cl_credited}/12)
+                            </span>
+                            <span>•</span>
+                            <span>
+                              EL: <strong>{sel.el_balance}d</strong> (Credited: {sel.el_credited}d)
+                            </span>
+                          </div>
+                          {isCL && (
+                            <div className="text-[10px] text-sky-700 font-semibold pt-0.5">
+                              Remaining CL quota allowed for this calendar year: <strong>{Math.max(0, 12 - (sel.cl_credited || 0)).toFixed(2)} days</strong>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : (
+                  <div className="p-2.5 bg-indigo-50 border border-indigo-200 rounded-xl text-indigo-800 text-[11px] font-medium">
+                    ⚡ Will credit <strong>+{manualLeaveForm.days} days</strong> to all <strong>{employees.length} active staff members</strong>.
+                  </div>
+                )}
+              </div>
+
+              {/* Step 5: Mandatory Reason */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                    5. Mandatory Audit Reason *
+                  </label>
+                  <span className="text-[10px] text-slate-400">Required for compliance log</span>
+                </div>
                 <input
                   type="text"
                   required
                   value={manualLeaveForm.reason}
                   onChange={(e) => setManualLeaveForm({ ...manualLeaveForm, reason: e.target.value })}
-                  placeholder="e.g. Monthly Earned Leave Accrual"
-                  className="w-full p-2 border rounded-lg"
+                  placeholder="e.g. Monthly statutory EL accrual, Annual quota allocation"
+                  className="w-full p-2.5 border border-slate-300 rounded-xl text-xs bg-white focus:ring-1 focus:ring-sky-500"
                 />
+
+                {/* Quick suggestions */}
+                <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                  <span className="text-[10px] text-slate-400">Suggestions:</span>
+                  {[
+                    'Monthly statutory EL accrual',
+                    'Annual CL quota credit',
+                    'HR administrative adjustment',
+                    'Compensatory leave grant'
+                  ].map(sug => (
+                    <button
+                      key={sug}
+                      type="button"
+                      onClick={() => setManualLeaveForm({ ...manualLeaveForm, reason: sug })}
+                      className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-[10px] text-slate-600 transition-colors"
+                    >
+                      {sug}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              {/* Modal Action Buttons */}
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowManualLeaveModal(false)}
-                  className="px-4 py-2 text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-medium shadow-sm"
+                  disabled={manualCreditSubmitting}
+                  className="px-5 py-2 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-xl font-bold shadow-md shadow-sky-600/20 flex items-center gap-2 transition-all"
                 >
-                  Confirm Credit
+                  {manualCreditSubmitting ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>Confirm & Dual-Sync Credit</span>
                 </button>
               </div>
             </form>
