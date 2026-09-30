@@ -494,6 +494,8 @@ CREATE TABLE IF NOT EXISTS leave_transactions (
   balance_after REAL NOT NULL,
   reason TEXT,
   created_by INTEGER,
+  period_month INTEGER,
+  period_year INTEGER,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
   FOREIGN KEY (leave_type_id) REFERENCES leave_types(id) ON DELETE CASCADE

@@ -679,6 +679,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
   const broadcastLeaveUpdate = () => {
     try {
       new BroadcastChannel('npb_hrms_leave_sync').postMessage({ type: 'LEAVE_UPDATED', timestamp: Date.now() });
+      new BroadcastChannel('hrms_leave_channel').postMessage({ type: 'LEAVE_UPDATED', timestamp: Date.now() });
       new BroadcastChannel('npb_hrms_attendance_sync').postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
     } catch (e) {}
     localStorage.setItem('hrms_leave_updated', String(Date.now()));
@@ -2300,14 +2301,9 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                                 {emp.cl_balance}d
                               </span>
                               <span className="text-[10px] text-slate-400">
-                                (Credited: {emp.cl_credited} / {emp.max_statutory_cl !== undefined ? emp.max_statutory_cl : 12}d)
+                                (Credited: {emp.cl_credited} / 12d)
                               </span>
                             </div>
-                            {emp.max_statutory_cl !== undefined && emp.max_statutory_cl < 12 && (
-                              <div className="text-[9px] text-indigo-600 font-semibold mt-0.5">
-                                Pro-rata cap: {emp.max_statutory_cl}d (Mid-year joiner)
-                              </div>
-                            )}
                           </td>
                           <td className="p-3">
                             <div className="flex items-center gap-1.5">
@@ -4434,8 +4430,8 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                 const sel = companyStaffBalances.find(s => String(s.id) === String(manualLeaveForm.employee_id));
                 const currentLT = leaveTypes.find(lt => String(lt.id) === String(manualLeaveForm.leave_type_id));
                 const isCL = !currentLT || currentLT.code === 'CL' || currentLT.name.toLowerCase().includes('casual');
-                const maxCLAllowed = sel?.max_statutory_cl !== undefined ? sel.max_statutory_cl : 12.0;
-                const remainingCL = sel ? Math.max(0, maxCLAllowed - (sel.cl_credited || 0)) : 12.0;
+                const maxCLAllowed = 12.0;
+                const remainingCL = sel ? Math.max(0, 12.0 - (sel.cl_credited || 0)) : 12.0;
 
                 return (
                   <div className="space-y-2">
@@ -4476,24 +4472,18 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
                         {/* Employment Period & FY Statutory Allowance */}
                         <div className="p-2 bg-white/90 border border-sky-100 rounded-lg text-[10px] space-y-1">
                           <div className="text-slate-700 font-semibold flex items-center justify-between">
-                            <span>Employment Period:</span>
-                            <span className="text-sky-800 font-bold">{sel.tenure_label || 'Full Year (1 Apr - 31 Mar)'}</span>
+                            <span>Statutory Period:</span>
+                            <span className="text-sky-800 font-bold">{sel.tenure_label || '1 Apr - 31 Mar (Current FY)'}</span>
                           </div>
                           <div className="text-slate-600 flex items-center justify-between">
-                            <span>Tenure to 31 Mar:</span>
-                            <span className="font-semibold text-slate-800">
-                              {sel.active_months_to_march !== undefined ? `${sel.active_months_to_march} active month(s)` : '12 active months'}
-                            </span>
-                          </div>
-                          <div className="text-slate-600 flex items-center justify-between">
-                            <span>Statutory Pro-Rata CL Limit:</span>
-                            <span className="font-bold text-indigo-700">Max {maxCLAllowed} days allowed</span>
+                            <span>Annual Statutory CL Limit:</span>
+                            <span className="font-bold text-indigo-700">Max 12.0 days / year</span>
                           </div>
                         </div>
 
                         <div className="flex items-center justify-between text-slate-600 text-[10px] px-1">
                           <span>
-                            CL: <strong>{sel.cl_balance}d</strong> (Credited: {sel.cl_credited}/{maxCLAllowed}d)
+                            CL: <strong>{sel.cl_balance}d</strong> (Credited: {sel.cl_credited}/12d)
                           </span>
                           <span>•</span>
                           <span>
@@ -4503,7 +4493,7 @@ export default function CompanyAdminPanel({ company, user, activeTab, onUpdateCo
 
                         {isCL && (
                           <div className="text-[10px] text-sky-800 font-semibold bg-sky-100/60 p-1.5 rounded text-center">
-                            Remaining CL quota allowed for this period (to 31 Mar): <strong>{remainingCL.toFixed(2)} days</strong>
+                            Remaining CL quota allowed for this year (up to 12 max): <strong>{remainingCL.toFixed(2)} days</strong>
                           </div>
                         )}
                       </div>

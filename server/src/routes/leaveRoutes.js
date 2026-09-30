@@ -1,6 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+
+// Ensure leave_transactions has period_month and period_year columns
+try { db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_month INTEGER").run(); } catch(e) {}
+try { db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_year INTEGER").run(); } catch(e) {}
+
 const { verifyAuth } = require('../middleware/auth');
 const { requireRole, getTenantCompanyId } = require('../middleware/rbac');
 const { logAudit } = require('../services/audit');
@@ -309,11 +314,9 @@ router.get('/company-balances', verifyAuth, requireRole(['company_admin', 'manag
       total_available: Math.round(totalAvailable * 100) / 100,
       joining_date: tenure.joinDateFormatted,
       active_months_to_march: tenure.activeMonths,
-      max_statutory_cl: tenure.maxCL,
+      max_statutory_cl: 12.0,
       is_mid_year: tenure.isMidYear,
-      tenure_label: tenure.isMidYear
-        ? `Joined ${tenure.joinDateFormatted} • ${tenure.activeMonths} mos to 31 Mar (${fyInfo.fyCode})`
-        : `Full Year (${fyInfo.fyLabel})`,
+      tenure_label: `1 Apr - 31 Mar (${fyInfo.fyCode})`,
       fy_code: fyInfo.fyCode,
       fy_label: fyInfo.fyLabel,
       last_updated: cl.updated_at || el.updated_at || null
@@ -1124,26 +1127,18 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     return res.status(400).json({ error: 'No active employees found to credit leaves.' });
   }
 
-  // 1. Strict Validation: Casual Leave (CL) calculated from Joining Date to 31 March
+  // 1. Strict Validation: Casual Leave (CL) cannot exceed 12.0 days per financial year
   if (isCasualLeave) {
+    if (numDays > 12.0) {
+      return res.status(400).json({ error: 'Casual Leave (CL) quota cannot exceed the maximum statutory limit of 12.0 days per financial year.' });
+    }
     if (!apply_to_all) {
-      const tenure = calculateEmployeeFYTenure(targetEmployees[0].employment_start_date || targetEmployees[0].created_at, fyInfo.startYear, fyInfo.endYear);
-      const maxAllowedCL = tenure.maxCL;
-      if (numDays > maxAllowedCL) {
-        return res.status(400).json({
-          error: `Pro-rata Casual Leave cap for ${targetEmployees[0].full_name} is ${maxAllowedCL.toFixed(1)} days (joined ${tenure.joinDateFormatted}, ${tenure.activeMonths} active months to 31 March ${fyInfo.endYear}). Cannot credit more than ${maxAllowedCL.toFixed(1)} days.`
-        });
-      }
       const alreadyCredited = getEmployeeCreditedCLInYear(targetEmployees[0].id, leaveType.id, targetYear);
-      if (alreadyCredited + numDays > maxAllowedCL + 0.001) {
-        const remaining = Math.max(0, maxAllowedCL - alreadyCredited);
+      if (alreadyCredited + numDays > 12.001) {
+        const remaining = Math.max(0, 12.0 - alreadyCredited);
         return res.status(400).json({
-          error: `Casual Leave (CL) statutory limit of ${maxAllowedCL.toFixed(1)} days exceeded for ${targetEmployees[0].full_name}. Already credited in ${fyInfo.fyCode}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+          error: `Casual Leave (CL) statutory limit of 12.0 days per year exceeded for ${targetEmployees[0].full_name}. Already credited in ${fyInfo.fyCode}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
         });
-      }
-    } else {
-      if (numDays > 12.0) {
-        return res.status(400).json({ error: 'Casual Leave (CL) quota cannot exceed the maximum statutory limit of 12 days per financial year.' });
       }
     }
   }
@@ -1188,10 +1183,8 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
       let empCredit = numDays;
 
       if (isCasualLeave) {
-        const tenure = calculateEmployeeFYTenure(emp.employment_start_date || emp.created_at, fyInfo.startYear, fyInfo.endYear);
-        const maxAllowedCL = tenure.maxCL;
         const alreadyCredited = getEmployeeCreditedCLInYear(emp.id, leaveType.id, targetYear);
-        const remaining = Math.max(0, maxAllowedCL - alreadyCredited);
+        const remaining = Math.max(0, 12.0 - alreadyCredited);
         empCredit = apply_to_all ? Math.min(numDays, remaining) : numDays;
       } else if (isEarnedLeave) {
         const alreadyMonthCredited = getEmployeeCreditedELInMonth(emp.id, leaveType.id, targetYear, targetMonth);

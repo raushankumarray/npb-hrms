@@ -147,6 +147,15 @@ function seedDatabase() {
       db.prepare("ALTER TABLE support_users ADD COLUMN enable_ai_assistant INTEGER DEFAULT 0").run();
       console.log('Migration: Ensured enable_ai_assistant column in support_users.');
     }
+    const ltCols = db.prepare("PRAGMA table_info(leave_transactions)").all();
+    if (ltCols.length > 0 && !ltCols.some(c => c.name === 'period_month')) {
+      db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_month INTEGER").run();
+      console.log('Migration: Ensured period_month column in leave_transactions.');
+    }
+    if (ltCols.length > 0 && !ltCols.some(c => c.name === 'period_year')) {
+      db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_year INTEGER").run();
+      console.log('Migration: Ensured period_year column in leave_transactions.');
+    }
   } catch (e) {}
   console.log('Schema created successfully.');
 
