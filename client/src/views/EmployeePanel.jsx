@@ -2640,8 +2640,8 @@ Please deregister this device in Support Panel so I can register and log in on m
                     </div>
                     <input
                       type="number"
-                      step="0.5"
-                      min="0.5"
+                      step="any"
+                      min="0"
                       required
                       readOnly
                       value={leaveForm.total_days}
