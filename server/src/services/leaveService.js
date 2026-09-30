@@ -130,37 +130,41 @@ function autoCreditEmployeeLeaves(employeeId, companyId = null, createdByUserId 
 /**
  * Helper: Computes total Casual Leave (CL) credited to an employee in a given calendar year.
  * Rule: Maximum 12.0 CL per calendar year.
+ * Correctly accounts for deductions and resets so employees whose balances were reset can be re-credited cleanly.
  */
 function getEmployeeCreditedCLInYear(employeeId, leaveTypeId, year = null) {
   const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
 
-  // Sum all positive adjustments, opening credits, and accruals for this year
-  const txSum = db.prepare(`
-    SELECT COALESCE(SUM(amount), 0.0) as total
-    FROM leave_transactions
-    WHERE employee_id = ? AND leave_type_id = ? AND amount > 0
-      AND (period_year = ? OR strftime('%Y', created_at) = ?)
-  `).get(employeeId, leaveTypeId, targetYear, String(targetYear));
-
-  // Also verify against current leave_balances opening_balance + accrued for this year
   const balRow = db.prepare(`
-    SELECT opening_balance, accrued
+    SELECT balance, used, opening_balance, accrued
     FROM leave_balances
     WHERE employee_id = ? AND leave_type_id = ? AND year = ?
   `).get(employeeId, leaveTypeId, targetYear);
 
-  const balCredited = balRow ? (Number(balRow.opening_balance || 0) + Number(balRow.accrued || 0)) : 0;
-  return Math.max(Number(txSum?.total || 0), balCredited);
+  if (!balRow) return 0;
+  // Current active allowance held or used by the employee
+  const activeBal = Number(balRow.balance || 0) + Number(balRow.used || 0);
+  return Math.max(0, activeBal);
 }
 
 /**
  * Helper: Computes total Earned Leave (EL) credited to an employee for a specific month and year.
  * Rule: Maximum 1.25 EL per month.
+ * If employee's balance was reset to 0 or deducted, allows re-crediting up to the 1.25 monthly cap without error.
  */
 function getEmployeeCreditedELInMonth(employeeId, leaveTypeId, year = null, month = null) {
   const now = new Date();
   const targetYear = year ? parseInt(year, 10) : now.getFullYear();
   const targetMonth = month ? parseInt(month, 10) : (now.getMonth() + 1);
+
+  const balRow = db.prepare(`
+    SELECT balance, used, accrued
+    FROM leave_balances
+    WHERE employee_id = ? AND leave_type_id = ? AND year = ?
+  `).get(employeeId, leaveTypeId, targetYear);
+
+  const activeBal = balRow ? (Number(balRow.balance || 0) + Number(balRow.used || 0)) : 0;
+  if (activeBal <= 0) return 0;
 
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -169,10 +173,11 @@ function getEmployeeCreditedELInMonth(employeeId, leaveTypeId, year = null, mont
   const monthName = monthNames[targetMonth - 1] || (`Month ${targetMonth}`);
   const padMonth = String(targetMonth).padStart(2, '0');
 
+  // Sum net transactions for this month (credits minus deductions)
   const txSum = db.prepare(`
     SELECT COALESCE(SUM(amount), 0.0) as total
     FROM leave_transactions
-    WHERE employee_id = ? AND leave_type_id = ? AND amount > 0
+    WHERE employee_id = ? AND leave_type_id = ?
       AND (
         (period_month = ? AND period_year = ?)
         OR reason LIKE ?
@@ -185,7 +190,8 @@ function getEmployeeCreditedELInMonth(employeeId, leaveTypeId, year = null, mont
     `%${targetYear}-${padMonth}%`
   );
 
-  return Number(txSum?.total || 0);
+  const netMonthTx = Math.max(0, Number(txSum?.total || 0));
+  return Math.min(netMonthTx, activeBal);
 }
 
 /**

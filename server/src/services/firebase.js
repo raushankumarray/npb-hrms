@@ -976,17 +976,23 @@ async function syncLeaveTransaction(tx) {
   if (!firebaseStatus.connected || !tx) return null;
   try {
     const txId = String(tx.id || `${tx.employee_id || tx.employeeId}_${Date.now()}`);
-    const compId = tx.company_id || tx.companyId;
-    const empId = tx.employee_id || tx.employeeId;
-    const ltId = tx.leave_type_id || tx.leaveTypeId;
+    let compId = tx.company_id || tx.companyId || null;
+    const empId = tx.employee_id || tx.employeeId || null;
+    const ltId = tx.leave_type_id || tx.leaveTypeId || null;
+    if (!compId && empId) {
+      try {
+        const emp = db.prepare('SELECT company_id FROM employees WHERE id = ?').get(empId);
+        if (emp) compId = emp.company_id;
+      } catch (e) {}
+    }
     const payload = {
       id: txId,
-      companyId: compId,
-      company_id: compId,
-      employeeId: empId,
-      employee_id: empId,
-      leaveTypeId: ltId,
-      leave_type_id: ltId,
+      companyId: compId || null,
+      company_id: compId || null,
+      employeeId: empId || null,
+      employee_id: empId || null,
+      leaveTypeId: ltId || null,
+      leave_type_id: ltId || null,
       transactionType: tx.transaction_type || tx.transactionType || 'adjustment',
       amount: Number(tx.amount || 0),
       balanceAfter: Number(tx.balance_after || tx.balanceAfter || 0),

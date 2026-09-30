@@ -1110,12 +1110,12 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     if (numDays > 12.0) {
       return res.status(400).json({ error: 'Casual Leave (CL) quota cannot exceed the maximum statutory limit of 12 days per year.' });
     }
-    for (const emp of targetEmployees) {
-      const alreadyCredited = getEmployeeCreditedCLInYear(emp.id, leaveType.id, targetYear);
+    if (!apply_to_all) {
+      const alreadyCredited = getEmployeeCreditedCLInYear(targetEmployees[0].id, leaveType.id, targetYear);
       if (alreadyCredited + numDays > 12.001) {
         const remaining = Math.max(0, 12.0 - alreadyCredited);
         return res.status(400).json({
-          error: `Casual Leave (CL) annual cap of 12 days exceeded for ${emp.full_name}. Already credited in ${targetYear}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+          error: `Casual Leave (CL) annual cap of 12 days exceeded for ${targetEmployees[0].full_name}. Already credited in ${targetYear}: ${alreadyCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
         });
       }
     }
@@ -1126,12 +1126,12 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     if (numDays > 1.25) {
       return res.status(400).json({ error: 'Earned Leave (EL) quota cannot exceed the statutory limit of 1.25 days per month.' });
     }
-    for (const emp of targetEmployees) {
-      const alreadyMonthCredited = getEmployeeCreditedELInMonth(emp.id, leaveType.id, targetYear, targetMonth);
+    if (!apply_to_all) {
+      const alreadyMonthCredited = getEmployeeCreditedELInMonth(targetEmployees[0].id, leaveType.id, targetYear, targetMonth);
       if (alreadyMonthCredited + numDays > 1.2501) {
         const remaining = Math.max(0, 1.25 - alreadyMonthCredited);
         return res.status(400).json({
-          error: `Earned Leave (EL) monthly cap of 1.25 days exceeded for ${emp.full_name} for ${monthName} ${targetYear}. Already credited for this month: ${alreadyMonthCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
+          error: `Earned Leave (EL) monthly cap of 1.25 days exceeded for ${targetEmployees[0].full_name} for ${monthName} ${targetYear}. Already credited for this month: ${alreadyMonthCredited.toFixed(2)} days. Maximum additional allowed: ${remaining.toFixed(2)} days.`
         });
       }
     }
@@ -1156,24 +1156,39 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     `);
 
     const periodTag = isEarnedLeave ? `${monthName} ${targetYear}` : `${targetYear}`;
-    const auditReason = `Manual credit: +${numDays}d of ${leaveType.name} (${periodTag}) - ${reason.trim()}`;
 
     for (const emp of targetEmployees) {
-      upsertBalance.run(emp.id, leaveType.id, targetYear, numDays, numDays);
-      const currentBal = db.prepare('SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
-        .get(emp.id, leaveType.id, targetYear)?.balance || numDays;
+      let empCredit = numDays;
 
-      const txResult = insertTx.run(
-        emp.id, leaveType.id, numDays, currentBal, auditReason, req.user.id,
-        isEarnedLeave ? targetMonth : null, targetYear
-      );
+      if (isCasualLeave) {
+        const alreadyCredited = getEmployeeCreditedCLInYear(emp.id, leaveType.id, targetYear);
+        const remaining = Math.max(0, 12.0 - alreadyCredited);
+        empCredit = apply_to_all ? Math.min(numDays, remaining) : numDays;
+      } else if (isEarnedLeave) {
+        const alreadyMonthCredited = getEmployeeCreditedELInMonth(emp.id, leaveType.id, targetYear, targetMonth);
+        const remaining = Math.max(0, 1.25 - alreadyMonthCredited);
+        empCredit = apply_to_all ? Math.min(numDays, remaining) : numDays;
+      }
 
-      transactionList.push({
-        txId: txResult.lastInsertRowid,
-        employeeId: emp.id,
-        balanceAfter: currentBal,
-        auditReason
-      });
+      if (empCredit > 0) {
+        upsertBalance.run(emp.id, leaveType.id, targetYear, empCredit, empCredit);
+        const currentBal = db.prepare('SELECT balance FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?')
+          .get(emp.id, leaveType.id, targetYear)?.balance || empCredit;
+
+        const auditReason = `Manual credit: +${empCredit}d of ${leaveType.name} (${periodTag}) - ${reason.trim()}`;
+
+        const txResult = insertTx.run(
+          emp.id, leaveType.id, empCredit, currentBal, auditReason, req.user.id,
+          isEarnedLeave ? targetMonth : null, targetYear
+        );
+
+        transactionList.push({
+          txId: txResult.lastInsertRowid,
+          employeeId: emp.id,
+          balanceAfter: currentBal,
+          auditReason
+        });
+      }
     }
 
     logAudit({
@@ -1182,16 +1197,17 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
       userName: req.user.username,
       role: req.user.role_name,
       panel: 'Leave Management',
-      action: 'MANUAL_LEAVE_CREDITED',
+      action: apply_to_all ? 'MASTER_LEAVE_CREDITED' : 'MANUAL_LEAVE_CREDITED',
       targetEntity: 'leave_balances',
       newValues: {
         leave_type: leaveType.name,
         days: numDays,
         target_count: targetEmployees.length,
-        period: isEarnedLeave ? `${monthName} ${targetYear}` : `${targetYear}`,
+        credited_count: transactionList.length,
+        period: periodTag,
         reason: reason.trim()
       },
-      reason: `Manual leave credited by ${req.user.username}: +${numDays} days (${leaveType.name}) to ${targetEmployees.length} employee(s)`
+      reason: `Manual leave credited by ${req.user.username}: up to +${numDays} days (${leaveType.name}) to ${transactionList.length} of ${targetEmployees.length} staff member(s)`
     });
   });
 
@@ -1212,10 +1228,13 @@ router.post('/manual-credit', verifyAuth, requireRole(['company_admin', 'super_a
     }
   } catch (e) {}
 
+  const periodTag = isEarnedLeave ? `${monthName} ${targetYear}` : `${targetYear}`;
   res.json({
     success: true,
-    message: `Successfully credited +${numDays} days of "${leaveType.name}" (${isEarnedLeave ? `${monthName} ${targetYear}` : targetYear}) to ${targetEmployees.length} employee(s).`,
-    affectedCount: targetEmployees.length
+    message: transactionList.length === 0
+      ? `All ${targetEmployees.length} employees and managers are already at their maximum statutory limit for ${periodTag}.`
+      : `Successfully credited +${numDays} days of "${leaveType.name}" (${periodTag}) to ${transactionList.length} employee(s) and manager(s).`,
+    affectedCount: transactionList.length
   });
 });
 
@@ -1296,8 +1315,9 @@ router.post('/delete-or-deduct', verifyAuth, requireRole(['company_admin', 'supe
           VALUES (?, ?, ?, 0, 0, 0, 0)
           ON CONFLICT(employee_id, leave_type_id, year) DO UPDATE SET
             balance = MAX(0, balance - ?),
+            accrued = MAX(0, accrued - ?),
             updated_at = CURRENT_TIMESTAMP
-        `).run(emp.id, leaveType.id, currentYear, numDays);
+        `).run(emp.id, leaveType.id, currentYear, numDays, numDays);
       }
 
       // Log into leave_transactions
