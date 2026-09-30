@@ -7,7 +7,7 @@ const { requireRole, requireSupportLevel, parseSupportAssignedCompanies, isCompa
 const { unbindUserDevice } = require('../services/deviceBinding');
 const { logAudit } = require('../services/audit');
 const { createNotification } = require('../services/notificationService');
-const { syncSupportUser, syncUser, deleteFromFirebase } = require('../services/firebase');
+const { syncSupportUser, syncUser, syncEmployee, syncLeaveRequest, syncLeaveBalance, syncLeaveTransaction, syncAttendancePunch, deleteFromFirebase } = require('../services/firebase');
 
 // List Support Accounts (Super Admin only)
 router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
@@ -1390,6 +1390,682 @@ router.post('/remote/quick-action', verifyAuth, requireSupportLevel(4), (req, re
   }
 
   return res.status(400).json({ error: `Unknown remote action "${action}".` });
+});
+
+// Full Company Remote Data: Retrieve all company data (employees, managers, leaves, attendance, policies)
+router.get('/remote/company/:companyId/full-data', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const companyId = parseInt(req.params.companyId, 10);
+  if (!isCompanyAuthorized(req.user, companyId)) {
+    return res.status(403).json({ error: 'Access denied: Company is outside your assigned support scope.' });
+  }
+
+  const company = db.prepare('SELECT id, name, code, portal_name, email, phone, status, logo, created_at FROM companies WHERE id = ? AND status != ?').get(companyId, 'deleted');
+  if (!company) {
+    return res.status(404).json({ error: 'Company not found.' });
+  }
+
+  const adminUser = db.prepare(`
+    SELECT u.id, u.username, u.email, u.mobile, u.status, u.last_login_at
+    FROM users u
+    JOIN roles r ON u.role_id = r.id
+    WHERE u.company_id = ? AND r.name = 'company_admin' AND u.is_deleted = 0
+    LIMIT 1
+  `).get(companyId) || null;
+
+  const employees = db.prepare(`
+    SELECT e.id, e.employee_id as employee_code, e.full_name, e.department, e.designation,
+           e.mobile, e.email, e.status, e.manager_id, e.shift_id, e.geofence_id, e.reports_to_admin,
+           u.id as user_id, u.username, u.status as user_status, u.last_login_at,
+           r.name as role_name,
+           s.name as shift_name,
+           g.location_name as geofence_name,
+           m.full_name as manager_name,
+           d.id as device_id, d.mac_address, d.device_name, d.status as device_status
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    LEFT JOIN shifts s ON e.shift_id = s.id
+    LEFT JOIN geofences g ON e.geofence_id = g.id
+    LEFT JOIN employees m ON e.manager_id = m.id
+    LEFT JOIN employee_devices d ON u.id = d.user_id AND d.status = 'bound'
+    WHERE e.company_id = ? AND e.is_deleted = 0 AND u.is_deleted = 0
+    ORDER BY (CASE WHEN r.name = 'manager' THEN 0 ELSE 1 END), e.full_name ASC
+  `).all(companyId);
+
+  const managers = employees.filter(e => e.role_name === 'manager');
+
+  const leaveTypes = db.prepare(`
+    SELECT id, name, default_yearly_quota, monthly_accrual_rate
+    FROM leave_types
+    WHERE company_id = ?
+    ORDER BY name ASC
+  `).all(companyId);
+
+  const leaveRequests = db.prepare(`
+    SELECT lr.id, lr.employee_id, lr.leave_type_id, lr.start_date, lr.end_date, lr.total_days,
+           lr.reason, lr.status, lr.created_at,
+           e.full_name as employee_name, e.employee_id as employee_code,
+           lt.name as leave_type_name
+    FROM leave_requests lr
+    JOIN employees e ON lr.employee_id = e.id
+    JOIN leave_types lt ON lr.leave_type_id = lt.id
+    WHERE lr.company_id = ?
+    ORDER BY lr.created_at DESC LIMIT 50
+  `).all(companyId);
+
+  const recentAttendance = db.prepare(`
+    SELECT a.id, a.employee_id, a.date, a.punch_in_time, a.punch_out_time, a.status, a.total_hours,
+           a.punch_in_location, a.punch_out_location,
+           e.full_name as employee_name, e.employee_id as employee_code
+    FROM attendance_records a
+    JOIN employees e ON a.employee_id = e.id
+    WHERE a.company_id = ?
+    ORDER BY a.date DESC, a.punch_in_time DESC LIMIT 50
+  `).all(companyId);
+
+  const shifts = db.prepare('SELECT id, name, start_time, end_time, working_hours, status FROM shifts WHERE company_id = ?').all(companyId);
+  const geofences = db.prepare('SELECT id, location_name, latitude, longitude, radius, status FROM geofences WHERE company_id = ?').all(companyId);
+
+  res.json({
+    success: true,
+    company,
+    adminUser,
+    admin: adminUser,
+    employees,
+    managers,
+    leaveTypes,
+    leaveRequests,
+    recentAttendance,
+    attendanceLogs: recentAttendance,
+    shifts,
+    geofences
+  });
+});
+
+// Full Employee Remote Data: Retrieve complete profile, balances, leaves, attendance, and devices
+router.get('/remote/employee/:employeeId/full-data', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const employeeId = parseInt(req.params.employeeId, 10);
+  const emp = db.prepare(`
+    SELECT e.*, u.id as user_id, u.username, u.email as user_email, u.mobile as user_mobile,
+           u.status as user_status, u.last_login_at, r.name as role_name,
+           c.name as company_name, c.code as company_code,
+           s.name as shift_name, s.start_time as shift_start, s.end_time as shift_end,
+           g.location_name as geofence_name, g.latitude as geofence_lat, g.longitude as geofence_lng, g.radius as geofence_radius,
+           m.full_name as manager_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    JOIN companies c ON e.company_id = c.id
+    LEFT JOIN shifts s ON e.shift_id = s.id
+    LEFT JOIN geofences g ON e.geofence_id = g.id
+    LEFT JOIN employees m ON e.manager_id = m.id
+    WHERE e.id = ? AND e.is_deleted = 0
+  `).get(employeeId);
+
+  if (!emp) {
+    return res.status(404).json({ error: 'Employee not found.' });
+  }
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Target employee belongs to an unauthorized company.' });
+  }
+
+  const currentYear = new Date().getFullYear();
+  const leaveBalances = db.prepare(`
+    SELECT lb.id, lb.leave_type_id, lb.year, lb.opening_balance, lb.accrued, lb.used, lb.balance,
+           lt.name as leave_type_name, lt.default_yearly_quota, lt.monthly_accrual_rate
+    FROM leave_balances lb
+    JOIN leave_types lt ON lb.leave_type_id = lt.id
+    WHERE lb.employee_id = ? AND lb.year = ?
+  `).all(employeeId, currentYear);
+
+  const leaveRequests = db.prepare(`
+    SELECT lr.id, lr.leave_type_id, lr.start_date, lr.end_date, lr.total_days, lr.reason, lr.status, lr.created_at,
+           lt.name as leave_type_name
+    FROM leave_requests lr
+    JOIN leave_types lt ON lr.leave_type_id = lt.id
+    WHERE lr.employee_id = ?
+    ORDER BY lr.created_at DESC
+  `).all(employeeId);
+
+  const attendanceRecords = db.prepare(`
+    SELECT id, date, punch_in_time, punch_out_time, status, total_hours, punch_in_location, punch_out_location, punch_in_area
+    FROM attendance_records
+    WHERE employee_id = ?
+    ORDER BY date DESC LIMIT 45
+  `).all(employeeId);
+
+  const device = db.prepare(`
+    SELECT * FROM employee_devices
+    WHERE user_id = ?
+    ORDER BY last_login_at DESC LIMIT 1
+  `).get(emp.user_id) || null;
+
+  const tickets = db.prepare(`
+    SELECT id, request_type, title, description, status, created_at
+    FROM service_requests
+    WHERE employee_id = ?
+    ORDER BY created_at DESC
+  `).all(employeeId);
+
+  res.json({
+    success: true,
+    employee: emp,
+    currentBalances: leaveBalances,
+    leaveBalances,
+    leaveRequests,
+    attendanceHistory: attendanceRecords,
+    attendanceRecords,
+    device,
+    tickets
+  });
+});
+
+// Remote Apply Leave: Apply leave directly on behalf of any employee/manager upon request
+router.post('/remote/leave/apply', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const { employee_id, leave_type_id, start_date, end_date, total_days, reason, auto_approve } = req.body;
+
+  if (!employee_id || !leave_type_id || !start_date || !end_date) {
+    return res.status(400).json({ error: 'employee_id, leave_type_id, start_date, and end_date are required.' });
+  }
+
+  const emp = db.prepare('SELECT id, company_id, user_id, full_name, employee_id as employee_code FROM employees WHERE id = ?').get(employee_id);
+  if (!emp) return res.status(404).json({ error: 'Employee not found.' });
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const lt = db.prepare('SELECT id, name FROM leave_types WHERE id = ? AND company_id = ?').get(leave_type_id, emp.company_id);
+  if (!lt) return res.status(404).json({ error: 'Invalid leave type for this company.' });
+
+  const days = parseFloat(total_days) || 1.0;
+  const status = (auto_approve === false || auto_approve === 0 || auto_approve === 'false') ? 'pending' : 'approved';
+  const finalReason = (reason && reason.trim()) ? reason.trim() : 'Applied via Support Team Remote Portal';
+
+  const tx = db.transaction(() => {
+    const ins = db.prepare(`
+      INSERT INTO leave_requests (company_id, employee_id, leave_type_id, start_date, end_date, total_days, reason, status, approved_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      emp.company_id,
+      emp.id,
+      leave_type_id,
+      start_date,
+      end_date,
+      days,
+      finalReason,
+      status,
+      status === 'approved' ? req.user.id : null
+    );
+
+    const newReqId = ins.lastInsertRowid;
+    const currentYear = new Date().getFullYear();
+
+    if (status === 'approved') {
+      const bal = db.prepare('SELECT id, used, balance FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(emp.id, leave_type_id, currentYear);
+      if (bal) {
+        db.prepare('UPDATE leave_balances SET used = used + ?, balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(days, days, bal.id);
+      } else {
+        db.prepare('INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance) VALUES (?, ?, ?, 0, 0, ?, ?)').run(emp.id, leave_type_id, currentYear, days, -days);
+      }
+
+      try {
+        db.prepare(`
+          INSERT INTO leave_transactions (employee_id, leave_type_id, leave_request_id, transaction_type, days, notes, created_by)
+          VALUES (?, ?, ?, 'deduct', ?, ?, ?)
+        `).run(emp.id, leave_type_id, newReqId, days, `Remotely approved leave: ${start_date} to ${end_date}`, req.user.id);
+      } catch (e) {}
+    }
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_LEAVE_APPLIED_BY_SUPPORT',
+      targetEntity: 'leave_requests',
+      targetId: newReqId,
+      companyId: emp.company_id,
+      newValues: { employee: emp.full_name, leaveType: lt.name, days, start_date, end_date, status },
+      reason: `Leave remotely applied on behalf of ${emp.full_name} (${emp.employee_code}) upon request`
+    });
+
+    try {
+      createNotification({
+        userId: emp.user_id,
+        companyId: emp.company_id,
+        title: 'Leave Application Processed',
+        message: `Your ${lt.name} request (${start_date} to ${end_date}, ${days} day(s)) has been processed by Technical Support: Status ${status.toUpperCase()}.`,
+        type: status === 'approved' ? 'success' : 'info',
+        link: '/leaves'
+      });
+    } catch (e) {}
+
+    return newReqId;
+  });
+
+  const createdRequestId = tx();
+
+  try {
+    const freshReq = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(createdRequestId);
+    if (freshReq) syncLeaveRequest(freshReq).catch(() => {});
+    const currentYear = new Date().getFullYear();
+    const freshBal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(emp.id, leave_type_id, currentYear);
+    if (freshBal) syncLeaveBalance(freshBal).catch(() => {});
+  } catch (e) {}
+
+  res.json({
+    success: true,
+    requestId: createdRequestId,
+    status,
+    message: `Leave successfully applied for ${emp.full_name} (${days} days ${lt.name}) with status "${status}".`
+  });
+});
+
+// Remote Update Leave Status (Approve / Reject)
+router.put('/remote/leave/:id/status', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const reqId = parseInt(req.params.id, 10);
+  const { status, review_notes } = req.body;
+
+  if (!['approved', 'rejected', 'pending'].includes(status)) {
+    return res.status(400).json({ error: 'Status must be approved, rejected, or pending.' });
+  }
+
+  const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(reqId);
+  if (!lr) return res.status(404).json({ error: 'Leave request not found.' });
+
+  if (!isCompanyAuthorized(req.user, lr.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const currentYear = new Date().getFullYear();
+  const tx = db.transaction(() => {
+    const oldStatus = lr.status;
+    if (oldStatus === status) return;
+
+    if (oldStatus !== 'approved' && status === 'approved') {
+      const bal = db.prepare('SELECT id FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(lr.employee_id, lr.leave_type_id, currentYear);
+      if (bal) {
+        db.prepare('UPDATE leave_balances SET used = used + ?, balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(lr.total_days, lr.total_days, bal.id);
+      }
+    } else if (oldStatus === 'approved' && status !== 'approved') {
+      const bal = db.prepare('SELECT id FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(lr.employee_id, lr.leave_type_id, currentYear);
+      if (bal) {
+        db.prepare('UPDATE leave_balances SET used = MAX(0, used - ?), balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(lr.total_days, lr.total_days, bal.id);
+      }
+    }
+
+    db.prepare(`
+      UPDATE leave_requests 
+      SET status = ?, approved_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(status, req.user.id, reqId);
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_LEAVE_STATUS_UPDATED',
+      targetEntity: 'leave_requests',
+      targetId: reqId,
+      companyId: lr.company_id,
+      oldValues: { status: oldStatus },
+      newValues: { status, notes: review_notes },
+      reason: review_notes || `Leave status remotely updated to ${status} by Support`
+    });
+  });
+
+  tx();
+
+  try {
+    const fresh = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(reqId);
+    if (fresh) syncLeaveRequest(fresh).catch(() => {});
+    const freshBal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(lr.employee_id, lr.leave_type_id, currentYear);
+    if (freshBal) syncLeaveBalance(freshBal).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: `Leave request status updated to "${status}".` });
+});
+
+// Remote Delete Leave Request (Support deletion feature as requested)
+router.delete('/remote/leave/:id', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const reqId = parseInt(req.params.id, 10);
+  const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(reqId);
+  if (!lr) return res.status(404).json({ error: 'Leave request not found.' });
+
+  if (!isCompanyAuthorized(req.user, lr.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const currentYear = new Date().getFullYear();
+  const tx = db.transaction(() => {
+    if (lr.status === 'approved') {
+      const bal = db.prepare('SELECT id FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(lr.employee_id, lr.leave_type_id, currentYear);
+      if (bal) {
+        db.prepare('UPDATE leave_balances SET used = MAX(0, used - ?), balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(lr.total_days, lr.total_days, bal.id);
+      }
+    }
+
+    try { db.prepare('DELETE FROM leave_transactions WHERE leave_request_id = ?').run(reqId); } catch (e) {}
+    db.prepare('DELETE FROM leave_requests WHERE id = ?').run(reqId);
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_LEAVE_DELETED_BY_SUPPORT',
+      targetEntity: 'leave_requests',
+      targetId: reqId,
+      companyId: lr.company_id,
+      oldValues: { total_days: lr.total_days, start_date: lr.start_date, end_date: lr.end_date, status: lr.status },
+      reason: 'Leave request deleted by Support Team as per user/admin request'
+    });
+  });
+
+  tx();
+
+  try {
+    deleteFromFirebase('leave_requests', reqId).catch(() => {});
+    const freshBal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(lr.employee_id, lr.leave_type_id, currentYear);
+    if (freshBal) syncLeaveBalance(freshBal).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: 'Leave request has been permanently deleted as requested.' });
+});
+
+// Remote Adjust Leave Balance (Credit / Deduct / Set)
+router.post('/remote/leave/adjust-balance', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const { employee_id, leave_type_id, action_type, days, reason } = req.body;
+  if (!employee_id || !leave_type_id || !action_type) {
+    return res.status(400).json({ error: 'employee_id, leave_type_id, and action_type are required.' });
+  }
+
+  const emp = db.prepare('SELECT id, company_id, full_name FROM employees WHERE id = ?').get(employee_id);
+  if (!emp) return res.status(404).json({ error: 'Employee not found.' });
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const numDays = parseFloat(days) || 0;
+  const currentYear = new Date().getFullYear();
+
+  const tx = db.transaction(() => {
+    let bal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(emp.id, leave_type_id, currentYear);
+    if (!bal) {
+      db.prepare('INSERT INTO leave_balances (employee_id, leave_type_id, year, opening_balance, accrued, used, balance) VALUES (?, ?, ?, 0, 0, 0, 0)').run(emp.id, leave_type_id, currentYear);
+      bal = db.prepare('SELECT * FROM leave_balances WHERE employee_id = ? AND leave_type_id = ? AND year = ?').get(emp.id, leave_type_id, currentYear);
+    }
+
+    let newBalance = bal.balance;
+    let newOpening = bal.opening_balance;
+    let newUsed = bal.used;
+
+    if (action_type === 'credit') {
+      newOpening = newOpening + numDays;
+      newBalance = newBalance + numDays;
+    } else if (action_type === 'deduct') {
+      newUsed = newUsed + numDays;
+      newBalance = Math.max(0, newBalance - numDays);
+    } else if (action_type === 'set') {
+      newOpening = numDays;
+      newBalance = numDays;
+      newUsed = 0;
+    }
+
+    db.prepare('UPDATE leave_balances SET opening_balance = ?, used = ?, balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newOpening, newUsed, newBalance, bal.id);
+
+    try {
+      db.prepare(`
+        INSERT INTO leave_transactions (employee_id, leave_type_id, transaction_type, days, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(emp.id, leave_type_id, action_type === 'credit' ? 'credit' : 'deduct', numDays, reason || 'Support Remote Balance Adjustment', req.user.id);
+    } catch (e) {}
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_LEAVE_BALANCE_ADJUSTED',
+      targetEntity: 'leave_balances',
+      targetId: bal.id,
+      companyId: emp.company_id,
+      oldValues: { balance: bal.balance, opening_balance: bal.opening_balance },
+      newValues: { balance: newBalance, opening_balance: newOpening, action_type, days: numDays },
+      reason: reason || 'Leave balance adjusted remotely by Support Team'
+    });
+
+    return bal.id;
+  });
+
+  const balId = tx();
+
+  try {
+    const freshBal = db.prepare('SELECT * FROM leave_balances WHERE id = ?').get(balId);
+    if (freshBal) syncLeaveBalance(freshBal).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: `Leave balance updated successfully (${action_type}: ${numDays} days).` });
+});
+
+// Remote Add / Edit Attendance Punch
+router.post('/remote/attendance/record', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const { employee_id, date, punch_in_time, punch_out_time, status, total_hours, location_name, reason } = req.body;
+  if (!employee_id || !date) {
+    return res.status(400).json({ error: 'employee_id and date are required.' });
+  }
+
+  const emp = db.prepare('SELECT id, company_id, full_name, employee_id as employee_code FROM employees WHERE id = ?').get(employee_id);
+  if (!emp) return res.status(404).json({ error: 'Employee not found.' });
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const pIn = punch_in_time || null;
+  const pOut = punch_out_time || null;
+  const attStatus = status || 'Present';
+  const hours = parseFloat(total_hours) || (pIn && pOut ? 8.5 : 0.0);
+  const loc = location_name || 'Marked Remotely by Technical Support';
+
+  const existing = db.prepare('SELECT id FROM attendance_records WHERE employee_id = ? AND date = ?').get(emp.id, date);
+  let recordId;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE attendance_records
+      SET punch_in_time = COALESCE(?, punch_in_time),
+          punch_out_time = COALESCE(?, punch_out_time),
+          status = ?,
+          total_hours = ?,
+          punch_in_location = COALESCE(punch_in_location, ?),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(pIn, pOut, attStatus, hours, loc, existing.id);
+    recordId = existing.id;
+  } else {
+    const ins = db.prepare(`
+      INSERT INTO attendance_records (company_id, employee_id, date, punch_in_time, punch_out_time, status, total_hours, punch_in_location)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(emp.company_id, emp.id, date, pIn, pOut, attStatus, hours, loc);
+    recordId = ins.lastInsertRowid;
+  }
+
+  logAudit({
+    userId: req.user.id,
+    userName: req.user.username,
+    role: req.user.role_name,
+    panel: 'Level 4 Remote Access Console',
+    action: 'REMOTE_ATTENDANCE_RECORDED',
+    targetEntity: 'attendance_records',
+    targetId: recordId,
+    companyId: emp.company_id,
+    newValues: { employee: emp.full_name, date, status: attStatus, punch_in: pIn, punch_out: pOut },
+    reason: reason || 'Attendance punch recorded/corrected remotely by Support Team'
+  });
+
+  try {
+    const freshAtt = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(recordId);
+    if (freshAtt) syncAttendancePunch(freshAtt).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: `Attendance for "${emp.full_name}" on ${date} saved as "${attStatus}".` });
+});
+
+// Remote Delete Attendance Record
+router.delete('/remote/attendance/:id', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const attId = parseInt(req.params.id, 10);
+  const att = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(attId);
+  if (!att) return res.status(404).json({ error: 'Attendance record not found.' });
+
+  if (!isCompanyAuthorized(req.user, att.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  db.prepare('DELETE FROM attendance_records WHERE id = ?').run(attId);
+
+  logAudit({
+    userId: req.user.id,
+    userName: req.user.username,
+    role: req.user.role_name,
+    panel: 'Level 4 Remote Access Console',
+    action: 'REMOTE_ATTENDANCE_DELETED',
+    targetEntity: 'attendance_records',
+    targetId: attId,
+    companyId: att.company_id,
+    oldValues: { employee_id: att.employee_id, date: att.date, status: att.status },
+    reason: 'Attendance record deleted remotely by Support Team as per request'
+  });
+
+  try {
+    deleteFromFirebase('attendance_records', attId, { companyId: att.company_id, employeeId: att.employee_id, date: att.date }).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: 'Attendance record permanently removed as requested.' });
+});
+
+// Remote Update Personnel Profile
+router.put('/remote/employee/:id/profile', verifyAuth, requireSupportLevel(2), (req, res) => {
+  const employeeId = parseInt(req.params.id, 10);
+  const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(employeeId);
+  if (!emp) return res.status(404).json({ error: 'Employee not found.' });
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  const { full_name, mobile, email, department, designation, shift_id, geofence_id, status } = req.body;
+
+  const fName = full_name !== undefined ? full_name.trim() : emp.full_name;
+  const fMobile = mobile !== undefined ? mobile.trim() : emp.mobile;
+  const fEmail = email !== undefined ? email.trim() : emp.email;
+  const fDept = department !== undefined ? department.trim() : emp.department;
+  const fDesig = designation !== undefined ? designation.trim() : emp.designation;
+  const fShift = shift_id !== undefined ? (shift_id ? parseInt(shift_id, 10) : null) : emp.shift_id;
+  const fGeo = geofence_id !== undefined ? (geofence_id ? parseInt(geofence_id, 10) : null) : emp.geofence_id;
+  const fStatus = status !== undefined ? status : emp.status;
+
+  db.prepare(`
+    UPDATE employees
+    SET full_name = ?, mobile = ?, email = ?, department = ?, designation = ?, shift_id = ?, geofence_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(fName, fMobile, fEmail, fDept, fDesig, fShift, fGeo, fStatus, employeeId);
+
+  if (emp.user_id) {
+    db.prepare('UPDATE users SET email = ?, mobile = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(fEmail, fMobile, fStatus, emp.user_id);
+  }
+
+  logAudit({
+    userId: req.user.id,
+    userName: req.user.username,
+    role: req.user.role_name,
+    panel: 'Level 4 Remote Access Console',
+    action: 'REMOTE_EMPLOYEE_PROFILE_UPDATED',
+    targetEntity: 'employees',
+    targetId: employeeId,
+    companyId: emp.company_id,
+    newValues: { full_name: fName, mobile: fMobile, email: fEmail, department: fDept, designation: fDesig, status: fStatus },
+    reason: 'Employee profile remotely updated by Support Team upon user/admin request'
+  });
+
+  try {
+    const updatedEmp = db.prepare('SELECT e.*, u.username, c.name as company_name FROM employees e JOIN users u ON e.user_id = u.id JOIN companies c ON e.company_id = c.id WHERE e.id = ?').get(employeeId);
+    if (updatedEmp) syncEmployee(updatedEmp).catch(() => {});
+    const updatedUser = db.prepare('SELECT u.*, r.name as role_name, c.name as company_name FROM users u JOIN roles r ON u.role_id = r.id JOIN companies c ON u.company_id = c.id WHERE u.id = ?').get(emp.user_id);
+    if (updatedUser) syncUser(updatedUser).catch(() => {});
+  } catch (e) {}
+
+  res.json({ success: true, message: `Personnel profile for "${fName}" updated successfully.` });
+});
+
+// Remote Permanent Delete Employee (with permanent tombstone registration)
+router.delete('/remote/employee/:id', verifyAuth, requireSupportLevel(2), async (req, res) => {
+  const employeeId = parseInt(req.params.id, 10);
+  const emp = db.prepare(`
+    SELECT e.*, u.username, r.name as role_name
+    FROM employees e
+    JOIN users u ON e.user_id = u.id
+    JOIN roles r ON u.role_id = r.id
+    WHERE e.id = ?
+  `).get(employeeId);
+
+  if (!emp) return res.status(404).json({ error: 'Employee not found.' });
+
+  if (!isCompanyAuthorized(req.user, emp.company_id)) {
+    return res.status(403).json({ error: 'Access denied: Company outside assigned scope.' });
+  }
+
+  if (emp.role_name === 'company_admin' || emp.role_name === 'super_admin') {
+    return res.status(403).json({ error: 'Administrator accounts cannot be deleted here.' });
+  }
+
+  const tx = db.transaction(() => {
+    try {
+      const insTombstone = db.prepare('INSERT OR IGNORE INTO purged_tombstones (entity_type, entity_id, company_id, code, identifier) VALUES (?, ?, ?, ?, ?)');
+      insTombstone.run('employee', String(employeeId), String(emp.company_id), emp.employee_id || '', emp.full_name || '');
+      if (emp.user_id) {
+        insTombstone.run('user', String(emp.user_id), String(emp.company_id), '', emp.username || '');
+      }
+    } catch (e) {}
+
+    try { db.prepare('DELETE FROM attendance_records WHERE employee_id = ?').run(employeeId); } catch (e) {}
+    try { db.prepare('DELETE FROM leave_requests WHERE employee_id = ?').run(employeeId); } catch (e) {}
+    try { db.prepare('DELETE FROM leave_balances WHERE employee_id = ?').run(employeeId); } catch (e) {}
+    try { db.prepare('DELETE FROM employee_mappings WHERE employee_id = ? OR manager_id = ?').run(employeeId, employeeId); } catch (e) {}
+    if (emp.user_id) {
+      try { db.prepare('DELETE FROM employee_devices WHERE user_id = ?').run(emp.user_id); } catch (e) {}
+      db.prepare('DELETE FROM users WHERE id = ?').run(emp.user_id);
+    }
+    db.prepare('DELETE FROM employees WHERE id = ?').run(employeeId);
+
+    logAudit({
+      userId: req.user.id,
+      userName: req.user.username,
+      role: req.user.role_name,
+      panel: 'Level 4 Remote Access Console',
+      action: 'REMOTE_EMPLOYEE_DELETED_BY_SUPPORT',
+      targetEntity: 'employees',
+      targetId: employeeId,
+      companyId: emp.company_id,
+      oldValues: { full_name: emp.full_name, employee_code: emp.employee_id },
+      reason: 'Employee permanently deleted via Remote Control as requested by Company Admin'
+    });
+  });
+
+  tx();
+
+  await deleteFromFirebase('employees', employeeId, {
+    companyId: emp.company_id,
+    userId: emp.user_id,
+    employeeCode: emp.employee_id,
+    username: emp.username
+  });
+
+  res.json({ success: true, message: `Account for "${emp.full_name}" permanently deleted with zero recovery.` });
 });
 
 // --- SUSPENDED ACCOUNTS SEARCH & ACTIVATION HUB ---

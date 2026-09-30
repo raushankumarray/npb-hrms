@@ -25,11 +25,19 @@ function requireSupportLevel(minLevel) {
     }
 
     if (req.user.role_name === 'support') {
-      if ((req.user.support_level || 0) >= minLevel) {
+      const rawLvl = req.user.permission_level ?? req.user.permissionLevel ?? req.user.support_level ?? req.user.supportLevel ?? 1;
+      let userLvl = 1;
+      if (typeof rawLvl === 'number') {
+        userLvl = rawLvl;
+      } else {
+        const digits = String(rawLvl).replace(/\D/g, '');
+        userLvl = digits ? parseInt(digits, 10) : 1;
+      }
+      if (userLvl >= minLevel) {
         return next();
       }
       return res.status(403).json({
-        error: `Insufficient Support privileges. Required Level: ${minLevel}, your Level: ${req.user.support_level || 1}`
+        error: `Insufficient Support privileges. Required Level: ${minLevel}, your Level: ${userLvl}`
       });
     }
 
