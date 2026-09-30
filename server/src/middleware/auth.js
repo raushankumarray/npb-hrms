@@ -4,13 +4,19 @@ const db = require('../db');
 const JWT_SECRET = process.env.JWT_SECRET || 'npb-hrms-production-super-secret-key-2026';
 
 function generateToken(user) {
+  const rawLvl = user.support_level || user.supportLevel || user.permission_level || user.permissionLevel || 1;
+  const digits = String(rawLvl).replace(/\D/g, '');
+  const pLevel = digits ? parseInt(digits, 10) : (typeof rawLvl === 'number' ? rawLvl : 1);
+  const sLevel = user.support_level || `Level ${pLevel}`;
+
   return jwt.sign(
     {
       id: user.id,
       username: user.username,
       role: user.role_name,
       company_id: user.company_id,
-      support_level: user.support_level || null
+      permission_level: pLevel,
+      support_level: sLevel
     },
     JWT_SECRET,
     { expiresIn: '24h' }
@@ -36,7 +42,8 @@ function verifyAuth(req, res, next) {
     const user = db.prepare(`
       SELECT u.id, u.username, u.email, u.role_id, u.company_id, u.status, u.is_deleted,
              r.name as role_name,
-             s.permission_level as support_level,
+             s.permission_level,
+             COALESCE(s.support_level, 'Level ' || COALESCE(s.permission_level, 1)) as support_level,
              s.assigned_companies,
              e.id as employee_id, e.employee_id as employee_code,
              COALESCE(e.full_name, sa.full_name, s.full_name, u.username) as full_name,

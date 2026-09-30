@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Building2, Users, Shield, Clock, Plus, CheckCircle, AlertTriangle,
+  Building2, Users, Shield, ShieldCheck, Clock, Plus, CheckCircle, AlertTriangle,
   Bell, Smartphone,
   Ban, ToggleLeft, ToggleRight, Trash2, Edit3, Settings2, Search,
   RefreshCw, FileSpreadsheet, Eye, ArrowUpRight, Key, Lock,
@@ -74,7 +74,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
 
   // New Support User Form State
   const [newSupport, setNewSupport] = useState({
-    full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true,
+    full_name: '', username: '', password: '', email: '', permission_level: 4, support_level: 'Level 4', enable_ai_assistant: true,
     enable_audit_logs: true,
     assign_scope: 'all', assigned_companies: []
   });
@@ -83,7 +83,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
   const [showEditSupport, setShowEditSupport] = useState(false);
   const [editingSupportId, setEditingSupportId] = useState(null);
   const [editSupportForm, setEditSupportForm] = useState({
-    username: '', full_name: '', email: '', permission_level: 1, status: 'active', password: '', enable_ai_assistant: false,
+    username: '', full_name: '', email: '', permission_level: 4, support_level: 'Level 4', status: 'active', password: '', enable_ai_assistant: false,
     enable_audit_logs: true,
     assign_scope: 'all', assigned_companies: []
   });
@@ -826,19 +826,26 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setError('Please select at least one company to assign, or choose "All Companies".');
       return;
     }
+    const rawLvl = newSupport.support_level || newSupport.permission_level || 4;
+    const digits = String(rawLvl).replace(/\D/g, '');
+    const pLvl = Math.min(Math.max(digits ? parseInt(digits, 10) : (typeof rawLvl === 'number' ? rawLvl : 4), 1), 4);
+    const sLvl = `Level ${pLvl}`;
+
     try {
       await apiRequest('/support/users', {
         method: 'POST',
         body: {
           ...newSupport,
+          permission_level: pLvl,
+          support_level: sLvl,
           assigned_companies: assigned,
           enable_ai_assistant: newSupport.enable_ai_assistant === true,
           enable_audit_logs: newSupport.enable_audit_logs === true
         }
       });
-      setSuccess(`Support account "${newSupport.username}" created successfully.`);
+      setSuccess(`Support account "${newSupport.username}" created successfully with ${sLvl} permissions.`);
       setShowCreateSupport(false);
-      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 3, enable_ai_assistant: true, enable_audit_logs: true, assign_scope: 'all', assigned_companies: [] });
+      setNewSupport({ full_name: '', username: '', password: '', email: '', permission_level: 4, support_level: 'Level 4', enable_ai_assistant: true, enable_audit_logs: true, assign_scope: 'all', assigned_companies: [] });
       fetchData();
     } catch (err) {
       setError(err.message);
@@ -862,11 +869,17 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
         scope = parsedAssigned.length > 0 ? 'custom' : 'all';
       }
     }
+    const rawLvl = s.support_level || s.permission_level || 1;
+    const digits = String(rawLvl).replace(/\D/g, '');
+    const pLvl = Math.min(Math.max(digits ? parseInt(digits, 10) : (typeof rawLvl === 'number' ? rawLvl : 1), 1), 4);
+    const sLvl = `Level ${pLvl}`;
+
     setEditSupportForm({
       username: s.username || '',
       full_name: s.full_name || '',
       email: s.email || '',
-      permission_level: s.permission_level || 1,
+      permission_level: pLvl,
+      support_level: sLvl,
       status: s.status || 'active',
       password: '',
       enable_ai_assistant: s.enable_ai_assistant === 1 || s.enable_ai_assistant === true,
@@ -886,6 +899,11 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
       setError('Please select at least one company to assign, or choose "All Companies".');
       return;
     }
+    const rawLvl = editSupportForm.support_level || editSupportForm.permission_level || 1;
+    const digits = String(rawLvl).replace(/\D/g, '');
+    const pLvl = Math.min(Math.max(digits ? parseInt(digits, 10) : (typeof rawLvl === 'number' ? rawLvl : 1), 1), 4);
+    const sLvl = `Level ${pLvl}`;
+
     try {
       await apiRequest(`/support/users/${editingSupportId}`, {
         method: 'PUT',
@@ -893,7 +911,8 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           username: editSupportForm.username.trim(),
           full_name: editSupportForm.full_name.trim(),
           email: editSupportForm.email ? editSupportForm.email.trim() : null,
-          permission_level: parseInt(editSupportForm.permission_level, 10),
+          permission_level: pLvl,
+          support_level: sLvl,
           status: editSupportForm.status,
           password: editSupportForm.password ? editSupportForm.password.trim() : undefined,
           enable_ai_assistant: editSupportForm.enable_ai_assistant === true,
@@ -901,7 +920,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
           assigned_companies: assigned
         }
       });
-      setSuccess(`Support account "${editSupportForm.username}" updated successfully.`);
+      setSuccess(`Support account "${editSupportForm.username}" updated successfully with ${sLvl}.`);
       setShowEditSupport(false);
       fetchData();
     } catch (err) {
@@ -2607,15 +2626,40 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                       </td>
                       <td className="p-3 font-mono text-purple-600">{s.username}</td>
                       <td className="p-3">
-                        <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 font-bold">
-                          Level {s.permission_level}
-                        </span>
+                        {(() => {
+                          const lvl = parseInt(String(s.support_level || s.permission_level || 1).replace(/\D/g, ''), 10) || 1;
+                          return (
+                            <span className={`px-2.5 py-1 rounded-md text-xs font-bold inline-flex items-center gap-1 shadow-sm ${
+                              lvl === 4
+                                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-purple-200'
+                                : lvl === 3
+                                ? 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                                : lvl === 2
+                                ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200'
+                            }`}>
+                              {lvl === 4 && <ShieldCheck className="w-3.5 h-3.5" />}
+                              Level {lvl}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="p-3 text-slate-600">
-                        {s.permission_level === 1 && 'Level 1 – View Only'}
-                        {s.permission_level === 2 && 'Level 2 – Edit Employee & Attendance'}
-                        {s.permission_level === 3 && 'Level 3 – Advanced (Device Unlock & Attendance Correction)'}
-                        {s.permission_level === 4 && 'Level 4 – Full Support Authority'}
+                        {(() => {
+                          const lvl = parseInt(String(s.support_level || s.permission_level || 1).replace(/\D/g, ''), 10) || 1;
+                          return (
+                            <div className="text-xs">
+                              {lvl === 1 && <span className="text-slate-600">Level 1 – View Only (Reports & Monitoring)</span>}
+                              {lvl === 2 && <span className="text-blue-700 font-medium">Level 2 – Operator (Edit Employee, Shifts & Attendance)</span>}
+                              {lvl === 3 && <span className="text-indigo-700 font-medium">Level 3 – Advanced (Device Unlock & Corrections)</span>}
+                              {lvl === 4 && (
+                                <span className="font-semibold text-purple-700 flex items-center gap-1">
+                                  <span>Level 4 – Full Authority (Device Unlock, Biometrics Reset, Remote Session, Realtime Sync)</span>
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="p-3">
                         {(() => {
@@ -4338,17 +4382,33 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 </div>
 
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Support Permission Level *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700 text-xs">Support Level / Permission Level *</label>
+                    <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                      Level {newSupport.permission_level || 4}
+                    </span>
+                  </div>
                   <select
                     value={newSupport.permission_level}
-                    onChange={(e) => setNewSupport({ ...newSupport, permission_level: parseInt(e.target.value, 10) })}
-                    className="w-full px-3 py-2 border rounded-lg bg-white focus:ring-1 focus:ring-purple-500"
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      setNewSupport({ ...newSupport, permission_level: val, support_level: `Level ${val}` });
+                    }}
+                    className="w-full px-3 py-2 border rounded-lg bg-white focus:ring-1 focus:ring-purple-500 font-medium text-slate-800"
                   >
-                    <option value={1}>Level 1 – View Only Support</option>
-                    <option value={2}>Level 2 – Edit Employee & Attendance</option>
-                    <option value={3}>Level 3 – Advanced (Device Unlock & Attendance Correction)</option>
-                    <option value={4}>Level 4 – Full Support Authority</option>
+                    <option value={1}>Level 1 – View Only Support (Audit Logs & Read-only Access)</option>
+                    <option value={2}>Level 2 – Operator Support (Edit Employee, Shifts & Attendance)</option>
+                    <option value={3}>Level 3 – Advanced Support (Device Unlock & Attendance Correction)</option>
+                    <option value={4}>Level 4 – Full Support Authority (Device Unlock, Biometrics Reset, Remote Session, Realtime Sync)</option>
                   </select>
+                  {parseInt(newSupport.permission_level, 10) === 4 && (
+                    <div className="mt-1.5 p-2.5 rounded-lg bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 text-[11px] text-purple-900 flex items-start gap-2 shadow-sm">
+                      <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong>Level 4 Full Authority Active:</strong> User is granted highest privilege support level including Device Unbinding, Biometric Reset, Remote Support Sessions, Attendance Adjustments, and Live Audit Trail. Stored as Level 4 with automated Firebase Firestore &amp; RTDB real-time sync.
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Assign Company Scope Selection */}
@@ -5017,8 +5077,11 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     <label className="font-semibold text-slate-700 block mb-1">Support Level *</label>
                     <select
                       value={editSupportForm.permission_level}
-                      onChange={(e) => setEditSupportForm({ ...editSupportForm, permission_level: parseInt(e.target.value, 10) })}
-                      className="w-full px-2.5 py-2 border rounded-lg bg-white"
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setEditSupportForm({ ...editSupportForm, permission_level: val, support_level: `Level ${val}` });
+                      }}
+                      className="w-full px-2.5 py-2 border rounded-lg bg-white font-medium"
                     >
                       <option value={1}>Level 1 – View Only</option>
                       <option value={2}>Level 2 – Edit Attendance</option>
@@ -5038,6 +5101,12 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     </select>
                   </div>
                 </div>
+                {parseInt(editSupportForm.permission_level, 10) === 4 && (
+                  <div className="p-2 rounded-lg bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 text-[11px] text-purple-900 flex items-start gap-1.5 shadow-sm">
+                    <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
+                    <span><strong>Level 4 Full Authority Active:</strong> User possesses complete permissions for live audit reports, biometric reset, device unlock, and immediate Firebase realtime synchronization.</span>
+                  </div>
+                )}
 
                 {/* Assign Company Scope Selection */}
                 <div className="p-3.5 rounded-xl border border-purple-100 bg-purple-50/40 space-y-2.5">

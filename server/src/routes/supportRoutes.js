@@ -25,6 +25,10 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
       db.prepare("ALTER TABLE support_users ADD COLUMN enable_audit_logs INTEGER DEFAULT 1").run();
       hasAuditCol = true;
     }
+    if (!cols.some(c => c.name === 'support_level')) {
+      db.prepare("ALTER TABLE support_users ADD COLUMN support_level TEXT DEFAULT 'Level 1'").run();
+      db.prepare("UPDATE support_users SET support_level = 'Level ' || COALESCE(permission_level, 1)").run();
+    }
   } catch (e) {
     hasAiCol = false;
     hasAuditCol = false;
@@ -34,7 +38,9 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const auditSelect = hasAuditCol ? 'COALESCE(s.enable_audit_logs, 1)' : '1';
   const users = db.prepare(`
     SELECT u.id as user_id, u.username, u.email, u.status, u.created_at, u.last_login_at,
-           s.id as support_id, s.full_name, s.permission_level, s.device_status, ${aiSelect} as enable_ai_assistant,
+           s.id as support_id, s.full_name, s.permission_level,
+           COALESCE(s.support_level, 'Level ' || s.permission_level) as support_level,
+           s.device_status, ${aiSelect} as enable_ai_assistant,
            ${auditSelect} as enable_audit_logs,
            COALESCE(s.assigned_companies, 'all') as assigned_companies
     FROM users u
@@ -51,7 +57,7 @@ router.get('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
 
 // Create Support Account (Super Admin only)
 router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
-  const { full_name, username, password, email, permission_level, enable_ai_assistant, enable_audit_logs, assigned_companies } = req.body;
+  const { full_name, username, password, email, permission_level, support_level, enable_ai_assistant, enable_audit_logs, assigned_companies } = req.body;
 
   if (!full_name || !username || !password) {
     return res.status(400).json({ error: 'Full Name, Username, and Password are required.' });
@@ -64,7 +70,10 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
 
   const roleSupport = db.prepare("SELECT id FROM roles WHERE name = 'support'").get();
   const passHash = bcrypt.hashSync(password, 10);
-  const pLevel = Math.min(Math.max(parseInt(permission_level || 1, 10), 1), 4);
+  const rawLvl = support_level || permission_level || 1;
+  const digits = String(rawLvl).replace(/\D/g, '');
+  const pLevel = Math.min(Math.max(digits ? parseInt(digits, 10) : (typeof rawLvl === 'number' ? rawLvl : 1), 1), 4);
+  const sLevelStr = `Level ${pLevel}`;
   const aiEnabled = enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0;
   const auditLogsEnabled = enable_audit_logs === false || enable_audit_logs === 0 || enable_audit_logs === 'false' ? 0 : 1;
 
@@ -100,9 +109,9 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
     createdUserId = userRes.lastInsertRowid;
 
     const supportRes = db.prepare(`
-      INSERT INTO support_users (user_id, full_name, permission_level, device_status, enable_ai_assistant, enable_audit_logs, assigned_companies)
-      VALUES (?, ?, ?, 'active', ?, ?, ?)
-    `).run(createdUserId, full_name.trim(), pLevel, aiEnabled, auditLogsEnabled, assignedCompVal);
+      INSERT INTO support_users (user_id, full_name, permission_level, support_level, device_status, enable_ai_assistant, enable_audit_logs, assigned_companies)
+      VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
+    `).run(createdUserId, full_name.trim(), pLevel, sLevelStr, aiEnabled, auditLogsEnabled, assignedCompVal);
 
     createdSupportId = supportRes.lastInsertRowid;
 
@@ -114,7 +123,7 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
       action: 'SUPPORT_USER_CREATED',
       targetEntity: 'support_users',
       targetId: supportRes.lastInsertRowid,
-      newValues: { username, full_name, permission_level: pLevel, enable_audit_logs: auditLogsEnabled, assigned_companies: assignedCompVal },
+      newValues: { username, full_name, permission_level: pLevel, support_level: sLevelStr, enable_audit_logs: auditLogsEnabled, assigned_companies: assignedCompVal },
       reason: 'Created new support team member'
     });
   });
@@ -140,6 +149,9 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
       username: username.trim(),
       email,
       permission_level: pLevel,
+      permissionLevel: pLevel,
+      support_level: sLevelStr,
+      supportLevel: sLevelStr,
       device_status: 'active',
       enable_ai_assistant: aiEnabled,
       enable_audit_logs: auditLogsEnabled,
@@ -148,16 +160,16 @@ router.post('/users', verifyAuth, requireRole(['super_admin']), (req, res) => {
     }).catch(() => {});
   } catch (e) {}
 
-  res.status(201).json({ success: true, supportId: createdSupportId, userId: createdUserId, message: 'Support account created successfully.' });
+  res.status(201).json({ success: true, supportId: createdSupportId, userId: createdUserId, supportLevel: sLevelStr, permissionLevel: pLevel, message: 'Support account created successfully.' });
 });
 
 // Update Support Account & Permission Level (Super Admin only)
 router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) => {
   const userId = parseInt(req.params.id, 10);
-  const { username, full_name, email, permission_level, status, password, enable_ai_assistant, enable_audit_logs, assigned_companies } = req.body;
+  const { username, full_name, email, permission_level, support_level, status, password, enable_ai_assistant, enable_audit_logs, assigned_companies } = req.body;
 
   const currentSupport = db.prepare(`
-    SELECT u.*, s.id as support_id, s.permission_level, s.full_name, s.enable_ai_assistant, s.enable_audit_logs, s.assigned_companies
+    SELECT u.*, s.id as support_id, s.permission_level, s.support_level, s.full_name, s.enable_ai_assistant, s.enable_audit_logs, s.assigned_companies
     FROM users u
     JOIN support_users s ON u.id = s.user_id
     WHERE u.id = ?
@@ -179,7 +191,16 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
   let updatedEmail = email !== undefined ? (email ? email.trim() : null) : currentSupport.email;
   let updatedStatus = status || currentSupport.status;
   let updatedName = (full_name && full_name.trim()) ? full_name.trim() : currentSupport.full_name;
-  let pLevel = permission_level ? Math.min(Math.max(parseInt(permission_level, 10), 1), 4) : currentSupport.permission_level;
+
+  let pLevel = currentSupport.permission_level || 1;
+  if (support_level !== undefined || permission_level !== undefined) {
+    const rawLvl = support_level !== undefined ? support_level : permission_level;
+    const digits = String(rawLvl).replace(/\D/g, '');
+    pLevel = digits ? parseInt(digits, 10) : (typeof rawLvl === 'number' ? rawLvl : pLevel);
+    pLevel = Math.min(Math.max(pLevel, 1), 4);
+  }
+  const sLevelStr = `Level ${pLevel}`;
+
   let aiEnabled = enable_ai_assistant !== undefined
     ? (enable_ai_assistant === true || enable_ai_assistant === 1 || enable_ai_assistant === 'true' ? 1 : 0)
     : (currentSupport.enable_ai_assistant || 0);
@@ -232,11 +253,12 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
       UPDATE support_users SET
         full_name = ?,
         permission_level = ?,
+        support_level = ?,
         enable_ai_assistant = ?,
         enable_audit_logs = ?,
         assigned_companies = ?
       WHERE user_id = ?
-    `).run(updatedName, pLevel, aiEnabled, auditLogsEnabled, updatedAssignedComp, userId);
+    `).run(updatedName, pLevel, sLevelStr, aiEnabled, auditLogsEnabled, updatedAssignedComp, userId);
 
     logAudit({
       userId: req.user.id,
@@ -246,8 +268,8 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
       action: 'SUPPORT_USER_UPDATED',
       targetEntity: 'support_users',
       targetId: userId,
-      oldValues: { username: currentSupport.username, full_name: currentSupport.full_name, permission_level: currentSupport.permission_level, status: currentSupport.status, enable_audit_logs: currentSupport.enable_audit_logs, assigned_companies: currentSupport.assigned_companies },
-      newValues: { username: updatedUsername, full_name: updatedName, permission_level: pLevel, status: updatedStatus, enable_audit_logs: auditLogsEnabled, assigned_companies: updatedAssignedComp },
+      oldValues: { username: currentSupport.username, full_name: currentSupport.full_name, permission_level: currentSupport.permission_level, support_level: currentSupport.support_level, status: currentSupport.status, enable_audit_logs: currentSupport.enable_audit_logs, assigned_companies: currentSupport.assigned_companies },
+      newValues: { username: updatedUsername, full_name: updatedName, permission_level: pLevel, support_level: sLevelStr, status: updatedStatus, enable_audit_logs: auditLogsEnabled, assigned_companies: updatedAssignedComp },
       reason: 'Support user master attributes updated'
     });
   });
@@ -272,6 +294,9 @@ router.put('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res) =>
       username: updatedUsername,
       email: updatedEmail,
       permission_level: pLevel,
+      permissionLevel: pLevel,
+      support_level: sLevelStr,
+      supportLevel: sLevelStr,
       enable_ai_assistant: aiEnabled,
       enable_audit_logs: auditLogsEnabled,
       assigned_companies: updatedAssignedComp,

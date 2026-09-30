@@ -147,6 +147,11 @@ function seedDatabase() {
       db.prepare("ALTER TABLE support_users ADD COLUMN enable_ai_assistant INTEGER DEFAULT 0").run();
       console.log('Migration: Ensured enable_ai_assistant column in support_users.');
     }
+    if (supColsAfter.length > 0 && !supColsAfter.some(c => c.name === 'support_level')) {
+      db.prepare("ALTER TABLE support_users ADD COLUMN support_level TEXT DEFAULT 'Level 1'").run();
+      db.prepare("UPDATE support_users SET support_level = 'Level ' || COALESCE(permission_level, 1)").run();
+      console.log('Migration: Ensured support_level column in support_users.');
+    }
     const ltCols = db.prepare("PRAGMA table_info(leave_transactions)").all();
     if (ltCols.length > 0 && !ltCols.some(c => c.name === 'period_month')) {
       db.prepare("ALTER TABLE leave_transactions ADD COLUMN period_month INTEGER").run();

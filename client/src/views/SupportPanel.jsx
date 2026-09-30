@@ -280,7 +280,8 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [remoteAlertData, setRemoteAlertData] = useState({ title: '', message: '' });
   const [remoteSimulatePortal, setRemoteSimulatePortal] = useState(false);
 
-  const pLevel = user.role === 'super_admin' ? 4 : Number(user.supportLevel ?? user.support_level ?? 1);
+  const rawLvl = user?.permission_level ?? user?.permissionLevel ?? user?.supportLevel ?? user?.support_level ?? 1;
+  const pLevel = user?.role === 'super_admin' ? 4 : (typeof rawLvl === 'number' ? rawLvl : parseInt(String(rawLvl).replace(/\D/g, '') || '1', 10));
   const canAccessAuditLogs = user?.role === 'super_admin' || (user?.enable_audit_logs !== false && user?.enable_audit_logs !== 0);
 
   const fetchAuditReports = async () => {

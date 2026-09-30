@@ -36,6 +36,13 @@ try {
 } catch (e) {}
 
 try {
+  db.prepare("ALTER TABLE support_users ADD COLUMN support_level TEXT DEFAULT 'Level 1'").run();
+} catch (e) {}
+try {
+  db.prepare("UPDATE support_users SET support_level = 'Level ' || COALESCE(permission_level, 1) WHERE support_level IS NULL OR support_level = ''").run();
+} catch (e) {}
+
+try {
   db.prepare("ALTER TABLE service_requests ADD COLUMN assigned_role TEXT DEFAULT 'manager'").run();
 } catch (e) {}
 

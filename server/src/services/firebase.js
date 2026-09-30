@@ -641,6 +641,17 @@ async function syncSupportUser(supportUser) {
   try {
     const userId = supportUser.user_id || supportUser.id;
     const assigned = supportUser.assigned_companies || supportUser.assignedCompanies || 'all';
+    const rawLvl = supportUser.support_level || supportUser.supportLevel || supportUser.permission_level || supportUser.permissionLevel || 1;
+    let pLevel = 1;
+    if (typeof rawLvl === 'number') {
+      pLevel = rawLvl;
+    } else {
+      const digits = String(rawLvl).replace(/\D/g, '');
+      pLevel = digits ? parseInt(digits, 10) : 1;
+    }
+    pLevel = Math.min(Math.max(pLevel, 1), 4);
+    const sLevelStr = `Level ${pLevel}`;
+
     const payload = {
       id: supportUser.id || userId,
       userId: userId,
@@ -649,8 +660,10 @@ async function syncSupportUser(supportUser) {
       full_name: supportUser.full_name || supportUser.fullName || '',
       username: supportUser.username || '',
       email: supportUser.email || '',
-      permissionLevel: supportUser.permission_level || 1,
-      permission_level: supportUser.permission_level || 1,
+      permissionLevel: pLevel,
+      permission_level: pLevel,
+      supportLevel: sLevelStr,
+      support_level: sLevelStr,
       deviceStatus: supportUser.device_status || 'active',
       device_status: supportUser.device_status || 'active',
       enableAiAssistant: supportUser.enable_ai_assistant === 1 || supportUser.enable_ai_assistant === true,
@@ -3420,22 +3433,37 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
             `).run(targetUserId);
           }
         } else if (roleName === 'support') {
-          const suDoc = supportUsersMap.get(String(targetUserId)) || supportUsersMap.get(String(u.id)) || {};
-          const pLevel = suDoc.permission_level || suDoc.permissionLevel || 3;
+          const suDoc = supportUsersMap.get(String(targetUserId))
+            || supportUsersMap.get(String(u.id))
+            || Array.from(supportUsersMap.values()).find(s => String(s.userId || s.user_id) === String(targetUserId) || (s.username && s.username.toLowerCase() === originalUsername.toLowerCase()))
+            || {};
+
+          const rawLvl = suDoc.support_level || suDoc.supportLevel || suDoc.permission_level || suDoc.permissionLevel || u.support_level || u.supportLevel || u.permission_level || 1;
+          let pLevel = 1;
+          if (typeof rawLvl === 'number') {
+            pLevel = rawLvl;
+          } else {
+            const digits = String(rawLvl).replace(/\D/g, '');
+            pLevel = digits ? parseInt(digits, 10) : 1;
+          }
+          pLevel = Math.min(Math.max(pLevel, 1), 4);
+          const sLevelStr = `Level ${pLevel}`;
+
           const assigned = suDoc.assigned_companies || suDoc.assignedCompanies || u.assigned_companies || u.assignedCompanies || 'all';
           const assignedStr = typeof assigned === 'object' ? JSON.stringify(assigned) : String(assigned);
           const aiEnabled = (suDoc.enable_ai_assistant === true || suDoc.enable_ai_assistant === 1 || suDoc.enableAiAssistant === true) ? 1 : 0;
+          const auditLogsEnabled = (suDoc.enable_audit_logs === false || suDoc.enable_audit_logs === 0 || suDoc.enableAuditLogs === false) ? 0 : 1;
           const fName = suDoc.full_name || suDoc.fullName || u.full_name || u.fullName || 'Technical Support Specialist';
 
           const existingSupport = db.prepare('SELECT id FROM support_users WHERE user_id = ?').get(targetUserId);
           if (existingSupport) {
-            db.prepare('UPDATE support_users SET permission_level = ?, full_name = ?, assigned_companies = ?, enable_ai_assistant = ? WHERE id = ?')
-              .run(pLevel, fName, assignedStr, aiEnabled, existingSupport.id);
+            db.prepare('UPDATE support_users SET permission_level = ?, support_level = ?, full_name = ?, assigned_companies = ?, enable_ai_assistant = ?, enable_audit_logs = ? WHERE id = ?')
+              .run(pLevel, sLevelStr, fName, assignedStr, aiEnabled, auditLogsEnabled, existingSupport.id);
           } else {
             db.prepare(`
-              INSERT INTO support_users (user_id, full_name, permission_level, assigned_companies, enable_ai_assistant)
-              VALUES (?, ?, ?, ?, ?)
-            `).run(targetUserId, fName, pLevel, assignedStr, aiEnabled);
+              INSERT INTO support_users (user_id, full_name, permission_level, support_level, assigned_companies, enable_ai_assistant, enable_audit_logs)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(targetUserId, fName, pLevel, sLevelStr, assignedStr, aiEnabled, auditLogsEnabled);
           }
         }
 

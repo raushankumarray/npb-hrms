@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS support_users (
   user_id INTEGER UNIQUE NOT NULL,
   full_name TEXT NOT NULL,
   permission_level INTEGER DEFAULT 1 CHECK(permission_level BETWEEN 1 AND 4),
+  support_level TEXT DEFAULT 'Level 1',
   device_status TEXT DEFAULT 'active',
   enable_ai_assistant INTEGER DEFAULT 0,
   assigned_companies TEXT DEFAULT 'all',
