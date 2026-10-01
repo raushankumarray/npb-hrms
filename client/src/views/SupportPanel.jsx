@@ -199,16 +199,65 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [attSearch, setAttSearch] = useState('');
   const [showManualPunchModal, setShowManualPunchModal] = useState(false);
   const [employeesList, setEmployeesList] = useState([]);
+  const [workingHoursSetting, setWorkingHoursSetting] = useState(9.0);
+  const [savingAttendance, setSavingAttendance] = useState(false);
   const [manualPunchForm, setManualPunchForm] = useState({
     employee_id: '',
     date: new Date().toISOString().slice(0, 10),
     correction_type: 'both',
     punch_in_time: '09:00:00',
     punch_out_time: '18:00:00',
-    status: 'Present',
+    status: 'auto',
     reason: '',
     remarks: ''
   });
+
+  // Helper to compute worked duration and auto-derive status based on working hours threshold (e.g. 9 hrs)
+  const computeWorkedHoursAndStatus = (punchIn, punchOut, targetHrs = 9.0) => {
+    if (!punchIn || !punchOut) {
+      if (punchIn && !punchOut) {
+        return { hours: 0, status: 'Present', code: 'P', label: 'Punch In Recorded (Day in progress)' };
+      }
+      if (!punchIn && punchOut) {
+        return { hours: 0, status: 'Absent', code: 'A', label: 'Missing Punch In' };
+      }
+      return { hours: 0, status: 'Absent', code: 'A', label: 'No punch logged' };
+    }
+    const [h1, m1, s1 = 0] = String(punchIn).split(':').map(Number);
+    const [h2, m2, s2 = 0] = String(punchOut).split(':').map(Number);
+    if (isNaN(h1) || isNaN(m1) || isNaN(h2) || isNaN(m2)) {
+      return { hours: 0, status: 'Present', code: 'P', label: 'Invalid Time' };
+    }
+    let totalSeconds = (h2 * 3600 + m2 * 60 + (s2 || 0)) - (h1 * 3600 + m1 * 60 + (s1 || 0));
+    if (totalSeconds < 0) {
+      totalSeconds += 24 * 3600; // Crosses midnight
+    }
+    const hours = Math.round((totalSeconds / 3600) * 100) / 100;
+    const fullDayThreshold = targetHrs ? Number(targetHrs) : 9.0;
+    const halfDayThreshold = fullDayThreshold / 2;
+
+    let status = 'Absent';
+    let code = 'A';
+    if (hours >= fullDayThreshold) {
+      status = 'Present';
+      code = 'P';
+    } else if (hours >= halfDayThreshold) {
+      status = 'Half Day';
+      code = 'HD';
+    } else {
+      status = 'Absent';
+      code = 'A';
+    }
+
+    return {
+      hours,
+      status,
+      code,
+      fullDayThreshold,
+      halfDayThreshold,
+      label: `${hours.toFixed(2)} hrs (${status} - ${code})`
+    };
+  };
 
   // On-Demand Attendance Filter States (no auto load on mount)
   const [attHasFiltered, setAttHasFiltered] = useState(false);
@@ -703,12 +752,17 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       return;
     }
 
+    setSavingAttendance(true);
+    setError('');
+    setSuccess('');
     try {
       const mode = attEditForm.correction_type || 'both';
       const payload = {
         reason: attEditForm.reason.trim(),
         remarks: attEditForm.remarks || undefined,
-        status: attEditForm.status
+        status: attEditForm.status || 'auto',
+        correction_type: mode,
+        target_working_hours: workingHoursSetting || 9.0
       };
 
       if (mode === 'in' || mode === 'both') {
@@ -718,13 +772,14 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         payload.punch_out_time = attEditForm.punch_out_time || null;
       }
 
+      let res;
       if (selectedAtt?.id) {
-        await apiRequest(`/attendance/correct/${selectedAtt.id}`, {
+        res = await apiRequest(`/attendance/correct/${selectedAtt.id}`, {
           method: 'PUT',
           body: payload
         });
       } else if (selectedAtt?.employee_id && selectedAtt?.date) {
-        await apiRequest('/attendance/manual', {
+        res = await apiRequest('/attendance/manual', {
           method: 'POST',
           body: {
             ...payload,
@@ -737,7 +792,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         throw new Error('No attendance record selected.');
       }
 
-      setSuccess('Attendance record corrected and audit log recorded.');
+      setSuccess(res.message || 'Attendance record corrected and audit log recorded.');
       setEditAttendanceModal(false);
       fetchData();
       if (attHasFiltered) {
@@ -746,8 +801,17 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       if (selectedUserDiag) {
         handlePerformSearch(selectedUserDiag.username);
       }
+
+      // Realtime cross-tab sync to Employee, Manager, and Company Admin panels
+      try {
+        const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+        bc.postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSavingAttendance(false);
     }
   };
 
@@ -766,14 +830,19 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       return;
     }
 
+    setSavingAttendance(true);
+    setError('');
+    setSuccess('');
     try {
       const mode = manualPunchForm.correction_type || 'both';
       const payload = {
         employee_id: manualPunchForm.employee_id,
         date: manualPunchForm.date,
-        status: manualPunchForm.status,
+        status: manualPunchForm.status || 'auto',
         reason: manualPunchForm.reason.trim(),
-        remarks: manualPunchForm.remarks || undefined
+        remarks: manualPunchForm.remarks || undefined,
+        correction_type: mode,
+        target_working_hours: workingHoursSetting || 9.0
       };
 
       if (mode === 'in' || mode === 'both') {
@@ -783,20 +852,20 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         payload.punch_out_time = manualPunchForm.punch_out_time || null;
       }
 
-      await apiRequest('/attendance/manual', {
+      const res = await apiRequest('/attendance/manual', {
         method: 'POST',
         body: payload
       });
 
-      setSuccess('Manual attendance/punch recorded successfully.');
+      setSuccess(res.message || 'Manual attendance/punch recorded successfully.');
       setShowManualPunchModal(false);
       setManualPunchForm({
         employee_id: '',
-        date: new Date().toISOString().slice(0, 10),
+        date: attFilterDate || new Date().toISOString().slice(0, 10),
         correction_type: 'both',
         punch_in_time: '09:00:00',
         punch_out_time: '18:00:00',
-        status: 'Present',
+        status: 'auto',
         reason: '',
         remarks: ''
       });
@@ -804,8 +873,17 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       if (attHasFiltered) {
         handleApplyAttendanceFilter();
       }
+
+      // Realtime cross-tab sync to Employee, Manager, and Company Admin panels
+      try {
+        const bc = new BroadcastChannel('npb_hrms_attendance_sync');
+        bc.postMessage({ type: 'ATTENDANCE_UPDATED', timestamp: Date.now() });
+        bc.close();
+      } catch (e) {}
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSavingAttendance(false);
     }
   };
 
@@ -2651,7 +2729,539 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         </div>
       )}
 
-            {/* TICKET CONVERSATION / CHAT MODAL */}
+      {/* MODAL 1: CORRECT ATTENDANCE PUNCH (L2+) */}
+      {editAttendanceModal && selectedAtt && (() => {
+        const effectiveIn = attEditForm.correction_type === 'out' ? selectedAtt.punch_in_time : attEditForm.punch_in_time;
+        const effectiveOut = attEditForm.correction_type === 'in' ? selectedAtt.punch_out_time : attEditForm.punch_out_time;
+        const preview = computeWorkedHoursAndStatus(effectiveIn, effectiveOut, workingHoursSetting);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-5">
+              {/* Header */}
+              <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-600 border border-amber-500/20 shrink-0">
+                    <Clock className="w-5 h-5 text-amber-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Correct Attendance Punch</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {selectedAtt.employee_name} ({selectedAtt.employee_code || `EMP #${selectedAtt.employee_id}`}) • {selectedAtt.company_name || 'Assigned Company'}
+                    </p>
+                    <div className="inline-flex items-center gap-1.5 mt-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-mono font-semibold">
+                      <Calendar className="w-3 h-3 text-slate-500" />
+                      <span>Date: {selectedAtt.date}</span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditAttendanceModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleSaveAttendanceCorrection} className="space-y-4 text-xs">
+                {/* Modification Scope Options */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1.5">
+                    What would you like to modify? *
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAttEditForm({ ...attEditForm, correction_type: 'in' })}
+                      className={`p-2.5 rounded-xl border text-center font-bold transition-all flex flex-col items-center gap-1 ${
+                        attEditForm.correction_type === 'in'
+                          ? 'bg-amber-50 border-amber-500 text-amber-900 shadow-xs ring-1 ring-amber-500'
+                          : 'bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="text-[11px]">Punch In Only</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAttEditForm({ ...attEditForm, correction_type: 'out' })}
+                      className={`p-2.5 rounded-xl border text-center font-bold transition-all flex flex-col items-center gap-1 ${
+                        attEditForm.correction_type === 'out'
+                          ? 'bg-amber-50 border-amber-500 text-amber-900 shadow-xs ring-1 ring-amber-500'
+                          : 'bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="text-[11px]">Punch Out Only</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAttEditForm({ ...attEditForm, correction_type: 'both' })}
+                      className={`p-2.5 rounded-xl border text-center font-bold transition-all flex flex-col items-center gap-1 ${
+                        attEditForm.correction_type === 'both'
+                          ? 'bg-amber-50 border-amber-500 text-amber-900 shadow-xs ring-1 ring-amber-500'
+                          : 'bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="text-[11px]">Both (In & Out)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Punch In & Punch Out Inputs */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                  {/* Punch In */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-slate-700 flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <span>Punch In Time</span>
+                      </label>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        Orig: {selectedAtt.punch_in_time || 'None'}
+                      </span>
+                    </div>
+                    <input
+                      type="time"
+                      step="1"
+                      disabled={attEditForm.correction_type === 'out'}
+                      value={attEditForm.punch_in_time || ''}
+                      onChange={(e) => setAttEditForm({ ...attEditForm, punch_in_time: e.target.value })}
+                      className={`w-full px-3 py-2 border rounded-xl font-mono text-xs focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 ${
+                        attEditForm.correction_type === 'out' ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white text-slate-900'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Punch Out */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-slate-700 flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-sky-500" />
+                        <span>Punch Out Time</span>
+                      </label>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        Orig: {selectedAtt.punch_out_time || 'None'}
+                      </span>
+                    </div>
+                    <input
+                      type="time"
+                      step="1"
+                      disabled={attEditForm.correction_type === 'in'}
+                      value={attEditForm.punch_out_time || ''}
+                      onChange={(e) => setAttEditForm({ ...attEditForm, punch_out_time: e.target.value })}
+                      className={`w-full px-3 py-2 border rounded-xl font-mono text-xs focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 ${
+                        attEditForm.correction_type === 'in' ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white text-slate-900'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Working Hours Threshold & Live Calculation Preview */}
+                <div className="p-3.5 rounded-xl bg-gradient-to-r from-amber-500/5 via-orange-500/5 to-amber-500/5 border border-amber-200/80 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="font-bold text-amber-950 flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Shift Working Hours Threshold:</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        step="0.5"
+                        value={workingHoursSetting}
+                        onChange={(e) => setWorkingHoursSetting(parseFloat(e.target.value) || 9.0)}
+                        className="w-16 px-2 py-1 border border-amber-300 rounded-lg text-xs font-mono font-bold text-amber-900 bg-white text-center focus:ring-1 focus:ring-amber-500"
+                      />
+                      <span className="text-[11px] text-amber-800 font-semibold">hrs/day</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 border-t border-amber-200/40 text-[11px]">
+                    <div className="bg-white/80 p-2 rounded-lg border border-amber-100">
+                      <span className="text-slate-400 block text-[10px]">Calculated Hours:</span>
+                      <strong className="text-slate-900 font-mono text-xs">{preview.hours.toFixed(2)} hrs</strong>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-amber-100">
+                      <span className="text-slate-400 block text-[10px]">Rule Thresholds:</span>
+                      <span className="text-slate-700 font-mono text-[10px]">Full: {preview.fullDayThreshold}h | Half: {preview.halfDayThreshold}h</span>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-amber-100 col-span-2 sm:col-span-1">
+                      <span className="text-slate-400 block text-[10px]">Auto Status:</span>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        preview.status === 'Present'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          : preview.status === 'Half Day'
+                          ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                          : 'bg-rose-100 text-rose-800 border border-rose-200'
+                      }`}>
+                        {preview.status} ({preview.code})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Status Selector */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Attendance Status to Apply *
+                  </label>
+                  <select
+                    value={attEditForm.status || 'auto'}
+                    onChange={(e) => setAttEditForm({ ...attEditForm, status: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs font-semibold bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  >
+                    <option value="auto">
+                      ⚡ Auto Calculate as per Shift / Working Hours ({preview.status} - {preview.code})
+                    </option>
+                    <option value="Present">Present (P) - Full Day</option>
+                    <option value="Half Day">Half Day (HD) - Half Day</option>
+                    <option value="Absent">Absent (A)</option>
+                  </select>
+                </div>
+
+                {/* Audit Reason */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                    <span>Audit Reason *</span>
+                    <span className="text-[10px] font-normal text-rose-600">Mandatory for compliance</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Supervisor verified biometric device offline / regularized hours"
+                    value={attEditForm.reason}
+                    onChange={(e) => setAttEditForm({ ...attEditForm, reason: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  />
+                </div>
+
+                {/* Remarks */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Remarks <span className="font-normal text-slate-400">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Optional notes or supervisor comment"
+                    value={attEditForm.remarks}
+                    onChange={(e) => setAttEditForm({ ...attEditForm, remarks: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  />
+                </div>
+
+                {/* Modal Footer */}
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setEditAttendanceModal(false)}
+                    disabled={savingAttendance}
+                    className="px-4 py-2 text-slate-600 hover:text-slate-800 text-xs font-semibold rounded-xl"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingAttendance}
+                    className="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
+                  >
+                    {savingAttendance ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Updating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Update Attendance & Sync</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL 2: MANUAL PUNCH / ENTRY (L2+) */}
+      {showManualPunchModal && (() => {
+        const mEffectiveIn = manualPunchForm.correction_type === 'out' ? null : manualPunchForm.punch_in_time;
+        const mEffectiveOut = manualPunchForm.correction_type === 'in' ? null : manualPunchForm.punch_out_time;
+        const preview = computeWorkedHoursAndStatus(mEffectiveIn, mEffectiveOut, workingHoursSetting);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-5">
+              {/* Header */}
+              <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-orange-500/10 text-orange-600 border border-orange-500/20 shrink-0">
+                    <Plus className="w-5 h-5 text-orange-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Manual Attendance & Punch Entry</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Record a new attendance entry or manual punch with automatic working hours calculation
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowManualPunchModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleSaveManualPunch} className="space-y-4 text-xs">
+                {/* Employee Selector */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Select Employee *
+                  </label>
+                  <select
+                    required
+                    value={manualPunchForm.employee_id}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, employee_id: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs bg-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 font-medium"
+                  >
+                    <option value="">-- Choose Employee --</option>
+                    {employeesList.map(emp => (
+                      <option key={emp.id} value={emp.id}>
+                        [{emp.company_name || 'Company'}] {emp.full_name} ({emp.employee_id || `#${emp.id}`})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Date Input */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Attendance Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={manualPunchForm.date}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, date: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs font-mono bg-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
+                  />
+                </div>
+
+                {/* Modification Scope Options */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1.5">
+                    Punch Entry Type *
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setManualPunchForm({ ...manualPunchForm, correction_type: 'in' })}
+                      className={`p-2.5 rounded-xl border text-center font-bold transition-all flex flex-col items-center gap-1 ${
+                        manualPunchForm.correction_type === 'in'
+                          ? 'bg-orange-50 border-orange-500 text-orange-900 shadow-xs ring-1 ring-orange-500'
+                          : 'bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="text-[11px]">Punch In Only</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualPunchForm({ ...manualPunchForm, correction_type: 'out' })}
+                      className={`p-2.5 rounded-xl border text-center font-bold transition-all flex flex-col items-center gap-1 ${
+                        manualPunchForm.correction_type === 'out'
+                          ? 'bg-orange-50 border-orange-500 text-orange-900 shadow-xs ring-1 ring-orange-500'
+                          : 'bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="text-[11px]">Punch Out Only</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualPunchForm({ ...manualPunchForm, correction_type: 'both' })}
+                      className={`p-2.5 rounded-xl border text-center font-bold transition-all flex flex-col items-center gap-1 ${
+                        manualPunchForm.correction_type === 'both'
+                          ? 'bg-orange-50 border-orange-500 text-orange-900 shadow-xs ring-1 ring-orange-500'
+                          : 'bg-slate-50/60 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="text-[11px]">Both (In & Out)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Punch In & Punch Out Inputs */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                  {/* Punch In */}
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700 flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <span>Punch In Time</span>
+                    </label>
+                    <input
+                      type="time"
+                      step="1"
+                      disabled={manualPunchForm.correction_type === 'out'}
+                      value={manualPunchForm.punch_in_time || ''}
+                      onChange={(e) => setManualPunchForm({ ...manualPunchForm, punch_in_time: e.target.value })}
+                      className={`w-full px-3 py-2 border rounded-xl font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 ${
+                        manualPunchForm.correction_type === 'out' ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white text-slate-900'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Punch Out */}
+                  <div className="space-y-1">
+                    <label className="font-bold text-slate-700 flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-sky-500" />
+                      <span>Punch Out Time</span>
+                    </label>
+                    <input
+                      type="time"
+                      step="1"
+                      disabled={manualPunchForm.correction_type === 'in'}
+                      value={manualPunchForm.punch_out_time || ''}
+                      onChange={(e) => setManualPunchForm({ ...manualPunchForm, punch_out_time: e.target.value })}
+                      className={`w-full px-3 py-2 border rounded-xl font-mono text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 ${
+                        manualPunchForm.correction_type === 'in' ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white text-slate-900'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Working Hours Threshold & Live Calculation Preview */}
+                <div className="p-3.5 rounded-xl bg-gradient-to-r from-orange-500/5 via-amber-500/5 to-orange-500/5 border border-orange-200/80 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="font-bold text-orange-950 flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-orange-600" />
+                      <span>Shift Working Hours Threshold:</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        step="0.5"
+                        value={workingHoursSetting}
+                        onChange={(e) => setWorkingHoursSetting(parseFloat(e.target.value) || 9.0)}
+                        className="w-16 px-2 py-1 border border-orange-300 rounded-lg text-xs font-mono font-bold text-orange-900 bg-white text-center focus:ring-1 focus:ring-orange-500"
+                      />
+                      <span className="text-[11px] text-orange-800 font-semibold">hrs/day</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 border-t border-orange-200/40 text-[11px]">
+                    <div className="bg-white/80 p-2 rounded-lg border border-orange-100">
+                      <span className="text-slate-400 block text-[10px]">Calculated Hours:</span>
+                      <strong className="text-slate-900 font-mono text-xs">{preview.hours.toFixed(2)} hrs</strong>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-orange-100">
+                      <span className="text-slate-400 block text-[10px]">Rule Thresholds:</span>
+                      <span className="text-slate-700 font-mono text-[10px]">Full: {preview.fullDayThreshold}h | Half: {preview.halfDayThreshold}h</span>
+                    </div>
+                    <div className="bg-white/80 p-2 rounded-lg border border-orange-100 col-span-2 sm:col-span-1">
+                      <span className="text-slate-400 block text-[10px]">Auto Status:</span>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        preview.status === 'Present'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          : preview.status === 'Half Day'
+                          ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                          : 'bg-rose-100 text-rose-800 border border-rose-200'
+                      }`}>
+                        {preview.status} ({preview.code})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Status Selector */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Attendance Status to Apply *
+                  </label>
+                  <select
+                    value={manualPunchForm.status || 'auto'}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, status: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs font-semibold bg-white focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
+                  >
+                    <option value="auto">
+                      ⚡ Auto Calculate as per Shift / Working Hours ({preview.status} - {preview.code})
+                    </option>
+                    <option value="Present">Present (P) - Full Day</option>
+                    <option value="Half Day">Half Day (HD) - Half Day</option>
+                    <option value="Absent">Absent (A)</option>
+                  </select>
+                </div>
+
+                {/* Audit Reason */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                    <span>Audit Reason *</span>
+                    <span className="text-[10px] font-normal text-rose-600">Mandatory for compliance</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Employee manual punch entry requested via support desk"
+                    value={manualPunchForm.reason}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, reason: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
+                  />
+                </div>
+
+                {/* Remarks */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Remarks <span className="font-normal text-slate-400">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Optional notes or supervisor comment"
+                    value={manualPunchForm.remarks}
+                    onChange={(e) => setManualPunchForm({ ...manualPunchForm, remarks: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500"
+                  />
+                </div>
+
+                {/* Modal Footer */}
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowManualPunchModal(false)}
+                    disabled={savingAttendance}
+                    className="px-4 py-2 text-slate-600 hover:text-slate-800 text-xs font-semibold rounded-xl"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingAttendance}
+                    className="px-5 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
+                  >
+                    {savingAttendance ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Save Manual Punch & Sync</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* TICKET CONVERSATION / CHAT MODAL */}
       <TicketChatModal
         ticketId={chatTicketId}
         isOpen={showChatModal}

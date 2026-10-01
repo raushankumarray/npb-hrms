@@ -15,32 +15,72 @@ const { syncAttendancePunch, syncCompanyReports } = require('../services/firebas
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Helper to calculate total hours between two times "HH:MM:SS"
+// Helper to calculate total hours between two times "HH:MM:SS" or "HH:MM"
 function calculateHours(punchIn, punchOut) {
   if (!punchIn || !punchOut) return 0;
-  const [h1, m1, s1 = 0] = punchIn.split(':').map(Number);
-  const [h2, m2, s2 = 0] = punchOut.split(':').map(Number);
-  const totalSeconds = (h2 * 3600 + m2 * 60 + s2) - (h1 * 3600 + m1 * 60 + s1);
+  const [h1, m1, s1 = 0] = String(punchIn).split(':').map(Number);
+  const [h2, m2, s2 = 0] = String(punchOut).split(':').map(Number);
+  if (isNaN(h1) || isNaN(m1) || isNaN(h2) || isNaN(m2)) return 0;
+  let totalSeconds = (h2 * 3600 + m2 * 60 + (s2 || 0)) - (h1 * 3600 + m1 * 60 + (s1 || 0));
+  if (totalSeconds < 0) {
+    totalSeconds += 24 * 3600; // Midnight crossing support
+  }
   if (totalSeconds <= 0) return 0;
   return Math.round((totalSeconds / 3600) * 100) / 100;
 }
 
-// Helper to derive attendance status from working hours and company settings
-function deriveStatusFromHours(totalHours, companyId, explicitStatus = null) {
+// Helper to derive attendance status from working hours, shift settings, and company settings
+function deriveStatusFromHours(totalHours, companyId, shiftId = null, explicitStatus = null, targetWorkingHours = null) {
   if (['Leave', 'Holiday', 'Weekly Off', 'WO'].includes(explicitStatus)) {
     return explicitStatus;
   }
-  let halfDayMin = 4.0;
-  let fullDayMin = 8.0;
-  if (companyId) {
+  if (explicitStatus && explicitStatus !== 'auto') {
+    const norm = String(explicitStatus).trim().toLowerCase();
+    if (norm === 'p' || norm === 'present') return 'Present';
+    if (norm === 'hd' || norm === 'half day' || norm === 'half_day') return 'Half Day';
+    if (norm === 'a' || norm === 'absent') return 'Absent';
+    return explicitStatus;
+  }
+
+  let fullDayMin = targetWorkingHours ? Number(targetWorkingHours) : 9.0;
+  let halfDayMin = fullDayMin / 2;
+
+  // 1. Check shift settings if available
+  if (shiftId) {
     try {
-      const s = db.prepare('SELECT half_day_min_hours, full_day_min_hours FROM company_settings WHERE company_id = ?').get(companyId);
-      if (s) {
-        if (s.half_day_min_hours) halfDayMin = Number(s.half_day_min_hours);
-        if (s.full_day_min_hours) fullDayMin = Number(s.full_day_min_hours);
+      const sh = db.prepare('SELECT working_hours FROM shifts WHERE id = ?').get(shiftId);
+      if (sh && sh.working_hours && Number(sh.working_hours) > 0) {
+        fullDayMin = Number(sh.working_hours);
+        halfDayMin = fullDayMin / 2;
       }
     } catch (e) {}
   }
+
+  // 2. Check company settings if available
+  if (companyId) {
+    try {
+      const s = db.prepare('SELECT working_hours_per_day, half_day_min_hours, full_day_min_hours FROM company_settings WHERE company_id = ?').get(companyId);
+      if (s) {
+        if (s.working_hours_per_day && Number(s.working_hours_per_day) > 0) {
+          fullDayMin = Number(s.working_hours_per_day);
+          halfDayMin = fullDayMin / 2;
+        }
+        if (s.full_day_min_hours && Number(s.full_day_min_hours) > 0) {
+          fullDayMin = Number(s.full_day_min_hours);
+        }
+        if (s.half_day_min_hours && Number(s.half_day_min_hours) > 0) {
+          halfDayMin = Number(s.half_day_min_hours);
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 3. Explicit override of target working hours takes priority if provided
+  if (targetWorkingHours && Number(targetWorkingHours) > 0) {
+    fullDayMin = Number(targetWorkingHours);
+    halfDayMin = fullDayMin / 2;
+  }
+
   if (totalHours >= fullDayMin) return 'Present';
   if (totalHours >= halfDayMin) return 'Half Day';
   return 'Absent';
@@ -1415,20 +1455,21 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
     return res.status(403).json({ error: 'Unauthorized to manually edit attendance.' });
   }
 
-  // Support level check
-  if (req.user.role_name === 'support' && (req.user.support_level || 0) < 2) {
+  // Support level check (L2+ required)
+  const userSupportLevel = req.user.permission_level || (req.user.support_level ? parseInt(String(req.user.support_level).replace(/\D/g, '') || '1', 10) : 1);
+  if (req.user.role_name === 'support' && userSupportLevel < 2) {
     return res.status(403).json({ error: 'Support Level 2 or higher required to edit attendance.' });
   }
 
   const recordId = parseInt(req.params.id, 10);
-  const { punch_in_time, punch_out_time, status, reason, remarks, total_hours } = req.body;
+  const { punch_in_time, punch_out_time, status, reason, remarks, total_hours, target_working_hours, correction_type = 'both' } = req.body;
 
-  if (!reason) {
+  if (!reason || !reason.trim()) {
     return res.status(400).json({ error: 'A mandatory audit reason is required for attendance correction.' });
   }
 
   const current = db.prepare(`
-    SELECT a.*, e.employee_id as emp_code, e.full_name
+    SELECT a.*, e.employee_id as emp_code, e.full_name, e.shift_id as emp_shift_id
     FROM attendance_records a
     JOIN employees e ON a.employee_id = e.id
     WHERE a.id = ?
@@ -1445,16 +1486,38 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
     }
   }
 
-  const newPunchIn = punch_in_time !== undefined ? punch_in_time : current.punch_in_time;
-  const newPunchOut = punch_out_time !== undefined ? punch_out_time : current.punch_out_time;
-  const newHours = (punch_in_time !== undefined || punch_out_time !== undefined)
+  const effectiveShiftId = current.shift_id || current.emp_shift_id;
+  let newPunchIn = current.punch_in_time;
+  let newPunchOut = current.punch_out_time;
+
+  if (correction_type === 'in') {
+    newPunchIn = punch_in_time !== undefined ? (punch_in_time || null) : current.punch_in_time;
+  } else if (correction_type === 'out') {
+    newPunchOut = punch_out_time !== undefined ? (punch_out_time || null) : current.punch_out_time;
+  } else {
+    // 'both' or default
+    newPunchIn = punch_in_time !== undefined ? (punch_in_time || null) : current.punch_in_time;
+    newPunchOut = punch_out_time !== undefined ? (punch_out_time || null) : current.punch_out_time;
+  }
+
+  const newHours = (newPunchIn && newPunchOut)
     ? calculateHours(newPunchIn, newPunchOut)
     : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : (current.total_hours || 0));
-  const newStatus = (newPunchIn && newPunchOut)
-    ? (status && status !== 'auto' ? status : deriveStatusFromHours(newHours, current.company_id, null))
-    : (status && status !== 'auto'
-      ? status
-      : (newPunchIn ? (current.status === 'Absent' ? 'Present' : (current.status || 'Present')) : (current.status || 'Absent')));
+
+  let newStatus;
+  if (newPunchIn && newPunchOut) {
+    newStatus = (status && status !== 'auto')
+      ? (status.toLowerCase() === 'p' ? 'Present' : status.toLowerCase() === 'hd' ? 'Half Day' : status.toLowerCase() === 'a' ? 'Absent' : status)
+      : deriveStatusFromHours(newHours, current.company_id, effectiveShiftId, status, target_working_hours);
+  } else if (newPunchIn && !newPunchOut) {
+    newStatus = (status && status !== 'auto')
+      ? (status.toLowerCase() === 'p' ? 'Present' : status.toLowerCase() === 'hd' ? 'Half Day' : status.toLowerCase() === 'a' ? 'Absent' : status)
+      : (current.status === 'Absent' ? 'Present' : (current.status || 'Present'));
+  } else {
+    newStatus = (status && status !== 'auto')
+      ? (status.toLowerCase() === 'p' ? 'Present' : status.toLowerCase() === 'hd' ? 'Half Day' : status.toLowerCase() === 'a' ? 'Absent' : status)
+      : (current.status || 'Absent');
+  }
 
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
@@ -1481,7 +1544,7 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       recordId, current.employee_id, req.user.id, req.user.role_name,
-      `${req.user.role_name} Attendance Panel`, reason,
+      `${req.user.role_name} Attendance Correction Desk`, reason.trim(),
       current.punch_in_time, current.punch_out_time, current.status,
       newPunchIn, newPunchOut, newStatus, ipAddress
     );
@@ -1492,27 +1555,55 @@ router.put('/correct/:id', verifyAuth, (req, res) => {
       userId: req.user.id,
       userName: req.user.username,
       role: req.user.role_name,
-      panel: 'Attendance Correction',
+      panel: 'Attendance Correction Desk',
       action: 'ATTENDANCE_CORRECTED',
       targetEntity: 'attendance_records',
       targetId: recordId,
-      oldValues: { punch_in: current.punch_in_time, punch_out: current.punch_out_time, status: current.status },
-      newValues: { punch_in: newPunchIn, punch_out: newPunchOut, status: newStatus },
-      reason,
+      oldValues: { punch_in: current.punch_in_time, punch_out: current.punch_out_time, status: current.status, hours: current.total_hours },
+      newValues: { punch_in: newPunchIn, punch_out: newPunchOut, status: newStatus, hours: newHours, correction_type },
+      reason: reason.trim(),
       ipAddress
     });
   });
 
   transaction();
 
+  let updatedAtt = null;
   try {
-    const updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(recordId);
+    updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE id = ?').get(recordId);
     if (updatedAtt) {
+      // 1. Real-time Firebase Sync (Firestore + RTDB)
       syncAttendancePunch(updatedAtt.company_id, updatedAtt.employee_id, updatedAtt).catch(() => {});
+
+      // 2. Real-time Cross-Panel Broadcast via SSE
+      const { broadcastRealtimeEvent } = require('../services/notificationService');
+      broadcastRealtimeEvent({
+        companyId: updatedAtt.company_id,
+        entity: 'attendance',
+        action: 'ATTENDANCE_UPDATED',
+        id: updatedAtt.id,
+        data: {
+          id: updatedAtt.id,
+          employeeId: updatedAtt.employee_id,
+          employee_id: updatedAtt.employee_id,
+          date: updatedAtt.date,
+          punch_in_time: updatedAtt.punch_in_time,
+          punch_out_time: updatedAtt.punch_out_time,
+          total_hours: updatedAtt.total_hours,
+          status: updatedAtt.status,
+          updated_at: updatedAtt.updated_at
+        }
+      });
     }
   } catch (e) {}
 
-  res.json({ success: true, message: 'Attendance record corrected and audit log recorded.' });
+  res.json({
+    success: true,
+    message: `Attendance record updated: ${newPunchIn || '-'} to ${newPunchOut || '-'} (${newHours} hrs, ${newStatus}).`,
+    record: updatedAtt,
+    total_hours: newHours,
+    status: newStatus
+  });
 });
 
 // View Audit History for an Attendance Record
@@ -1531,7 +1622,8 @@ router.get('/audit-history/:id', verifyAuth, (req, res) => {
 
 // Manual Attendance Entry / Upsert (Manager, Company Admin, Super Admin, Support L2+)
 router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'super_admin', 'support']), (req, res) => {
-  if (req.user.role_name === 'support' && (req.user.support_level || 0) < 2) {
+  const userSupportLevel = req.user.permission_level || (req.user.support_level ? parseInt(String(req.user.support_level).replace(/\D/g, '') || '1', 10) : 1);
+  if (req.user.role_name === 'support' && userSupportLevel < 2) {
     return res.status(403).json({ error: 'Support Level 2 or higher required to record or edit attendance.' });
   }
 
@@ -1541,10 +1633,12 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
     date,
     punch_in_time,
     punch_out_time,
-    status = 'Present',
+    status = 'auto',
     total_hours,
     remarks,
-    reason
+    reason,
+    target_working_hours,
+    correction_type = 'both'
   } = req.body;
 
   if (!employee_id || !date || !reason || !reason.trim()) {
@@ -1579,16 +1673,38 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
   }
 
   const existingRecord = db.prepare(`SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?`).get(companyId, emp.id, date);
-  const effectiveIn = (punch_in_time !== undefined && punch_in_time !== '') ? punch_in_time : (existingRecord?.punch_in_time || null);
-  const effectiveOut = (punch_out_time !== undefined && punch_out_time !== '') ? punch_out_time : (existingRecord?.punch_out_time || null);
+  let effectiveIn = existingRecord?.punch_in_time || null;
+  let effectiveOut = existingRecord?.punch_out_time || null;
+
+  if (correction_type === 'in') {
+    effectiveIn = (punch_in_time !== undefined && punch_in_time !== '') ? punch_in_time : effectiveIn;
+  } else if (correction_type === 'out') {
+    effectiveOut = (punch_out_time !== undefined && punch_out_time !== '') ? punch_out_time : effectiveOut;
+  } else {
+    // 'both'
+    effectiveIn = (punch_in_time !== undefined && punch_in_time !== '') ? punch_in_time : null;
+    effectiveOut = (punch_out_time !== undefined && punch_out_time !== '') ? punch_out_time : null;
+  }
+
   const hours = (effectiveIn && effectiveOut)
     ? calculateHours(effectiveIn, effectiveOut)
     : (total_hours !== undefined && total_hours !== '' ? parseFloat(total_hours) : (existingRecord?.total_hours || 0));
-  const effectiveStatus = (effectiveIn && effectiveOut)
-    ? (status && status !== 'auto' ? status : deriveStatusFromHours(hours, companyId, null))
-    : (status && status !== 'auto'
-      ? status
-      : (effectiveIn ? 'Present' : (existingRecord?.status || 'Absent')));
+
+  let effectiveStatus;
+  if (effectiveIn && effectiveOut) {
+    effectiveStatus = (status && status !== 'auto')
+      ? (status.toLowerCase() === 'p' ? 'Present' : status.toLowerCase() === 'hd' ? 'Half Day' : status.toLowerCase() === 'a' ? 'Absent' : status)
+      : deriveStatusFromHours(hours, companyId, emp.shift_id || existingRecord?.shift_id, status, target_working_hours);
+  } else if (effectiveIn && !effectiveOut) {
+    effectiveStatus = (status && status !== 'auto')
+      ? (status.toLowerCase() === 'p' ? 'Present' : status.toLowerCase() === 'hd' ? 'Half Day' : status.toLowerCase() === 'a' ? 'Absent' : status)
+      : 'Present';
+  } else {
+    effectiveStatus = (status && status !== 'auto')
+      ? (status.toLowerCase() === 'p' ? 'Present' : status.toLowerCase() === 'hd' ? 'Half Day' : status.toLowerCase() === 'a' ? 'Absent' : status)
+      : (existingRecord?.status || 'Absent');
+  }
+
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
   const transaction = db.transaction(() => {
@@ -1599,14 +1715,14 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?, 1, ?
       ) ON CONFLICT(company_id, employee_id, date) DO UPDATE SET
-        punch_in_time = COALESCE(excluded.punch_in_time, attendance_records.punch_in_time),
-        punch_out_time = COALESCE(excluded.punch_out_time, attendance_records.punch_out_time),
+        punch_in_time = excluded.punch_in_time,
+        punch_out_time = excluded.punch_out_time,
         total_hours = excluded.total_hours,
         status = excluded.status,
         remarks = COALESCE(excluded.remarks, attendance_records.remarks),
         is_edited = 1,
         updated_at = CURRENT_TIMESTAMP
-    `).run(companyId, emp.id, date, punch_in_time || null, punch_out_time || null, hours, effectiveStatus, remarks || `${req.user.role_name} manual attendance entry`, emp.shift_id || null);
+    `).run(companyId, emp.id, date, effectiveIn, effectiveOut, hours, effectiveStatus, remarks || `${req.user.role_name} manual attendance entry`, emp.shift_id || null);
 
     const record = db.prepare(`SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?`).get(companyId, emp.id, date);
 
@@ -1619,9 +1735,9 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         record.id, emp.id, req.user.id, req.user.role_name,
-        `${req.user.role_name} Daily Attendance Reports`, reason.trim(),
-        null, null, null,
-        punch_in_time || null, punch_out_time || null, status, ipAddress
+        `${req.user.role_name} Attendance Support Desk`, reason.trim(),
+        existingRecord?.punch_in_time || null, existingRecord?.punch_out_time || null, existingRecord?.status || null,
+        effectiveIn, effectiveOut, effectiveStatus, ipAddress
       );
 
       logAudit({
@@ -1629,11 +1745,11 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
         userId: req.user.id,
         userName: req.user.username,
         role: req.user.role_name,
-        panel: 'Daily Attendance Reports',
+        panel: 'Attendance Support Desk',
         action: 'ATTENDANCE_MANUAL_RECORD',
         targetEntity: 'attendance_records',
         targetId: record.id,
-        newValues: { punch_in: punch_in_time, punch_out: punch_out_time, status, hours },
+        newValues: { punch_in: effectiveIn, punch_out: effectiveOut, status: effectiveStatus, hours, correction_type },
         reason: reason.trim(),
         ipAddress
       });
@@ -1642,14 +1758,42 @@ router.post('/manual', verifyAuth, requireRole(['company_admin', 'manager', 'sup
 
   transaction();
 
+  let updatedAtt = null;
   try {
-    const updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?').get(companyId, emp.id, date);
+    updatedAtt = db.prepare('SELECT * FROM attendance_records WHERE company_id = ? AND employee_id = ? AND date = ?').get(companyId, emp.id, date);
     if (updatedAtt) {
+      // 1. Real-time Firebase Sync (Firestore + RTDB)
       syncAttendancePunch(companyId, emp.id, updatedAtt).catch(() => {});
+
+      // 2. Real-time SSE & Cross-Panel Broadcast
+      const { broadcastRealtimeEvent } = require('../services/notificationService');
+      broadcastRealtimeEvent({
+        companyId,
+        entity: 'attendance',
+        action: 'ATTENDANCE_UPDATED',
+        id: updatedAtt.id,
+        data: {
+          id: updatedAtt.id,
+          employeeId: updatedAtt.employee_id,
+          employee_id: updatedAtt.employee_id,
+          date: updatedAtt.date,
+          punch_in_time: updatedAtt.punch_in_time,
+          punch_out_time: updatedAtt.punch_out_time,
+          total_hours: updatedAtt.total_hours,
+          status: updatedAtt.status,
+          updated_at: updatedAtt.updated_at
+        }
+      });
     }
   } catch (e) {}
 
-  res.json({ success: true, message: `Attendance for ${emp.full_name} (${date}) recorded successfully.` });
+  res.json({
+    success: true,
+    message: `Attendance for ${emp.full_name} (${date}) recorded: ${effectiveIn || '-'} to ${effectiveOut || '-'} (${hours} hrs, ${effectiveStatus}).`,
+    record: updatedAtt,
+    total_hours: hours,
+    status: effectiveStatus
+  });
 });
 
 // Download Attendance Excel Template
