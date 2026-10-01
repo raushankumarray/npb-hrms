@@ -171,13 +171,18 @@ function initFirebase() {
       };
     }
 
+    // Permanently remove default npb-hrms-live configuration per user requirements
+    if (serviceAccount && (serviceAccount.project_id === 'npb-hrms-live' || serviceAccount.project_id === 'npb-hrms-live-12345')) {
+      serviceAccount = null;
+    }
+
     if (!serviceAccount) {
       firebaseStatus = {
         initialized: false,
         connected: false,
-        mode: 'awaiting_credentials',
-        projectId: explicitProjectId || null,
-        databaseUrl: databaseURL || null,
+        mode: 'unconfigured',
+        projectId: null,
+        databaseUrl: null,
         services: {
           firestore: false,
           realtimeDb: false,
@@ -190,9 +195,9 @@ function initFirebase() {
           pushNotifications: true
         },
         lastConnectedAt: null,
-        lastError: 'Firebase credentials not yet provided. Upload or paste Service Account Key in Super Admin Settings to connect.'
+        lastError: null
       };
-      console.log('ℹ️ Firebase: Awaiting Service Account Credentials. (SQLite fallback active)');
+      console.log('ℹ️ Firebase: Disconnected / Unconfigured. Manual connection required via Super Admin Platform Settings.');
       return false;
     }
 
@@ -3213,6 +3218,16 @@ async function resetFirebaseConfig() {
     setAppSetting('firebase_service_account_json', '');
     setAppSetting('firebase_database_url', '');
 
+    const configPaths = [
+      path.resolve(__dirname, '../../config/serviceAccountKey.json'),
+      path.resolve(__dirname, '../../serviceAccountKey.json')
+    ];
+    for (const p of configPaths) {
+      if (fs.existsSync(p)) {
+        try { fs.unlinkSync(p); } catch (e) {}
+      }
+    }
+
     if (firebaseApp) {
       try {
         await deleteApp(firebaseApp);
@@ -5115,7 +5130,10 @@ async function fetchAllFromFirebaseAndRestoreToDb({ isProjectSwitch = false } = 
 
 module.exports = {
   initFirebase,
-  getFirebaseStatus: () => firebaseStatus,
+  getFirebaseStatus: () => ({
+    ...firebaseStatus,
+    hasServiceAccountKey: !!(firebaseStatus.connected && (getAppSetting('firebase_service_account_json') || process.env.FIREBASE_SERVICE_ACCOUNT_JSON))
+  }),
   syncGpsLocation,
   syncNotification,
   syncTicketMessage,
@@ -5165,6 +5183,10 @@ module.exports = {
       if (parsed && parsed.project_id) {
         newProjectId = parsed.project_id;
       }
+    }
+
+    if (newProjectId === 'npb-hrms-live' || newProjectId === 'npb-hrms-live-12345') {
+      throw new Error('Default npb-hrms-live project configuration has been permanently removed. Please provide your own active Firebase project credentials.');
     }
 
     const currentActiveProjectId = getAppSetting('active_firebase_project_id') || getAppSetting('firebase_project_id') || firebaseStatus.projectId || '';

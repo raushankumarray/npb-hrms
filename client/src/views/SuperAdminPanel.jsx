@@ -3982,7 +3982,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                     required
                     value={firebaseForm.projectId}
                     onChange={(e) => setFirebaseForm({ ...firebaseForm, projectId: e.target.value })}
-                    placeholder="e.g. npb-hrms-live-12345"
+                    placeholder="e.g. your-firebase-project-id"
                     className="w-full px-3.5 py-2.5 border rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-mono"
                   />
                   <p className="text-[11px] text-slate-400 mt-1">
@@ -4023,7 +4023,7 @@ export default function SuperAdminPanel({ user, activeTab, onUserUpdate, onSyste
                 />
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mt-1 text-[11px] text-slate-500">
                   <span>Download from: Firebase Console &gt; Project Settings &gt; Service Accounts &gt; "Generate new private key".</span>
-                  <span className="text-slate-400">Or place file directly at <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-600">server/config/serviceAccountKey.json</code></span>
+                  <span className="text-slate-400">Save credentials below to connect your project and auto-sync database.</span>
                 </div>
               </div>
 
