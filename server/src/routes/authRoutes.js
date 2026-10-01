@@ -183,20 +183,6 @@ router.post('/login', async (req, res) => {
   // Generate JWT Token
   const token = generateToken(user);
 
-  // Log successful login
-  logAudit({
-    companyId: user.company_id,
-    userId: user.id,
-    userName: user.username,
-    role: user.role_name,
-    panel: 'Auth Login',
-    action: 'USER_LOGIN',
-    targetEntity: 'users',
-    targetId: user.id,
-    reason: 'Successful user authentication',
-    ipAddress
-  });
-
   // Auto-restore company data from Firebase if local database has 0 companies
   try {
     const { getFirebaseStatus, fetchAllFromFirebaseAndRestoreToDb } = require('../services/firebase');

@@ -63,6 +63,22 @@ function parseServiceAccount(input) {
   }
 }
 
+// Broadcast real-time update event across all open panel sessions
+function sendRealtimeEvent(event) {
+  try {
+    const { broadcastRealtimeEvent } = require('./notificationService');
+    broadcastRealtimeEvent(event);
+  } catch (e) {}
+}
+
+// Timeout wrapper for non-blocking Firebase cloud network calls
+function withTimeout(promise, ms = 3500) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Firebase cloud operation timed out')), ms))
+  ]);
+}
+
 // Helper to read setting from SQLite application_settings table
 function getAppSetting(key) {
   try {
@@ -237,9 +253,30 @@ function initFirebase() {
 
     console.log(`🔥 Firebase Admin Connected! Project: ${serviceAccount.project_id}`);
 
-    // Auto-sync or auto-restore based on database state
+    // Auto-sync or auto-restore based on database state & project isolation
     setTimeout(() => {
       try {
+        const storedActiveProject = getAppSetting('active_firebase_project_id');
+        const connectedProjectId = serviceAccount.project_id || explicitProjectId;
+
+        // If stored active project differs from the current connected project, it's a project switch
+        if (storedActiveProject && connectedProjectId && storedActiveProject !== connectedProjectId) {
+          console.log(`🔄 Project switch detected on startup (${storedActiveProject} -> ${connectedProjectId}). Purging old project data and restoring new project...`);
+          setAppSetting('active_firebase_project_id', connectedProjectId, 'Active Firebase Project ID');
+          fetchAllFromFirebaseAndRestoreToDb({ isProjectSwitch: true }).then(res => {
+            console.log(`🚀 Project switch restore complete: ${res.restoredCompanies} companies restored.`);
+            sendRealtimeEvent({ entity: 'firebase_project', action: 'PROJECT_SWITCHED', data: { projectId: connectedProjectId, previousProjectId: storedActiveProject } });
+            sendRealtimeEvent({ entity: 'all', action: 'FORCE_REFRESH' });
+          }).catch(err => {
+            console.warn('Project switch restore error:', err.message);
+          });
+          return;
+        }
+
+        if (connectedProjectId) {
+          setAppSetting('active_firebase_project_id', connectedProjectId, 'Active Firebase Project ID');
+        }
+
         const compCount = db.prepare('SELECT COUNT(*) as count FROM companies WHERE is_deleted = 0').get()?.count || 0;
         const attCount = db.prepare('SELECT COUNT(*) as count FROM attendance_records').get()?.count || 0;
         if (compCount === 0 || attCount === 0) {
@@ -1680,10 +1717,10 @@ async function syncAuditLog(log) {
       created_at: log.createdAt || log.created_at || new Date().toISOString()
     };
     if (firestoreDb) {
-      await firestoreDb.collection('audit_logs').doc(id).set(payload, { merge: true });
+      await withTimeout(firestoreDb.collection('audit_logs').doc(id).set(payload, { merge: true }), 2500).catch(() => {});
     }
     if (realtimeDb) {
-      await realtimeDb.ref(`audit_logs/${id}`).set(payload);
+      await withTimeout(realtimeDb.ref(`audit_logs/${id}`).set(payload), 2500).catch(() => {});
     }
     return true;
   } catch (err) {
@@ -1859,51 +1896,51 @@ async function registerPurgedTombstone(entityType, entityId, options = {}) {
 
   try {
     if (firestoreDb) {
-      await firestoreDb.collection('purged_tombstones').doc(`${entityType}_${strEntityId}`).set(tombstonePayload, { merge: true }).catch(() => {});
+      await withTimeout(firestoreDb.collection('purged_tombstones').doc(`${entityType}_${strEntityId}`).set(tombstonePayload, { merge: true }), 2500).catch(() => {});
       if (Array.isArray(relatedEmployeeIds)) {
         for (let i = 0; i < relatedEmployeeIds.length; i++) {
           const eId = String(relatedEmployeeIds[i]);
           const eCode = relatedCodes[i] || '';
-          await firestoreDb.collection('purged_tombstones').doc(`employee_${eId}`).set({
+          await withTimeout(firestoreDb.collection('purged_tombstones').doc(`employee_${eId}`).set({
             entityType: 'employee',
             entityId: eId,
             companyId: strCompId,
             code: eCode ? String(eCode).toUpperCase() : null,
             purgedAt: new Date().toISOString()
-          }, { merge: true }).catch(() => {});
+          }, { merge: true }), 2500).catch(() => {});
         }
       }
       if (Array.isArray(relatedUserIds)) {
         for (let i = 0; i < relatedUserIds.length; i++) {
           const uId = String(relatedUserIds[i]);
           const uName = relatedUsernames[i] || '';
-          await firestoreDb.collection('purged_tombstones').doc(`user_${uId}`).set({
+          await withTimeout(firestoreDb.collection('purged_tombstones').doc(`user_${uId}`).set({
             entityType: 'user',
             entityId: uId,
             companyId: strCompId,
             identifier: uName ? String(uName).toLowerCase() : null,
             purgedAt: new Date().toISOString()
-          }, { merge: true }).catch(() => {});
+          }, { merge: true }), 2500).catch(() => {});
         }
       }
     }
 
     if (realtimeDb) {
-      await realtimeDb.ref(`purged_tombstones/${entityType}/${strEntityId}`).set(tombstonePayload).catch(() => {});
+      await withTimeout(realtimeDb.ref(`purged_tombstones/${entityType}/${strEntityId}`).set(tombstonePayload), 2500).catch(() => {});
       if (strCode) {
-        await realtimeDb.ref(`purged_tombstones/codes/${strCode}`).set(true).catch(() => {});
+        await withTimeout(realtimeDb.ref(`purged_tombstones/codes/${strCode}`).set(true), 2500).catch(() => {});
       }
       if (strIdent) {
-        await realtimeDb.ref(`purged_tombstones/identifiers/${strIdent}`).set(true).catch(() => {});
+        await withTimeout(realtimeDb.ref(`purged_tombstones/identifiers/${strIdent}`).set(true), 2500).catch(() => {});
       }
       if (Array.isArray(relatedEmployeeIds)) {
         for (const eId of relatedEmployeeIds) {
-          await realtimeDb.ref(`purged_tombstones/employee/${eId}`).set(true).catch(() => {});
+          await withTimeout(realtimeDb.ref(`purged_tombstones/employee/${eId}`).set(true), 2500).catch(() => {});
         }
       }
       if (Array.isArray(relatedUserIds)) {
         for (const uId of relatedUserIds) {
-          await realtimeDb.ref(`purged_tombstones/user/${uId}`).set(true).catch(() => {});
+          await withTimeout(realtimeDb.ref(`purged_tombstones/user/${uId}`).set(true), 2500).catch(() => {});
         }
       }
     }
@@ -1951,7 +1988,7 @@ async function loadPurgedTombstones() {
   // 2. From Firestore if available
   if (firebaseStatus.connected && firestoreDb) {
     try {
-      const snap = await firestoreDb.collection('purged_tombstones').limit(1000).get().catch(() => null);
+      const snap = await withTimeout(firestoreDb.collection('purged_tombstones').limit(1000).get(), 2500).catch(() => null);
       if (snap && !snap.empty) {
         snap.forEach(doc => {
           const d = doc.data();
@@ -1978,7 +2015,7 @@ async function loadPurgedTombstones() {
   // 3. From RTDB if available
   if (firebaseStatus.connected && realtimeDb) {
     try {
-      const snap = await realtimeDb.ref('purged_tombstones').once('value').catch(() => null);
+      const snap = await withTimeout(realtimeDb.ref('purged_tombstones').once('value'), 2500).catch(() => null);
       const val = snap ? snap.val() : null;
       if (val && typeof val === 'object') {
         if (val.company && typeof val.company === 'object') {
@@ -2003,6 +2040,17 @@ async function loadPurgedTombstones() {
     } catch (e) {}
   }
 
+  // 4. Timestamp before which all audit logs were purged
+  let auditLogsPurgedBefore = getAppSetting('audit_logs_purged_before') || null;
+  if (!auditLogsPurgedBefore && firebaseStatus.connected && firestoreDb) {
+    try {
+      const snap = await withTimeout(firestoreDb.collection('system_settings').doc('audit_logs_purge').get(), 2000).catch(() => null);
+      if (snap && snap.exists) {
+        auditLogsPurgedBefore = snap.data()?.purgedBefore || null;
+      }
+    } catch (e) {}
+  }
+
   return {
     purgedCompanyIds,
     purgedCompanyCodes,
@@ -2011,7 +2059,8 @@ async function loadPurgedTombstones() {
     purgedEmployeeCodes,
     purgedUserIds,
     purgedUsernames,
-    purgedAuditLogIds
+    purgedAuditLogIds,
+    auditLogsPurgedBefore
   };
 }
 
@@ -2518,24 +2567,135 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
 }
 
 /**
- * Purge all audit logs from Firebase Firestore and Realtime Database
+ * Purge all audit logs permanently from Firebase Firestore and Realtime Database
  */
 async function purgeAllAuditLogsFromFirebase() {
+  const purgeTimestamp = new Date().toISOString();
+  setAppSetting('audit_logs_purged_before', purgeTimestamp, 'Timestamp before which all audit logs were purged');
+
   if (!firebaseStatus.connected) return;
   try {
     if (firestoreDb) {
-      const snap = await firestoreDb.collection('audit_logs').limit(500).get().catch(() => null);
-      if (snap && !snap.empty) {
+      let maxBatches = 50;
+      while (maxBatches-- > 0) {
+        const snap = await withTimeout(firestoreDb.collection('audit_logs').limit(500).get(), 3000).catch(() => null);
+        if (!snap || snap.empty) break;
+
         const batch = firestoreDb.batch();
         snap.docs.forEach(doc => batch.delete(doc.ref));
-        await batch.commit().catch(() => {});
+        try {
+          await withTimeout(batch.commit(), 3000);
+        } catch (commitErr) {
+          console.warn('Batch commit delete notice:', commitErr.message);
+          break; // Stop immediately if commit errors
+        }
+
+        if (snap.size < 500) break;
       }
+
+      await withTimeout(firestoreDb.collection('system_settings').doc('audit_logs_purge').set({
+        purgedBefore: purgeTimestamp,
+        updatedAt: purgeTimestamp
+      }, { merge: true }), 3000).catch(() => {});
     }
+
     if (realtimeDb) {
-      await realtimeDb.ref('audit_logs').remove().catch(() => {});
+      await withTimeout(realtimeDb.ref('audit_logs').remove(), 3000).catch(() => {});
+      await withTimeout(realtimeDb.ref('system_settings/audit_logs_purge').set({
+        purgedBefore: purgeTimestamp,
+        updatedAt: purgeTimestamp
+      }), 3000).catch(() => {});
     }
   } catch (e) {
     console.warn('purgeAllAuditLogsFromFirebase notice:', e.message);
+  }
+}
+
+/**
+ * Purge a specific subset of audit logs permanently from Firestore & RTDB and register tombstones
+ */
+async function purgeAuditLogsSubsetFromFirebase({ targetIds = [], date = null, month = null, companyId = null } = {}) {
+  // 1. Tombstone each target ID in SQLite and Firebase
+  if (Array.isArray(targetIds)) {
+    for (const id of targetIds) {
+      await registerPurgedTombstone('audit_log', String(id), {});
+    }
+  }
+
+  if (!firebaseStatus.connected) return;
+
+  try {
+    if (firestoreDb) {
+      if (Array.isArray(targetIds) && targetIds.length > 0) {
+        for (let i = 0; i < targetIds.length; i += 500) {
+          const chunk = targetIds.slice(i, i + 500);
+          const batch = firestoreDb.batch();
+          for (const id of chunk) {
+            batch.delete(firestoreDb.collection('audit_logs').doc(String(id)));
+          }
+          await withTimeout(batch.commit(), 3000).catch(() => {});
+        }
+      }
+
+      if (date) {
+        const snap = await withTimeout(firestoreDb.collection('audit_logs').limit(500).get(), 3000).catch(() => null);
+        if (snap && !snap.empty) {
+          const batch = firestoreDb.batch();
+          let count = 0;
+          snap.forEach(doc => {
+            const data = doc.data();
+            const cAt = data.created_at || data.createdAt || '';
+            if (cAt.startsWith(date)) {
+              batch.delete(doc.ref);
+              registerPurgedTombstone('audit_log', String(doc.id), {});
+              count++;
+            }
+          });
+          if (count > 0) await withTimeout(batch.commit(), 3000).catch(() => {});
+        }
+      }
+
+      if (month) {
+        const snap = await withTimeout(firestoreDb.collection('audit_logs').limit(500).get(), 3000).catch(() => null);
+        if (snap && !snap.empty) {
+          const batch = firestoreDb.batch();
+          let count = 0;
+          snap.forEach(doc => {
+            const data = doc.data();
+            const cAt = data.created_at || data.createdAt || '';
+            if (cAt.startsWith(month)) {
+              batch.delete(doc.ref);
+              registerPurgedTombstone('audit_log', String(doc.id), {});
+              count++;
+            }
+          });
+          if (count > 0) await withTimeout(batch.commit(), 3000).catch(() => {});
+        }
+      }
+    }
+
+    if (realtimeDb) {
+      if (Array.isArray(targetIds)) {
+        for (const id of targetIds) {
+          await withTimeout(realtimeDb.ref(`audit_logs/${id}`).remove(), 3000).catch(() => {});
+        }
+      }
+      if (date || month) {
+        const snap = await withTimeout(realtimeDb.ref('audit_logs').once('value'), 3000).catch(() => null);
+        if (snap && snap.exists()) {
+          const val = snap.val();
+          for (const key of Object.keys(val)) {
+            const item = val[key];
+            const cAt = item?.created_at || item?.createdAt || '';
+            if ((date && cAt.startsWith(date)) || (month && cAt.startsWith(month))) {
+              await withTimeout(realtimeDb.ref(`audit_logs/${key}`).remove(), 3000).catch(() => {});
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('purgeAuditLogsSubsetFromFirebase notice:', e.message);
   }
 }
 
@@ -3048,6 +3208,7 @@ async function wipeAllCompanyDataFromDb({ syncToFirebase = true } = {}) {
  */
 async function resetFirebaseConfig() {
   try {
+    setAppSetting('active_firebase_project_id', '');
     setAppSetting('firebase_project_id', '');
     setAppSetting('firebase_service_account_json', '');
     setAppSetting('firebase_database_url', '');
@@ -3076,6 +3237,22 @@ async function resetFirebaseConfig() {
 
     // Auto remove all company data from local database upon disconnecting Firebase (preserving Super Admin)
     await wipeAllCompanyDataFromDb({ syncToFirebase: false });
+    try {
+      db.prepare('DELETE FROM purged_tombstones').run();
+      db.prepare('DELETE FROM audit_logs').run();
+      setAppSetting('audit_logs_purged_before', '', 'Purged before reset');
+    } catch (e) {}
+
+    sendRealtimeEvent({
+      entity: 'firebase_project',
+      action: 'PROJECT_DISCONNECTED',
+      data: {}
+    });
+    sendRealtimeEvent({
+      entity: 'all',
+      action: 'FORCE_REFRESH',
+      data: {}
+    });
 
     return {
       success: true,
@@ -3094,7 +3271,7 @@ async function resetFirebaseConfig() {
  * Recovers all companies, users, employees, managers, support accounts, and attendance records.
  * All accounts can immediately log in and access all data without error.
  */
-async function fetchAllFromFirebaseAndRestoreToDb() {
+async function fetchAllFromFirebaseAndRestoreToDb({ isProjectSwitch = false } = {}) {
   if (!firebaseStatus.connected) {
     return {
       success: false,
@@ -3146,61 +3323,65 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     if (firestoreDb) {
       const fetchFsCollection = async (collName, targetMap) => {
         try {
-          const snap = await firestoreDb.collection(collName).limit(1000).get();
-          snap.forEach(doc => {
-            const d = doc.data();
-            targetMap.set(String(d.id || doc.id), { id: d.id || doc.id, ...d });
-          });
-        } catch (e) {
-          console.warn(`Firestore fetch ${collName} notice:`, e.message);
-        }
+          const snap = await withTimeout(firestoreDb.collection(collName).limit(1000).get(), 2500);
+          if (snap && !snap.empty) {
+            snap.forEach(doc => {
+              const d = doc.data();
+              targetMap.set(String(d.id || doc.id), { id: d.id || doc.id, ...d });
+            });
+          }
+        } catch (e) {}
       };
 
-      await fetchFsCollection('companies', companiesMap);
-      await fetchFsCollection('users', usersMap);
-      await fetchFsCollection('employees', employeesMap);
-      await fetchFsCollection('shifts', shiftsMap);
-      await fetchFsCollection('rotational_shifts', rotationalShiftsMap);
-      await fetchFsCollection('weekly_off_settings', weeklyOffsMap);
-      await fetchFsCollection('holidays', holidaysMap);
-      await fetchFsCollection('geofences', geofencesMap);
-      await fetchFsCollection('geofence_assignments', geofenceAssignmentsMap);
-      await fetchFsCollection('employee_mappings', mappingsMap);
-      await fetchFsCollection('leave_types', leaveTypesMap);
-      await fetchFsCollection('leave_balances', leaveBalancesMap);
-      await fetchFsCollection('leave_requests', leaveRequestsMap);
-      await fetchFsCollection('attendance_corrections', correctionsMap);
-      await fetchFsCollection('support_tickets', ticketsMap);
-      await fetchFsCollection('company_settings', settingsMap);
-      await fetchFsCollection('company_modules', modulesMap);
-      await fetchFsCollection('employee_devices', devicesMap);
-      await fetchFsCollection('service_requests', serviceRequestsMap);
-      await fetchFsCollection('service_request_messages', serviceRequestMessagesMap);
-      await fetchFsCollection('audit_logs', auditLogsMap);
-      await fetchFsCollection('support_users', supportUsersMap);
+      await Promise.all([
+        fetchFsCollection('companies', companiesMap),
+        fetchFsCollection('users', usersMap),
+        fetchFsCollection('employees', employeesMap),
+        fetchFsCollection('shifts', shiftsMap),
+        fetchFsCollection('rotational_shifts', rotationalShiftsMap),
+        fetchFsCollection('weekly_off_settings', weeklyOffsMap),
+        fetchFsCollection('holidays', holidaysMap),
+        fetchFsCollection('geofences', geofencesMap),
+        fetchFsCollection('geofence_assignments', geofenceAssignmentsMap),
+        fetchFsCollection('employee_mappings', mappingsMap),
+        fetchFsCollection('leave_types', leaveTypesMap),
+        fetchFsCollection('leave_balances', leaveBalancesMap),
+        fetchFsCollection('leave_requests', leaveRequestsMap),
+        fetchFsCollection('attendance_corrections', correctionsMap),
+        fetchFsCollection('support_tickets', ticketsMap),
+        fetchFsCollection('company_settings', settingsMap),
+        fetchFsCollection('company_modules', modulesMap),
+        fetchFsCollection('employee_devices', devicesMap),
+        fetchFsCollection('service_requests', serviceRequestsMap),
+        fetchFsCollection('service_request_messages', serviceRequestMessagesMap),
+        fetchFsCollection('audit_logs', auditLogsMap),
+        fetchFsCollection('support_users', supportUsersMap)
+      ]);
 
       try {
-        const snap = await firestoreDb.collection('attendance_punches').limit(1000).get();
-        snap.forEach(doc => {
-          const d = doc.data();
-          const key = `${d.companyId || d.company_id}_${d.employeeId || d.employee_id}_${d.date}`;
-          attendanceMap.set(key, d);
-        });
-      } catch (e) {
-        console.warn('Firestore fetch attendance notice:', e.message);
-      }
+        const snap = await withTimeout(firestoreDb.collection('attendance_punches').limit(1000).get(), 2500).catch(() => null);
+        if (snap && !snap.empty) {
+          snap.forEach(doc => {
+            const d = doc.data();
+            const key = `${d.companyId || d.company_id}_${d.employeeId || d.employee_id}_${d.date}`;
+            attendanceMap.set(key, d);
+          });
+        }
+      } catch (e) {}
 
       // Check subcollection companies/{companyId}/attendance
       for (const [compId] of companiesMap) {
         try {
-          const compAttSnap = await firestoreDb.collection('companies').doc(String(compId)).collection('attendance').limit(1000).get();
-          compAttSnap.forEach(doc => {
-            const d = doc.data();
-            const key = `${d.companyId || d.company_id || compId}_${d.employeeId || d.employee_id}_${d.date}`;
-            if (!attendanceMap.has(key)) {
-              attendanceMap.set(key, { ...d, companyId: d.companyId || d.company_id || compId });
-            }
-          });
+          const compAttSnap = await withTimeout(firestoreDb.collection('companies').doc(String(compId)).collection('attendance').limit(1000).get(), 2000).catch(() => null);
+          if (compAttSnap && !compAttSnap.empty) {
+            compAttSnap.forEach(doc => {
+              const d = doc.data();
+              const key = `${d.companyId || d.company_id || compId}_${d.employeeId || d.employee_id}_${d.date}`;
+              if (!attendanceMap.has(key)) {
+                attendanceMap.set(key, { ...d, companyId: d.companyId || d.company_id || compId });
+              }
+            });
+          }
         } catch (e) {}
       }
     }
@@ -3209,14 +3390,13 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
     if (realtimeDb) {
       const fetchRtDbCollection = async (refPath, targetMap) => {
         try {
-          const snap = await realtimeDb.ref(refPath).once('value');
+          const snap = await withTimeout(realtimeDb.ref(refPath).once('value'), 2500).catch(() => null);
+          if (!snap) return;
           const val = snap.val();
           if (val && typeof val === 'object') {
             Object.entries(val).forEach(([k, v]) => {
               if (v && typeof v === 'object') {
                 if (refPath === 'companies') {
-                  // In RTDB /companies, each top-level key k IS a company.
-                  // NEVER expand nested properties (employees, attendance, etc.) as companies!
                   const compId = v.id || k;
                   if (compId && !targetMap.has(String(compId))) {
                     targetMap.set(String(compId), { id: compId, ...v });
@@ -3229,7 +3409,6 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
                   const id = String(itemId);
                   if (!targetMap.has(id)) targetMap.set(id, { id: itemId, ...v });
                 }
-                // Only for nested collections where parent key is companyId (e.g. company_attendance or attendance_punches)
                 if (!v.id && !v.modules && !v.timezone && !['companies', 'users', 'company_settings', 'company_modules'].includes(refPath)) {
                   Object.entries(v).forEach(([subK, subV]) => {
                     if (subV && typeof subV === 'object') {
@@ -3244,33 +3423,35 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
         } catch (e) {}
       };
 
-      await fetchRtDbCollection('companies', companiesMap);
-      await fetchRtDbCollection('users', usersMap);
-      await fetchRtDbCollection('employees', employeesMap);
-      await fetchRtDbCollection('shifts', shiftsMap);
-      await fetchRtDbCollection('rotational_shifts', rotationalShiftsMap);
-      await fetchRtDbCollection('weekly_off_settings', weeklyOffsMap);
-      await fetchRtDbCollection('holidays', holidaysMap);
-      await fetchRtDbCollection('geofences', geofencesMap);
-      await fetchRtDbCollection('geofence_assignments', geofenceAssignmentsMap);
-      await fetchRtDbCollection('employee_mappings', mappingsMap);
-      await fetchRtDbCollection('leave_types', leaveTypesMap);
-      await fetchRtDbCollection('leave_balances', leaveBalancesMap);
-      await fetchRtDbCollection('leave_requests', leaveRequestsMap);
-      await fetchRtDbCollection('attendance_corrections', correctionsMap);
-      await fetchRtDbCollection('support_tickets', ticketsMap);
-      await fetchRtDbCollection('company_settings', settingsMap);
-      await fetchRtDbCollection('company_modules', modulesMap);
-      await fetchRtDbCollection('employee_devices', devicesMap);
-      await fetchRtDbCollection('service_requests', serviceRequestsMap);
-      await fetchRtDbCollection('service_request_messages', serviceRequestMessagesMap);
-      await fetchRtDbCollection('audit_logs', auditLogsMap);
-      await fetchRtDbCollection('support_users', supportUsersMap);
+      await Promise.all([
+        fetchRtDbCollection('companies', companiesMap),
+        fetchRtDbCollection('users', usersMap),
+        fetchRtDbCollection('employees', employeesMap),
+        fetchRtDbCollection('shifts', shiftsMap),
+        fetchRtDbCollection('rotational_shifts', rotationalShiftsMap),
+        fetchRtDbCollection('weekly_off_settings', weeklyOffsMap),
+        fetchRtDbCollection('holidays', holidaysMap),
+        fetchRtDbCollection('geofences', geofencesMap),
+        fetchRtDbCollection('geofence_assignments', geofenceAssignmentsMap),
+        fetchRtDbCollection('employee_mappings', mappingsMap),
+        fetchRtDbCollection('leave_types', leaveTypesMap),
+        fetchRtDbCollection('leave_balances', leaveBalancesMap),
+        fetchRtDbCollection('leave_requests', leaveRequestsMap),
+        fetchRtDbCollection('attendance_corrections', correctionsMap),
+        fetchRtDbCollection('support_tickets', ticketsMap),
+        fetchRtDbCollection('company_settings', settingsMap),
+        fetchRtDbCollection('company_modules', modulesMap),
+        fetchRtDbCollection('employee_devices', devicesMap),
+        fetchRtDbCollection('service_requests', serviceRequestsMap),
+        fetchRtDbCollection('service_request_messages', serviceRequestMessagesMap),
+        fetchRtDbCollection('audit_logs', auditLogsMap),
+        fetchRtDbCollection('support_users', supportUsersMap)
+      ]);
 
       // Realtime Database attendance punches fetch
       try {
-        const snap = await realtimeDb.ref('attendance_punches').once('value');
-        const val = snap.val();
+        const snap = await withTimeout(realtimeDb.ref('attendance_punches').once('value'), 2000).catch(() => null);
+        const val = snap ? snap.val() : null;
         if (val && typeof val === 'object') {
           Object.entries(val).forEach(([cId, emps]) => {
             if (emps && typeof emps === 'object') {
@@ -3292,8 +3473,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       } catch (e) {}
 
       try {
-        const compAttSnap = await realtimeDb.ref('company_attendance').once('value');
-        const compAttVal = compAttSnap.val();
+        const compAttSnap = await withTimeout(realtimeDb.ref('company_attendance').once('value'), 2000).catch(() => null);
+        const compAttVal = compAttSnap ? compAttSnap.val() : null;
         if (compAttVal && typeof compAttVal === 'object') {
           Object.entries(compAttVal).forEach(([cId, dates]) => {
             if (dates && typeof dates === 'object') {
@@ -3317,8 +3498,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       // Realtime Database companies/{compId}/attendance subpath fetch
       for (const [compId] of companiesMap) {
         try {
-          const compAttSnap = await realtimeDb.ref(`companies/${compId}/attendance`).once('value');
-          const compAttVal = compAttSnap.val();
+          const compAttSnap = await withTimeout(realtimeDb.ref(`companies/${compId}/attendance`).once('value'), 1500).catch(() => null);
+          const compAttVal = compAttSnap ? compAttSnap.val() : null;
           if (compAttVal && typeof compAttVal === 'object') {
             Object.entries(compAttVal).forEach(([dKey, empsOrAtt]) => {
               if (empsOrAtt && typeof empsOrAtt === 'object') {
@@ -3355,7 +3536,8 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       purgedEmployeeCodes,
       purgedUserIds,
       purgedUsernames,
-      purgedAuditLogIds
+      purgedAuditLogIds,
+      auditLogsPurgedBefore
     } = await loadPurgedTombstones();
 
     // 1. Prune Companies Map against tombstones & deleted status
@@ -3454,19 +3636,30 @@ async function fetchAllFromFirebaseAndRestoreToDb() {
       }
     }
 
-    // 5. Prune Audit Logs against tombstones & deleted status
+    // 5. Prune Audit Logs against tombstones & purgedBefore
     for (const [docKey, l] of Array.from(auditLogsMap.entries())) {
       const rawId = String(l?.id || docKey);
+      const createdAt = l?.created_at || l?.createdAt;
       if (purgedAuditLogIds.has(rawId)) {
         auditLogsMap.delete(docKey);
+        continue;
+      }
+      if (auditLogsPurgedBefore && createdAt && new Date(createdAt) <= new Date(auditLogsPurgedBefore)) {
+        auditLogsMap.delete(docKey);
+        continue;
       }
     }
 
     // Strict 1:1 Mirror: Purge existing local tenant data before restore so that local database
     // strictly mirrors Firebase with 0 ghost/leftover companies, while strictly preserving Super Admin `adminn`.
-    // SAFETY GUARD: Only wipe if we actually found company, employee, user, or attendance data in Firebase to restore!
-    if (companiesMap.size > 0 || employeesMap.size > 0 || attendanceMap.size > 0 || usersMap.size > 0) {
+    if (isProjectSwitch || companiesMap.size > 0 || employeesMap.size > 0 || attendanceMap.size > 0 || usersMap.size > 0) {
       await wipeAllCompanyDataFromDb({ syncToFirebase: false });
+      if (isProjectSwitch) {
+        try {
+          db.prepare('DELETE FROM purged_tombstones').run();
+          db.prepare('DELETE FROM audit_logs').run();
+        } catch (e) {}
+      }
     }
 
     // 3. Upsert into SQLite in transaction
@@ -4959,12 +5152,40 @@ module.exports = {
   deleteFromFirebase,
   syncCompanyReports,
   purgeAllAuditLogsFromFirebase,
+  purgeAuditLogsSubsetFromFirebase,
   syncAllDatabaseToFirebase,
   fetchAllFromFirebaseAndRestoreToDb,
   resetFirebaseConfig,
   wipeAllCompanyDataFromDb,
   testFirebaseConnection,
   saveFirebaseConfig: async ({ projectId, serviceAccountJson, databaseUrl }) => {
+    let newProjectId = (projectId || '').trim();
+    if (!newProjectId && serviceAccountJson) {
+      const parsed = parseServiceAccount(serviceAccountJson);
+      if (parsed && parsed.project_id) {
+        newProjectId = parsed.project_id;
+      }
+    }
+
+    const currentActiveProjectId = getAppSetting('active_firebase_project_id') || getAppSetting('firebase_project_id') || firebaseStatus.projectId || '';
+    const isProjectSwitch = !!(newProjectId && currentActiveProjectId && newProjectId !== currentActiveProjectId);
+
+    if (isProjectSwitch) {
+      console.log(`[FirebaseConfig] Project switch detected (${currentActiveProjectId} -> ${newProjectId}). Purging old project data...`);
+      await wipeAllCompanyDataFromDb({ syncToFirebase: false });
+      try {
+        db.prepare('DELETE FROM purged_tombstones').run();
+        db.prepare('DELETE FROM audit_logs').run();
+        setAppSetting('audit_logs_purged_before', '', 'Purged before reset');
+      } catch (e) {}
+    }
+
+    if (firebaseApp) {
+      try {
+        await deleteApp(firebaseApp);
+      } catch (e) {}
+    }
+
     if (projectId !== undefined) {
       setAppSetting('firebase_project_id', (projectId || '').trim(), 'Firebase Project ID');
     }
@@ -4974,11 +5195,30 @@ module.exports = {
     if (databaseUrl !== undefined) {
       setAppSetting('firebase_database_url', (databaseUrl || '').trim(), 'Firebase Realtime Database URL');
     }
+    if (newProjectId) {
+      setAppSetting('active_firebase_project_id', newProjectId, 'Active Firebase Project ID');
+    }
+
     const ok = initFirebase();
     if (ok) {
       try {
-        console.log('[FirebaseConfig] Firebase successfully connected. Auto-restoring all saved data from Firebase...');
-        await fetchAllFromFirebaseAndRestoreToDb();
+        console.log(`[FirebaseConfig] Firebase successfully connected to "${newProjectId}". Auto-restoring all saved data from Firebase...`);
+        await fetchAllFromFirebaseAndRestoreToDb({ isProjectSwitch });
+
+        sendRealtimeEvent({
+          entity: 'firebase_project',
+          action: 'PROJECT_SWITCHED',
+          data: {
+            projectId: newProjectId,
+            previousProjectId: currentActiveProjectId,
+            isProjectSwitch
+          }
+        });
+        sendRealtimeEvent({
+          entity: 'all',
+          action: 'FORCE_REFRESH',
+          data: { projectId: newProjectId }
+        });
       } catch (e) {
         console.warn('Auto restore on config notice:', e.message);
       }

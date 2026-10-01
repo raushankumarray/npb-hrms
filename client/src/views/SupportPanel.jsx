@@ -2460,6 +2460,16 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
                         <span>Delete Filtered Records</span>
                       </button>
                     )}
+
+                    <button
+                      type="button"
+                      onClick={() => triggerDeleteAudit('all', '', '', 'ALL audit log entries in the database & Firebase permanently')}
+                      className="px-3 py-1.5 bg-red-700 hover:bg-red-800 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                      title="Permanently purge all audit logs from database and Firebase (cannot be recovered)"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Purge All Logs</span>
+                    </button>
                   </div>
                 </div>
               </div>

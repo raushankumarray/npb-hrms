@@ -601,9 +601,12 @@ const handleGetAuditLogs = async (req, res) => {
     if (localAuditCount === 0) {
       const { firestoreDb, loadPurgedTombstones } = require('../services/firebase');
       if (firestoreDb) {
-        const { purgedAuditLogIds } = await loadPurgedTombstones();
-        const snap = await firestoreDb.collection('audit_logs').limit(500).get();
-        if (!snap.empty) {
+        const { purgedAuditLogIds, auditLogsPurgedBefore } = await loadPurgedTombstones();
+        const snap = await Promise.race([
+          firestoreDb.collection('audit_logs').limit(500).get(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Firestore timeout')), 3000))
+        ]).catch(() => null);
+        if (snap && !snap.empty) {
           const insertStmt = db.prepare(`
             INSERT OR IGNORE INTO audit_logs (
               id, company_id, user_id, user_name, role, panel, action,
@@ -614,7 +617,9 @@ const handleGetAuditLogs = async (req, res) => {
             snap.forEach(doc => {
               const d = doc.data();
               const logId = String(d.id || doc.id);
+              const createdAt = d.created_at || d.createdAt;
               if (purgedAuditLogIds.has(logId)) return; // Strictly ignore purged/deleted audit logs
+              if (auditLogsPurgedBefore && createdAt && new Date(createdAt) <= new Date(auditLogsPurgedBefore)) return; // Strictly ignore logs before full purge
               insertStmt.run(
                 isNaN(Number(logId)) ? null : Number(logId),
                 d.company_id || d.companyId || null,
@@ -825,29 +830,37 @@ router.delete('/audit-logs', verifyAuth, requireSupportLevel(4), async (req, res
     // 3. Register tombstones and delete from Firebase (Firestore + RTDB)
     try {
       if (mode === 'all') {
+        const { purgeAllAuditLogsFromFirebase } = require('../services/firebase');
         await purgeAllAuditLogsFromFirebase();
       } else {
-        for (const tId of targetIds) {
-          await deleteFromFirebase('audit_logs', tId);
-        }
+        const { purgeAuditLogsSubsetFromFirebase } = require('../services/firebase');
+        await purgeAuditLogsSubsetFromFirebase({
+          targetIds,
+          date,
+          month,
+          companyId: company_id
+        });
       }
     } catch (e) {
       console.warn('Firebase audit log delete notice:', e.message);
     }
 
-    // 4. Log deletion in audit table
-    logAudit({
-      companyId: null,
-      userId: req.user.id,
-      userName: req.user.username,
-      role: req.user.role_name,
-      panel: 'Support L4 Audit Console',
-      action: 'AUDIT_LOGS_DELETED',
-      targetEntity: 'audit_logs',
-      targetId: String(mode === 'single' ? id : mode),
-      newValues: { mode, deletedCount, date, month },
-      reason: `Deleted ${deletedCount} record(s): ${description} by Level 4 Support`
-    });
+    // 4. Log deletion in audit table ONLY IF not purging all
+    // Purging all must leave 0 logs in the system ledger without creating a new self-log!
+    if (mode !== 'all') {
+      logAudit({
+        companyId: null,
+        userId: req.user.id,
+        userName: req.user.username,
+        role: req.user.role_name,
+        panel: 'Support L4 Audit Console',
+        action: 'AUDIT_LOGS_DELETED',
+        targetEntity: 'audit_logs',
+        targetId: String(mode === 'single' ? id : mode),
+        newValues: { mode, deletedCount, date, month },
+        reason: `Deleted ${deletedCount} record(s): ${description} by Level 4 Support`
+      });
+    }
 
     // 5. Broadcast instant real-time event
     try {
