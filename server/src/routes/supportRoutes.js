@@ -458,11 +458,23 @@ router.delete('/users/:id', verifyAuth, requireRole(['super_admin']), (req, res)
 
 // Deregister & Unbind Device (Support Level 1+ or Super Admin)
 router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => {
-  const targetUserId = req.body.user_id || req.body.userId || req.body.id;
+  let targetUserId = req.body.user_id || req.body.userId;
+  if (!targetUserId && req.body.employee_id) {
+    const emp = db.prepare('SELECT user_id FROM employees WHERE id = ? OR employee_id = ?').get(req.body.employee_id, req.body.employee_id);
+    if (emp && emp.user_id) targetUserId = emp.user_id;
+  }
+  if (!targetUserId && req.body.id) {
+    const dev = db.prepare('SELECT user_id FROM employee_devices WHERE id = ?').get(req.body.id);
+    if (dev && dev.user_id) {
+      targetUserId = dev.user_id;
+    } else {
+      targetUserId = req.body.id;
+    }
+  }
   const reason = req.body.reason;
 
   if (!targetUserId) {
-    return res.status(400).json({ error: 'Target user_id is required.' });
+    return res.status(400).json({ error: 'Target user_id or employee_id is required.' });
   }
 
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
@@ -481,18 +493,16 @@ router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => 
 
   // Create notification for employee
   try {
-    try {
-      const { createNotification } = require('../services/notificationService');
-      const targetU = db.prepare('SELECT company_id FROM users WHERE id = ?').get(targetUserId);
-      createNotification({
-        userId: targetUserId,
-        companyId: targetU ? targetU.company_id : null,
-        title: 'Device De-Registration Approved',
-        message: 'Your device binding and MAC lock have been cleared by Support. You can now log in from your new device.',
-        type: 'device',
-        link: '/login'
-      });
-    } catch (e) {}
+    const { createNotification } = require('../services/notificationService');
+    const targetU = db.prepare('SELECT company_id FROM users WHERE id = ?').get(targetUserId);
+    createNotification({
+      userId: targetUserId,
+      companyId: targetU ? targetU.company_id : null,
+      title: 'Device De-Registration Approved',
+      message: 'Your device binding and MAC lock have been cleared by Support. You can now log in from your new device.',
+      type: 'device',
+      link: '/login'
+    });
   } catch (e) {}
 
   // Auto-resolve any open device deregistration tickets for this employee
@@ -537,15 +547,27 @@ router.post('/unbind-device', verifyAuth, requireSupportLevel(1), (req, res) => 
     console.warn('Auto-resolving device tickets notice:', e.message);
   }
 
+  // Dual-sync to Firebase (Firestore + RTDB)
+  try {
+    const { syncEmployeeDevice, deleteFromFirebase } = require('../services/firebase');
+    const unboundDev = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(targetUserId);
+    if (unboundDev && syncEmployeeDevice) {
+      syncEmployeeDevice(unboundDev).catch(() => {});
+    }
+    if (deleteFromFirebase) {
+      deleteFromFirebase('device_bindings', targetUserId).catch(() => {});
+    }
+  } catch (e) {}
+
   res.json({ success: true, message: result.message });
 });
 
 // View Registered Devices (Support Level 1+ or Super Admin)
 router.get('/devices', verifyAuth, requireSupportLevel(1), (req, res) => {
-  const { company_id, search } = req.query;
+  const { company_id, search, status } = req.query;
 
   let query = `
-    SELECT d.*, u.username, u.company_id, e.employee_id as employee_code, e.full_name, c.name as company_name
+    SELECT d.*, u.username, u.company_id, u.status as user_status, e.id as emp_id, e.employee_id as employee_code, e.full_name, e.department, e.designation, c.name as company_name
     FROM employee_devices d
     JOIN users u ON d.user_id = u.id
     JOIN roles r ON u.role_id = r.id
@@ -578,12 +600,17 @@ router.get('/devices', verifyAuth, requireSupportLevel(1), (req, res) => {
     params.push(parseInt(company_id, 10));
   }
 
-  if (search) {
-    query += ' AND (u.username LIKE ? OR e.full_name LIKE ? OR e.employee_id LIKE ? OR d.device_id LIKE ? OR d.mac_address LIKE ?)';
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+  if (status && status !== 'all') {
+    query += ' AND d.status = ?';
+    params.push(status);
   }
 
-  query += ' ORDER BY d.last_login_at DESC LIMIT 100';
+  if (search) {
+    query += ' AND (u.username LIKE ? OR e.full_name LIKE ? OR e.employee_id LIKE ? OR d.device_id LIKE ? OR d.mac_address LIKE ? OR d.device_name LIKE ? OR d.device_type LIKE ? OR d.bound_ip LIKE ?)';
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+  }
+
+  query += ' ORDER BY d.last_login_at DESC LIMIT 500';
 
   const devices = db.prepare(query).all(...params);
   res.json({ devices });

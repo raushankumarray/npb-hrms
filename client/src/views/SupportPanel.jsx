@@ -176,6 +176,11 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [unbindReason, setUnbindReason] = useState('');
   const [showUnbindModal, setShowUnbindModal] = useState(false);
+  const [unbindingDevice, setUnbindingDevice] = useState(false);
+  const [deviceSearchQuery, setDeviceSearchQuery] = useState('');
+  const [deviceStatusFilter, setDeviceStatusFilter] = useState('all'); // 'all' | 'bound' | 'unbound'
+  const [deviceRefreshing, setDeviceRefreshing] = useState(false);
+  const [copiedMac, setCopiedMac] = useState('');
 
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [resolutionNotes, setResolutionNotes] = useState('');
@@ -560,6 +565,16 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   useEffect(() => {
     fetchData();
 
+    let deviceChannel = null;
+    try {
+      deviceChannel = new BroadcastChannel('npb_hrms_device_sync');
+      deviceChannel.onmessage = (event) => {
+        if (event.data && (event.data.type === 'DEVICE_UNBOUND' || event.data.type === 'DEVICE_BOUND')) {
+          fetchData();
+        }
+      };
+    } catch (e) {}
+
     const handleMasterRefresh = () => {
       fetchData();
       if (activeTab === 'audit-reports' || activeTab === 'audit-logs') {
@@ -571,6 +586,7 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
     return () => {
       window.removeEventListener('master-refresh', handleMasterRefresh);
       window.removeEventListener('npb-realtime-update', handleMasterRefresh);
+      if (deviceChannel) deviceChannel.close();
     };
   }, [activeTab, selectedCompanyId, attDateFilter]);
 
@@ -679,29 +695,72 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
   };
 
   // --- GENERAL HANDLERS ---
-  const handleUnbind = async () => {
-    if (!selectedDevice || !unbindReason.trim()) {
-      setError('Please specify a valid unbind reason.');
+  const handleCopyMac = (mac) => {
+    if (!mac) return;
+    try {
+      navigator.clipboard.writeText(mac);
+      setCopiedMac(mac);
+      setTimeout(() => setCopiedMac(''), 2000);
+    } catch (e) {}
+  };
+
+  const handleRefreshDevices = async () => {
+    try {
+      setDeviceRefreshing(true);
+      const compParam = selectedCompanyId && selectedCompanyId !== 'all' ? `company_id=${selectedCompanyId}` : '';
+      const url = compParam ? `/support/devices?${compParam}` : '/support/devices';
+      const res = await apiRequest(url);
+      setDevices(res.devices || []);
+      setSuccess('Device registrations refreshed successfully.');
+    } catch (err) {
+      setError(err.message || 'Failed to refresh devices.');
+    } finally {
+      setDeviceRefreshing(false);
+    }
+  };
+
+  const handleUnbind = async (overrideDevice = null, overrideReason = null) => {
+    const target = overrideDevice || selectedDevice;
+    if (!target) {
+      setError('Please select a device to unbind.');
       return;
     }
 
+    const reasonText = (overrideReason !== null ? overrideReason : unbindReason).trim() || 'Support deregistered device - employee authorized to log in from new device';
+
     try {
-      await apiRequest('/support/unbind-device', {
+      setUnbindingDevice(true);
+      const res = await apiRequest('/support/unbind-device', {
         method: 'POST',
         body: {
-          user_id: selectedDevice.user_id,
-          reason: unbindReason.trim()
+          user_id: target.user_id,
+          employee_id: target.emp_id || target.employee_id,
+          id: target.id,
+          reason: reasonText
         }
       });
-      setSuccess(`Device unbound successfully for ${selectedDevice.full_name || selectedDevice.username}.`);
+      setSuccess(res.message || `Device unbound successfully for ${target.full_name || target.username}. The employee can now log in from another device.`);
       setShowUnbindModal(false);
+      setSelectedDevice(null);
       setUnbindReason('');
+      
+      // Notify other open tabs/windows
+      try {
+        new BroadcastChannel('npb_hrms_device_sync').postMessage({ 
+          type: 'DEVICE_UNBOUND', 
+          userId: target.user_id,
+          timestamp: Date.now() 
+        });
+      } catch (e) {}
+
       fetchData();
-      if (selectedUserDiag && selectedUserDiag.user_id === selectedDevice.user_id) {
+      if (selectedUserDiag && (selectedUserDiag.user_id === target.user_id || selectedUserDiag.id === target.user_id)) {
         setSelectedUserDiag(prev => ({ ...prev, device: null }));
       }
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Failed to unbind device.');
+    } finally {
+      setUnbindingDevice(false);
     }
   };
 
@@ -1147,89 +1206,340 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
       {/* ========================================================================= */}
       {/* DEVICE SUPPORT & UNLOCK */}
       {/* ========================================================================= */}
-      {activeTab === 'device-support' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">Registered Employee Devices</h3>
-              <p className="text-[11px] text-slate-400">1 Account = 1 Device Rule Enforcement</p>
-            </div>
-            <span className="text-xs text-purple-700 bg-purple-50 px-2.5 py-1 rounded-lg font-semibold">
-              Single-Device Lock Active
-            </span>
-          </div>
+      {activeTab === 'device-support' && (() => {
+        const boundCount = devices.filter(d => d.status === 'bound').length;
+        const unboundCount = devices.filter(d => d.status !== 'bound').length;
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Employee</th>
-                  <th className="p-3">Company</th>
-                  <th className="p-3">Device Name & Type</th>
-                  <th className="p-3">Locked MAC Address</th>
-                  <th className="p-3">Device Fingerprint</th>
-                  <th className="p-3">Last Login IP</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {devices.slice((devPage - 1) * devPageSize, devPage * devPageSize).map(d => (
-                  <tr key={d.id} className="hover:bg-slate-50/50">
-                    <td className="p-3 font-semibold text-slate-900">{d.full_name || d.username} {d.employee_code ? `(${d.employee_code})` : ''}</td>
-                    <td className="p-3 text-slate-600">{d.company_name || 'N/A'}</td>
-                    <td className="p-3 text-slate-700">{d.device_name || d.device_type}</td>
-                    <td className="p-3">
-                      <span className="font-mono text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 font-bold select-all">
-                        {d.mac_address || (d.device_id && d.device_id.startsWith('hw_') ? d.device_id.replace('hw_', '') : d.device_id)}
-                      </span>
-                    </td>
-                    <td className="p-3 font-mono text-slate-500 truncate max-w-[120px]" title={d.device_id}>{d.device_id}</td>
-                    <td className="p-3 text-slate-500">{d.bound_ip || '-'}</td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                        d.status === 'bound' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
-                      }`}>
-                        {d.status === 'bound' ? 'Locked' : 'Unbound'}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right">
-                      {d.status === 'bound' && (
-                        <button
-                          onClick={() => {
-                            setSelectedDevice(d);
-                            setUnbindReason('Employee requested device change / reset to register new device.');
-                            setShowUnbindModal(true);
-                          }}
-                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-semibold flex items-center gap-1 ml-auto border border-purple-200 shadow-xs hover:scale-105 active:scale-95 transition-all"
-                          title="Deregister device to allow employee to register a new device"
-                        >
-                          <Unlock className="w-3.5 h-3.5" />
-                          Deregister Device
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {devices.length === 0 && (
-                  <tr>
-                    <td colSpan="8" className="p-8 text-center text-slate-400 text-xs">
-                      No bound devices found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+        const filteredDevices = devices.filter(d => {
+          if (deviceStatusFilter === 'bound' && d.status !== 'bound') return false;
+          if (deviceStatusFilter === 'unbound' && d.status === 'bound') return false;
+          if (deviceSearchQuery.trim()) {
+            const q = deviceSearchQuery.toLowerCase();
+            const matchName = (d.full_name || '').toLowerCase().includes(q);
+            const matchUser = (d.username || '').toLowerCase().includes(q);
+            const matchCode = (d.employee_code || '').toLowerCase().includes(q);
+            const matchMac = (d.mac_address || '').toLowerCase().includes(q);
+            const matchDev = (d.device_name || d.device_type || d.device_id || '').toLowerCase().includes(q);
+            const matchComp = (d.company_name || '').toLowerCase().includes(q);
+            const matchIp = (d.bound_ip || '').toLowerCase().includes(q);
+            const matchDept = (d.department || '').toLowerCase().includes(q);
+            if (!matchName && !matchUser && !matchCode && !matchMac && !matchDev && !matchComp && !matchIp && !matchDept) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        const paginatedDevices = filteredDevices.slice((devPage - 1) * devPageSize, devPage * devPageSize);
+
+        return (
+          <div className="space-y-4">
+            {/* STATS CARDS */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Registered</span>
+                  <div className="p-2 rounded-xl bg-purple-50 text-purple-600">
+                    <Laptop className="w-4 h-4" />
+                  </div>
+                </div>
+                <p className="text-2xl font-black text-slate-900 mt-2">{devices.length}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">All hardware identity records</p>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Currently Bound / Locked</span>
+                  <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
+                    <Lock className="w-4 h-4" />
+                  </div>
+                </div>
+                <p className="text-2xl font-black text-emerald-700 mt-2">{boundCount}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Enforced 1-Device Rule active</p>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Unbound / Released</span>
+                  <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
+                    <Unlock className="w-4 h-4" />
+                  </div>
+                </div>
+                <p className="text-2xl font-black text-amber-700 mt-2">{unboundCount}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">Can login and bind any new device</p>
+              </div>
+            </div>
+
+            {/* MAIN DEVICE MANAGEMENT TABLE */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              {/* Header and Controls */}
+              <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-600 border border-purple-500/20">
+                    <Laptop className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Device Binding & Unlock Hub</h3>
+                    <p className="text-[11px] text-slate-400">
+                      View bound devices, inspect hardware MAC address locks, and deregister/unlock employee devices for instant re-login
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRefreshDevices}
+                    disabled={deviceRefreshing}
+                    className="p-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+                    title="Refresh device bindings"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${deviceRefreshing ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline">Refresh</span>
+                  </button>
+                  <span className="text-xs text-purple-700 bg-purple-50 border border-purple-200/60 px-2.5 py-1 rounded-lg font-semibold">
+                    1 Account = 1 Device
+                  </span>
+                </div>
+              </div>
+
+              {/* Filter and Search Bar */}
+              <div className="p-3 bg-slate-50/70 border-b border-slate-200/80 flex flex-wrap items-center justify-between gap-3">
+                {/* Search Bar */}
+                <div className="relative flex-1 min-w-[240px]">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={deviceSearchQuery}
+                    onChange={(e) => {
+                      setDeviceSearchQuery(e.target.value);
+                      setDevPage(1);
+                    }}
+                    placeholder="Search by employee name, ID, MAC address, device name..."
+                    className="w-full pl-8 pr-8 py-1.5 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 font-medium"
+                  />
+                  {deviceSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setDeviceSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Status Filter Pills */}
+                <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => { setDeviceStatusFilter('all'); setDevPage(1); }}
+                    className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                      deviceStatusFilter === 'all'
+                        ? 'bg-purple-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    All ({devices.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setDeviceStatusFilter('bound'); setDevPage(1); }}
+                    className={`px-3 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                      deviceStatusFilter === 'bound'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span>Bound ({boundCount})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setDeviceStatusFilter('unbound'); setDevPage(1); }}
+                    className={`px-3 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                      deviceStatusFilter === 'unbound'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>Unbound ({unboundCount})</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-600 uppercase font-semibold">
+                    <tr>
+                      <th className="p-3">Employee</th>
+                      <th className="p-3">Company</th>
+                      <th className="p-3">Device Name & Type</th>
+                      <th className="p-3">Locked MAC Address</th>
+                      <th className="p-3">Device Fingerprint</th>
+                      <th className="p-3">Last Login IP</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {paginatedDevices.map(d => {
+                      const mac = d.mac_address || (d.device_id && d.device_id.startsWith('hw_') ? d.device_id.replace('hw_', '') : d.device_id);
+                      const isBound = d.status === 'bound';
+
+                      return (
+                        <tr key={d.id} className="hover:bg-slate-50/60 transition-colors">
+                          {/* Employee */}
+                          <td className="p-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-xs shrink-0">
+                                {(d.full_name || d.username || '?')[0].toUpperCase()}
+                              </div>
+                              <div>
+                                <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                  <span>{d.full_name || d.username}</span>
+                                  {d.employee_code && (
+                                    <span className="font-mono text-[10px] text-purple-700 bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
+                                      {d.employee_code}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-400 font-mono">
+                                  @{d.username} {d.department ? `• ${d.department}` : ''}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Company */}
+                          <td className="p-3">
+                            <span className="inline-flex items-center gap-1 text-slate-700 font-medium">
+                              <Building2 className="w-3 h-3 text-purple-500 shrink-0" />
+                              <span>{d.company_name || 'Assigned Company'}</span>
+                            </span>
+                          </td>
+
+                          {/* Device Name & Type */}
+                          <td className="p-3 text-slate-700 font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <Laptop className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <span>{d.device_name || d.device_type || 'Web Browser'}</span>
+                            </div>
+                          </td>
+
+                          {/* Locked MAC Address */}
+                          <td className="p-3">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 font-bold select-all text-[11px]">
+                                {mac}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyMac(mac)}
+                                className="p-1 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-colors"
+                                title="Copy MAC address"
+                              >
+                                {copiedMac === mac ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                              </button>
+                            </div>
+                          </td>
+
+                          {/* Device Fingerprint */}
+                          <td className="p-3 font-mono text-slate-500 truncate max-w-[120px]" title={d.device_id}>
+                            {d.device_id}
+                          </td>
+
+                          {/* Last Login IP */}
+                          <td className="p-3">
+                            <div>
+                              <span className="font-mono text-slate-600 text-[11px]">{d.bound_ip || '-'}</span>
+                              {d.last_login_at && (
+                                <div className="text-[10px] text-slate-400 font-mono">
+                                  {new Date(d.last_login_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Status */}
+                          <td className="p-3">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                              isBound
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                : 'bg-slate-100 text-slate-600 border border-slate-200'
+                            }`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${isBound ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                              <span>{isBound ? 'Locked' : 'Unbound'}</span>
+                            </span>
+                          </td>
+
+                          {/* Action Button */}
+                          <td className="p-3 text-right">
+                            {isBound ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedDevice(d);
+                                  setUnbindReason('Support deregistered device - employee authorized to log in from new device');
+                                  setShowUnbindModal(true);
+                                }}
+                                className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 ml-auto shadow-xs hover:shadow transition-all cursor-pointer"
+                                title="Deregister device to allow employee to register and log in on a new device"
+                              >
+                                <Unlock className="w-3.5 h-3.5" />
+                                <span>Deregister Device</span>
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-100 inline-flex items-center gap-1">
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span>Unlocked (Ready)</span>
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {filteredDevices.length === 0 && (
+                      <tr>
+                        <td colSpan="8" className="p-10 text-center text-slate-400 text-xs">
+                          <Laptop className="w-8 h-8 mx-auto text-slate-300 mb-2 stroke-1" />
+                          <p className="font-semibold text-slate-600">No device records found.</p>
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            {deviceSearchQuery || deviceStatusFilter !== 'all'
+                              ? 'Try adjusting your search query or filter.'
+                              : 'No employees have registered devices yet.'}
+                          </p>
+                          {(deviceSearchQuery || deviceStatusFilter !== 'all') && (
+                            <button
+                              type="button"
+                              onClick={() => { setDeviceSearchQuery(''); setDeviceStatusFilter('all'); }}
+                              className="mt-3 px-3 py-1 bg-purple-50 text-purple-700 font-semibold rounded-lg text-xs hover:bg-purple-100 transition-colors"
+                            >
+                              Clear Filters
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              <PaginationBar
+                currentPage={devPage}
+                totalItems={filteredDevices.length}
+                pageSize={devPageSize}
+                onPageChange={setDevPage}
+                onPageSizeChange={setDevPageSize}
+              />
+            </div>
           </div>
-          <PaginationBar
-            currentPage={devPage}
-            totalItems={devices.length}
-            pageSize={devPageSize}
-            onPageChange={setDevPage}
-            onPageSizeChange={setDevPageSize}
-          />
-        </div>
-      )}
+        );
+      })()}
 
       {/* ========================================================================= */}
       {/* TICKETS & HELPDESK */}
@@ -3272,6 +3582,512 @@ export default function SupportPanel({ user, activeTab, onSelectTab }) {
         currentUser={user}
         onStatusUpdated={fetchData}
       />
+
+      {/* MODAL: DEREGISTER & UNBIND EMPLOYEE DEVICE */}
+      {showUnbindModal && selectedDevice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-600 border border-purple-500/20 shrink-0">
+                  <Unlock className="w-5 h-5 text-purple-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Deregister & Unlock Device</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Clear hardware MAC lock so the employee can immediately log in from a new device
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUnbindModal(false);
+                  setSelectedDevice(null);
+                }}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Notice */}
+            <div className="p-3 bg-purple-50 rounded-xl border border-purple-200/80 text-xs text-purple-900 space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-purple-600" />
+                <span>1-Device Rule Enforcement</span>
+              </p>
+              <p className="text-purple-700 leading-relaxed text-[11px]">
+                Deregistering this device releases the locked MAC address and unblocks the employee account. The employee can immediately log in from another computer, laptop, or mobile phone without any secondary device error.
+              </p>
+            </div>
+
+            {/* Device Details Box */}
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
+                <span className="text-slate-500">Employee:</span>
+                <span className="font-bold text-slate-900">{selectedDevice.full_name || selectedDevice.username} {selectedDevice.employee_code ? `(${selectedDevice.employee_code})` : ''}</span>
+              </div>
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
+                <span className="text-slate-500">Company:</span>
+                <span className="font-semibold text-slate-800">{selectedDevice.company_name || 'Assigned Company'}</span>
+              </div>
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
+                <span className="text-slate-500">Locked MAC Signature:</span>
+                <span className="font-mono font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 text-[11px]">
+                  {selectedDevice.mac_address || (selectedDevice.device_id && selectedDevice.device_id.startsWith('hw_') ? selectedDevice.device_id.replace('hw_', '') : selectedDevice.device_id)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
+                <span className="text-slate-500">Device Model / OS:</span>
+                <span className="text-slate-700 font-medium">{selectedDevice.device_name || selectedDevice.device_type || 'Unknown Device'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Last Active IP:</span>
+                <span className="font-mono text-slate-600 text-[11px]">{selectedDevice.bound_ip || '127.0.0.1'}</span>
+              </div>
+            </div>
+
+            {/* Audit Reason Form */}
+            <form onSubmit={(e) => { e.preventDefault(); handleUnbind(); }} className="space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                  <span>Mandatory Audit Reason *</span>
+                  <span className="text-[10px] text-rose-600 font-normal">Recorded in audit trail & Firebase</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={unbindReason}
+                  onChange={(e) => setUnbindReason(e.target.value)}
+                  placeholder="e.g. Employee requested device change / reset to register new device"
+                  className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 bg-white font-medium"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUnbindModal(false);
+                    setSelectedDevice(null);
+                  }}
+                  disabled={unbindingDevice}
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 text-xs font-semibold rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={unbindingDevice}
+                  className="px-5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  {unbindingDevice ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deregistering...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>Confirm & Deregister Device</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: USER DIAGNOSTICS & ISSUE RESOLUTION */}
+      {selectedUserDiag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl border border-slate-200 space-y-4">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center font-bold text-sm shrink-0">
+                  {(selectedUserDiag.full_name || selectedUserDiag.username || '?')[0].toUpperCase()}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-slate-900">{selectedUserDiag.full_name || selectedUserDiag.username}</h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-purple-100 text-purple-800">
+                      {selectedUserDiag.role_name}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      selectedUserDiag.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                    }`}>
+                      {selectedUserDiag.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    @{selectedUserDiag.username} • {selectedUserDiag.company_name || 'Assigned Company'} {selectedUserDiag.employee_code ? `• ID: ${selectedUserDiag.employee_code}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedUserDiag(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Diagnostic Tabs */}
+            <div className="flex items-center gap-2 border-b border-slate-200 pb-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setUserDiagTab('device')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  userDiagTab === 'device' ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <Laptop className="w-3.5 h-3.5" />
+                <span>Device Binding & Unlock</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setUserDiagTab('requirements')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  userDiagTab === 'requirements' ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>Account Requirements</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setUserDiagTab('tickets')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  userDiagTab === 'tickets' ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <Ticket className="w-3.5 h-3.5" />
+                <span>Support Tickets ({selectedUserDiag.tickets?.length || 0})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setUserDiagTab('attendance')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  userDiagTab === 'attendance' ? 'bg-purple-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Recent Attendance</span>
+              </button>
+            </div>
+
+            {/* TAB 1: DEVICE BINDING & UNLOCK */}
+            {userDiagTab === 'device' && (
+              <div className="space-y-4 text-xs">
+                {selectedUserDiag.device ? (
+                  <div className="p-4 bg-purple-50/60 rounded-xl border border-purple-200/80 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-purple-950 flex items-center gap-1.5">
+                        <Lock className="w-4 h-4 text-purple-600" />
+                        <span>Active Bound Device Lock</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        1-Device Lock Active
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-slate-700 bg-white p-3 rounded-lg border border-purple-100">
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Locked MAC Address:</span>
+                        <span className="font-mono font-bold text-purple-700 select-all">
+                          {selectedUserDiag.device.mac_address || selectedUserDiag.device.device_id}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Device Name / Type:</span>
+                        <span className="font-medium text-slate-800">
+                          {selectedUserDiag.device.device_name || selectedUserDiag.device.device_type || 'Web Browser'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Bound IP Address:</span>
+                        <span className="font-mono text-slate-600">
+                          {selectedUserDiag.device.bound_ip || '127.0.0.1'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Registered At:</span>
+                        <span className="text-slate-600">
+                          {selectedUserDiag.device.registered_at || '-'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-[11px] text-slate-500">
+                        Deregistering will clear the MAC lock and allow this employee to log in from another device immediately.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDevice({
+                            ...selectedUserDiag.device,
+                            full_name: selectedUserDiag.full_name,
+                            username: selectedUserDiag.username,
+                            company_name: selectedUserDiag.company_name,
+                            employee_code: selectedUserDiag.employee_code,
+                            user_id: selectedUserDiag.user_id || selectedUserDiag.id
+                          });
+                          setUnbindReason('Employee requested device change / reset via Diagnostics Hub');
+                          setShowUnbindModal(true);
+                        }}
+                        className="px-3.5 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg font-bold flex items-center gap-1.5 shadow-xs hover:from-purple-700 hover:to-indigo-700 transition-all cursor-pointer"
+                      >
+                        <Unlock className="w-3.5 h-3.5" />
+                        <span>Deregister Device Now</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-6 text-center bg-slate-50 rounded-xl border border-slate-200">
+                    <CheckCircle className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
+                    <h4 className="font-bold text-slate-800">No Active Device Lock</h4>
+                    <p className="text-slate-500 text-[11px] mt-1">
+                      This employee account is not locked to any hardware MAC address. They can log in from any authorized device.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 2: ACCOUNT REQUIREMENTS */}
+            {userDiagTab === 'requirements' && (
+              <form onSubmit={handleSaveUserRequirements} className="space-y-3 text-xs">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Email Address</label>
+                    <input
+                      type="email"
+                      value={updateProfileForm.email}
+                      onChange={(e) => setUpdateProfileForm({ ...updateProfileForm, email: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-xl"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Mobile Number</label>
+                    <input
+                      type="text"
+                      value={updateProfileForm.mobile}
+                      onChange={(e) => setUpdateProfileForm({ ...updateProfileForm, mobile: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-xl"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Account Status</label>
+                    <select
+                      value={updateProfileForm.status}
+                      onChange={(e) => setUpdateProfileForm({ ...updateProfileForm, status: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-xl"
+                    >
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Reset Password (Optional)</label>
+                    <input
+                      type="password"
+                      placeholder="Leave blank to keep unchanged"
+                      value={updateProfileForm.password}
+                      onChange={(e) => setUpdateProfileForm({ ...updateProfileForm, password: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-xl"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                    <span>Audit Reason *</span>
+                    <span className="text-[10px] text-rose-600">Mandatory for compliance</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={updateProfileForm.reason}
+                    onChange={(e) => setUpdateProfileForm({ ...updateProfileForm, reason: e.target.value })}
+                    placeholder="e.g. Employee requested profile update / password reset via Support"
+                    className="w-full px-3 py-2 border rounded-xl"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="submit"
+                    disabled={updatingProfile}
+                    className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold shadow-xs transition-all flex items-center gap-1.5"
+                  >
+                    {updatingProfile ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Updating...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Save Account Updates</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* TAB 3: TICKETS */}
+            {userDiagTab === 'tickets' && (
+              <div className="space-y-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800">Recent Service Requests</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewTicketModal(true)}
+                    className="px-2.5 py-1 bg-purple-50 text-purple-700 hover:bg-purple-100 rounded-lg font-semibold flex items-center gap-1 border border-purple-200"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Create Ticket</span>
+                  </button>
+                </div>
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden max-h-60 overflow-y-auto">
+                  {(selectedUserDiag.tickets || []).map(t => (
+                    <div key={t.id} className="p-2.5 flex items-center justify-between hover:bg-slate-50">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-slate-800">#{t.id} {t.title}</span>
+                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                            t.status === 'resolved' || t.status === 'closed' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {t.status}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate max-w-md">{t.description}</p>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono">{t.created_at?.slice(0, 10)}</span>
+                    </div>
+                  ))}
+                  {(!selectedUserDiag.tickets || selectedUserDiag.tickets.length === 0) && (
+                    <p className="p-4 text-center text-slate-400 text-xs">No support tickets found for this user.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: ATTENDANCE */}
+            {userDiagTab === 'attendance' && (
+              <div className="space-y-2 text-xs">
+                <span className="font-bold text-slate-800">Recent 7 Days Attendance</span>
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden max-h-60 overflow-y-auto">
+                  {(selectedUserDiag.recentAttendance || []).map(a => (
+                    <div key={a.id || a.date} className="p-2.5 flex items-center justify-between hover:bg-slate-50">
+                      <div>
+                        <span className="font-bold text-slate-900 font-mono">{a.date}</span>
+                        <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                          <span>In: {a.punch_in_time || '-'}</span>
+                          <span>•</span>
+                          <span>Out: {a.punch_out_time || '-'}</span>
+                          <span>•</span>
+                          <span>{a.total_hours ? `${Number(a.total_hours).toFixed(2)}h` : '0h'}</span>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        a.status === 'Present' ? 'bg-emerald-100 text-emerald-800' : a.status === 'Half Day' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                      }`}>
+                        {a.status}
+                      </span>
+                    </div>
+                  ))}
+                  {(!selectedUserDiag.recentAttendance || selectedUserDiag.recentAttendance.length === 0) && (
+                    <p className="p-4 text-center text-slate-400 text-xs">No recent attendance records found.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CREATE NEW SUPPORT TICKET */}
+      {showNewTicketModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-base font-bold text-slate-900">Create Support Ticket</h3>
+              <button
+                type="button"
+                onClick={() => setShowNewTicketModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateSupportTicket} className="space-y-3 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Issue Category *</label>
+                <select
+                  value={newTicketForm.request_type}
+                  onChange={(e) => setNewTicketForm({ ...newTicketForm, request_type: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-xl"
+                >
+                  <option value="device_change">Device Change / Unbind Request</option>
+                  <option value="account_problem">Account Problem / Login Issue</option>
+                  <option value="attendance_issue">Attendance Correction Request</option>
+                  <option value="leave_issue">Leave Policy / Balance Request</option>
+                  <option value="general_support">General Inquiry</option>
+                </select>
+              </div>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Subject / Title *</label>
+                <input
+                  type="text"
+                  required
+                  value={newTicketForm.title}
+                  onChange={(e) => setNewTicketForm({ ...newTicketForm, title: e.target.value })}
+                  placeholder="Brief summary of the issue"
+                  className="w-full px-3 py-2 border rounded-xl"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Description *</label>
+                <textarea
+                  rows="3"
+                  required
+                  value={newTicketForm.description}
+                  onChange={(e) => setNewTicketForm({ ...newTicketForm, description: e.target.value })}
+                  placeholder="Detailed explanation of the issue"
+                  className="w-full px-3 py-2 border rounded-xl"
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowNewTicketModal(false)}
+                  className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold shadow-xs"
+                >
+                  Submit Ticket
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

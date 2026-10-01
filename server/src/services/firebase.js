@@ -2553,6 +2553,17 @@ async function deleteFromFirebase(entityType, id, extra = {}) {
       if (realtimeDb) {
         await realtimeDb.ref(`audit_logs/${strId}`).remove().catch(() => {});
       }
+    } else if (entityType === 'employee_devices' || entityType === 'device_bindings') {
+      if (firestoreDb) {
+        await safeDeleteFirestoreDoc('employee_devices', `user_${strId}`);
+        await safeDeleteFirestoreDoc('employee_devices', strId);
+        await safeDeleteFirestoreDoc('device_bindings', strId);
+      }
+      if (realtimeDb) {
+        await realtimeDb.ref(`employee_devices/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`devices/${strId}`).remove().catch(() => {});
+        await realtimeDb.ref(`device_bindings/${strId}`).remove().catch(() => {});
+      }
     } else {
       if (firestoreDb) {
         await safeDeleteFirestoreDoc(entityType, strId);

@@ -122,7 +122,10 @@ function checkAndBindDevice({ userId, roleName, deviceId, macAddress, deviceType
 function unbindUserDevice({ userId, authorizedUserId, authorizerName, authorizerRole, reason, ipAddress }) {
   const currentDevice = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(userId);
   if (!currentDevice) {
-    return { success: false, error: 'No device registration found for this user.' };
+    return { 
+      success: true, 
+      message: 'No active device lock found for this account. The employee can already log in from another device.' 
+    };
   }
 
   db.prepare(`
@@ -146,7 +149,7 @@ function unbindUserDevice({ userId, authorizedUserId, authorizerName, authorizer
     action: 'DEVICE_DEREGISTERED',
     targetEntity: 'employee_devices',
     targetId: userId,
-    oldValues: { device_id: currentDevice.device_id, mac_address: currentDevice.mac_address, status: 'bound' },
+    oldValues: { device_id: currentDevice.device_id, mac_address: currentDevice.mac_address, status: currentDevice.status || 'bound' },
     newValues: { status: 'unbound' },
     reason: reason || 'Support deregistered device via MAC lock',
     ipAddress
@@ -154,13 +157,26 @@ function unbindUserDevice({ userId, authorizedUserId, authorizerName, authorizer
 
   const macDisplay = currentDevice.mac_address || currentDevice.device_id;
 
-  // Sync unbound device status to Firebase
+  // Sync unbound device status & purge stale binding from Firebase
   try {
     const unboundDev = db.prepare('SELECT * FROM employee_devices WHERE user_id = ?').get(userId);
-    if (unboundDev) {
-      const { syncEmployeeDevice } = require('./firebase');
+    const { syncEmployeeDevice, deleteFromFirebase } = require('./firebase');
+    if (unboundDev && syncEmployeeDevice) {
       syncEmployeeDevice(unboundDev).catch(() => {});
     }
+    if (deleteFromFirebase) {
+      deleteFromFirebase('device_bindings', userId).catch(() => {});
+    }
+  } catch (e) {}
+
+  // Broadcast real-time event so all open tabs update instantly
+  try {
+    const { broadcastRealtimeEvent } = require('./notificationService');
+    broadcastRealtimeEvent('device_unbound', {
+      userId: Number(userId),
+      macAddress: macDisplay,
+      unboundAt: new Date().toISOString()
+    });
   } catch (e) {}
 
   // Dispatch real-time push notification to user
